@@ -1,0 +1,150 @@
+package models
+
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
+
+// AgentDefPO agent_definitions：Agent 的可配置「定义」（低代码数据，不是代码）
+type AgentDefPO struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// AgentKey 全局唯一标识（委派能力名 = agent:<agent_key>）
+	AgentKey string `gorm:"column:agent_key;size:64;not null;uniqueIndex:uk_agent_defs_key" json:"agent_key"`
+	Name     string `gorm:"column:name;size:128;not null" json:"name"`
+	// Description 给 LLM 看的职责描述（语义召回向量化来源）
+	Description string `gorm:"column:description;type:text" json:"description"`
+	// System 角色提示词
+	System string `gorm:"column:system;type:text" json:"system"`
+	// LLMModel 指定模型（空 = 平台默认数据源）
+	LLMModel string `gorm:"column:llm_model;size:128;not null;default:''" json:"llm_model"`
+	// LLMSource 默认模型数据源（空 = 平台默认），调用失败回退 default
+	LLMSource string `gorm:"column:llm_source;size:64;not null;default:''" json:"llm_source"`
+	// GraphType 执行图：react | simple
+	GraphType string `gorm:"column:graph_type;size:32;not null;default:'react'" json:"graph_type"`
+	// Capabilities 能力白名单，JSON 数组字符串（空集必须写 []，MySQL JSON 列拒收空串）
+	Capabilities string `gorm:"column:capabilities;type:json" json:"capabilities"`
+	// Middlewares 中间件，JSON 数组字符串
+	Middlewares string `gorm:"column:middlewares;type:json" json:"middlewares"`
+	MaxTurns    int    `gorm:"column:max_turns;not null;default:12" json:"max_turns"`
+	// Role 角色：root | sub | supervisor | risk
+	Role string `gorm:"column:role;size:16;not null;default:'root';index:idx_agent_defs_role" json:"role"`
+	// Orchestration 成员编排：auto | serial | parallel（仅 root 生效）
+	Orchestration string `gorm:"column:orchestration;size:16;not null;default:'auto'" json:"orchestration"`
+	// Members 编排成员 agent_key 列表，JSON 数组字符串
+	Members string `gorm:"column:members;type:json" json:"members"`
+	// Flow 编排画布布局（节点坐标），JSON 对象字符串，仅前端渲染用
+	Flow string `gorm:"column:flow_json;type:text" json:"flow"`
+	// SupervisorKey 监察 Agent（role=supervisor 的 agent_key）
+	SupervisorKey string `gorm:"column:supervisor_key;size:64;not null;default:''" json:"supervisor_key"`
+	// SupervisionScope 监察范围（supervisor 角色使用），JSON 数组字符串
+	SupervisionScope string `gorm:"column:supervision_scope;type:json" json:"supervision_scope"`
+	// RiskAgentKey 风险评估 Agent（role=risk 的 agent_key），仅 MCP 调用前生效
+	RiskAgentKey string `gorm:"column:risk_agent_key;size:64;not null;default:''" json:"risk_agent_key"`
+	// AutoRun 后台自动运行（cron）
+	AutoRun bool `gorm:"column:auto_run;not null;default:false;index:idx_agent_defs_autorun" json:"auto_run"`
+	// CronExpr 5 段 cron 表达式
+	CronExpr string `gorm:"column:cron_expr;size:64;not null;default:''" json:"cron_expr"`
+	// CronInput 定时运行的固定输入
+	CronInput string `gorm:"column:cron_input;type:text" json:"cron_input"`
+	// NextRunAt 下次自动运行时间（调度器维护；NULL 表示未排期）
+	NextRunAt *time.Time `gorm:"column:next_run_at" json:"next_run_at"`
+	// LastRunAt 上次自动运行时间
+	LastRunAt *time.Time `gorm:"column:last_run_at" json:"last_run_at"`
+	// Sandbox 沙箱灰度：禁止委派其他 Agent
+	Sandbox bool `gorm:"column:is_sandbox;not null;default:false" json:"is_sandbox"`
+	// Source 来源：manual | llm
+	Source string `gorm:"column:source;size:16;not null;default:'manual';index:idx_agent_defs_source" json:"source"`
+	// Version 定义版本（每次更新 +1，为回滚预留）
+	Version int `gorm:"column:version;not null;default:1" json:"version"`
+	// Enabled 启用状态
+	Enabled bool `gorm:"column:is_enabled;not null;default:true;index:idx_agent_defs_enabled" json:"is_enabled"`
+	// Vectorized 是否已写入向量注册表
+	Vectorized bool `gorm:"column:is_vectorized;not null;default:false" json:"is_vectorized"`
+
+	CreatedAt time.Time      `gorm:"column:created_at;not null" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"column:updated_at;not null" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index:idx_agent_defs_deleted" json:"-"`
+}
+
+func (AgentDefPO) TableName() string { return "agent_definitions" }
+
+// AgentTaskPO agent_tasks：异步任务（worker 的基本单位；parent_task_id 形成多 Agent 协作链路树）
+type AgentTaskPO struct {
+	ID         uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	AgentDefID uint64 `gorm:"column:agent_def_id;not null;index:idx_agent_tasks_agent" json:"agent_def_id"`
+	// AgentKey 冗余：定义删除后任务历史仍可读
+	AgentKey string `gorm:"column:agent_key;size:64;not null;index:idx_agent_tasks_key" json:"agent_key"`
+	Title    string `gorm:"column:title;size:128;not null" json:"title"`
+	Input    string `gorm:"column:input;type:text" json:"input"`
+	// Status: pending | running | succeeded | failed | canceled
+	Status string `gorm:"column:status;size:16;not null;default:'pending';index:idx_agent_tasks_status" json:"status"`
+	// Progress 0~100
+	Progress int    `gorm:"column:progress;not null;default:0" json:"progress"`
+	Result   string `gorm:"column:result;type:mediumtext" json:"result"`
+	ErrorMsg string `gorm:"column:error_msg;type:text" json:"error_msg"`
+	// ParentTaskID 父任务（0 = 根任务）
+	ParentTaskID uint64 `gorm:"column:parent_task_id;not null;default:0;index:idx_agent_tasks_parent" json:"parent_task_id"`
+	// Depth 委派深度（根=0）
+	Depth int `gorm:"column:depth;not null;default:0" json:"depth"`
+	// ConvID 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
+	ConvID string `gorm:"column:conv_id;size:64;not null;default:'';index:idx_agent_tasks_conv" json:"conv_id"`
+
+	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_tasks_created" json:"created_at"`
+	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`
+	// FinishedAt 终态时间；*time.Time 让未开始的任务写 NULL（MySQL 拒绝零值 datetime）
+	FinishedAt *time.Time     `gorm:"column:finished_at" json:"finished_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"column:deleted_at;index:idx_agent_tasks_deleted" json:"-"`
+}
+
+func (AgentTaskPO) TableName() string { return "agent_tasks" }
+
+// AgentTaskHistoryPO agent_task_history：任务历史表（归档区）。
+//
+// 任务池（agent_tasks）只保存 pending/running 活跃任务；任务到达终态
+// （succeeded/failed/canceled）时由 FinishTask 在同一事务内迁入本表并从
+// 池中删除，任一时刻同一条任务只存在一张表中。字段与任务池一致，
+// 另加 archived_at 记录归档时间。
+type AgentTaskHistoryPO struct {
+	ID         uint64 `gorm:"primaryKey" json:"id"` // 沿用任务池分配的 ID，不重新自增
+	AgentDefID uint64 `gorm:"column:agent_def_id;not null;index:idx_agent_task_history_agent" json:"agent_def_id"`
+	AgentKey   string `gorm:"column:agent_key;size:64;not null;index:idx_agent_task_history_key" json:"agent_key"`
+	Title      string `gorm:"column:title;size:128;not null" json:"title"`
+	Input      string `gorm:"column:input;type:text" json:"input"`
+	// Status 仅终态：succeeded | failed | canceled
+	Status   string `gorm:"column:status;size:16;not null;index:idx_agent_task_history_status" json:"status"`
+	Progress int    `gorm:"column:progress;not null;default:0" json:"progress"`
+	Result   string `gorm:"column:result;type:mediumtext" json:"result"`
+	ErrorMsg string `gorm:"column:error_msg;type:text" json:"error_msg"`
+	// ParentTaskID 父任务（0 = 根任务）；父任务可能已在历史表
+	ParentTaskID uint64 `gorm:"column:parent_task_id;not null;default:0;index:idx_agent_task_history_parent" json:"parent_task_id"`
+	Depth        int    `gorm:"column:depth;not null;default:0" json:"depth"`
+	// ConvID 来源会话（与任务池同义）
+	ConvID string `gorm:"column:conv_id;size:64;not null;default:'';index:idx_agent_task_history_conv" json:"conv_id"`
+
+	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_task_history_created" json:"created_at"`
+	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`
+	// FinishedAt 终态时间（历史表必填）
+	FinishedAt *time.Time `gorm:"column:finished_at;not null" json:"finished_at"`
+	// ArchivedAt 归档时间（任务池 → 历史表迁移时刻）
+	ArchivedAt time.Time `gorm:"column:archived_at;not null;index:idx_agent_task_history_archived" json:"archived_at"`
+}
+
+func (AgentTaskHistoryPO) TableName() string { return "agent_task_history" }
+
+// AgentTaskEventPO agent_task_events：任务事件流（trace 链路检索单元）
+type AgentTaskEventPO struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// TaskID 所属任务
+	TaskID uint64 `gorm:"column:task_id;not null;index:idx_agent_task_events_task" json:"task_id"`
+	// Turn 执行轮次（0 = 状态类事件）
+	Turn int `gorm:"column:turn;not null;default:0" json:"turn"`
+	// Type 事件类型：status/thought/tool_call/tool_result/delegate/final/error
+	Type string `gorm:"column:type;size:32;not null;index:idx_agent_task_events_type" json:"type"`
+	// Payload JSON 字符串
+	Payload string `gorm:"column:payload;type:text" json:"payload"`
+
+	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
+}
+
+func (AgentTaskEventPO) TableName() string { return "agent_task_events" }

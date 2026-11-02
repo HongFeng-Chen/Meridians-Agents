@@ -1,0 +1,322 @@
+# =============================================================================
+# RAG / GraphRAG 全栈一键启动
+#
+#   docker compose up -d --build      # 首次构建（Go 前端/后端都本地构建镜像）
+#   docker compose ps                 # 全部 healthy 才算就绪
+#   docker compose logs -f go_agent   # 看后端启动日志
+#
+# 入口：http://localhost:8080              （Nginx 静态站 + /api 反代）
+# 后端直连（调试用）：http://localhost:8000/api/health
+#
+# 可选组件（默认不启动，按需加 --profile）：
+#   ollama（本地 embedding，默认 bge-m3）：
+#       docker compose --profile embed up -d ollama
+#       docker compose exec ollama ollama pull bge-m3
+#
+# 敏感信息（LLM_API_KEY 等）建议放到同目录 .env，compose 会自动读取；
+# 不配也能启动，只是 LLM 相关功能不可用（启动时会打 warning）。
+#
+# 组件清单：
+#   etcd / minio / milvus  -> 向量库（Milvus 3.x standalone，硬依赖，启动必须连通）
+#   mysql                  -> 文档元数据、提示词模板、LLM 数据源、技能（硬依赖 + 启动自动建表）
+#   redis                  -> 问答缓存、入库锁、短期记忆、提示词缓存（硬依赖）
+#   go_agent               -> Go 后端（Kratos，HTTP :8000，全部 REST 路由挂在 /api 下）
+#   web                    -> 前端控制台（Vite 构建产物 + Nginx）
+#   ollama (profile embed) -> 本地 embedding / LLM 服务（可选）
+# =============================================================================
+
+services:
+  # ==================== 向量库依赖：etcd ====================
+  etcd:
+    container_name: rag-etcd
+    image: quay.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: >
+      etcd
+      --name=etcd-node1
+      --data-dir=/etcd
+      --listen-client-urls=http://0.0.0.0:2379
+      --advertise-client-urls=http://etcd:2379
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://etcd:2380
+      --initial-cluster=etcd-node1=http://etcd:2380
+      --initial-cluster-state=new
+      --initial-cluster-token=milvus-etcd-cluster
+    # 开发环境：etcd 数据放内存盘，绕开 Windows Docker 磁盘 IO 慢导致的启动 panic。
+    # 代价：docker compose down 后集合元数据清空，需重新 ingest。
+    # 若需要持久化，注释掉 tmpfs 并打开 etcd_data 卷。
+    volumes:
+      - etcd_data:/etcd
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ==================== 向量库依赖：MinIO ====================
+  minio:
+    container_name: rag-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio_data:/minio_data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ==================== 向量库：Milvus standalone ====================
+  milvus:
+    container_name: rag-milvus
+    image: milvusdb/milvus:v3.0.3
+    command: ["milvus", "run", "standalone"]
+    # 磁盘 IO 抖动时 etcd 元数据恢复可能超时导致启动 panic（exit 134），自动重试
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      # Milvus 3.x 官方默认 MQ 是 Woodpecker（内嵌 WAL），rocksmq 已是遗留路径，
+      # 且 rocksmq + 新 streamingcoord 架构会触发启动 panic
+      MQ_TYPE: woodpecker
+      # 旧版 minio(2023-03) 不支持 S3 条件写 PutObjectIfNoneMatch，
+      # WAL 初始化会重试失败并挂起所有写请求，因此用本地文件系统
+      WOODPECKER_STORAGE_TYPE: local
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_PORT:-9091}:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - milvus_data:/var/lib/milvus
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ==================== 元数据数据库：MySQL ====================
+  mysql:
+    container_name: rag-mysql
+    image: mysql:8.4
+    restart: unless-stopped
+    platform: linux/amd64
+    environment:
+      TZ: "Asia/Shanghai"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root}"
+      # go_agent 的 DATABASE_SOURCE 用的是这个库，不能改名
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-go_agent}"
+      MYSQL_USER: "${MYSQL_USER:-go_agent}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-go_agent_pass}"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 需要初始化 SQL 时，把脚本放到 ./mysql/init 并取消下行注释
+      # - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app_network
+    healthcheck:
+      test:
+        ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
+
+  # ==================== 缓存 / 锁 / 短期记忆：Redis ====================
+  redis:
+    container_name: rag-redis
+    image: redis:8.2
+    restart: unless-stopped
+    platform: linux/amd64
+    environment:
+      TZ: "Asia/Shanghai"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-redis_pass}
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD:-redis_pass}' ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 128m
+
+  # # ==================== 后端：go_agent ====================
+  # # 启动硬依赖 MySQL / Redis / Milvus，三者任一不可达进程直接 panic，
+  # # 因此都用 service_healthy 做依赖编排。
+  # go_agent:
+  #   container_name: rag-go-agent
+  #   build:
+  #     context: ./go_agent
+  #     dockerfile: Dockerfile
+  #   image: go-agent:dev
+  #   restart: unless-stopped 
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #     # 配置 ${ENV:default} 占位符由 internal/conf 自行展开，这里做容器级覆盖
+  #     DATABASE_SOURCE: "${MYSQL_USER:-go_agent}:${MYSQL_PASSWORD:-go_agent_pass}@tcp(mysql:3306)/${MYSQL_DATABASE:-go_agent}?timeout=5s&parseTime=True&loc=Local&charset=utf8mb4"
+  #     REDIS_ADDR: redis:6379
+  #     REDIS_PASSWORD: "${REDIS_PASSWORD:-redis_pass}"
+  #     MILVUS_URI: http://milvus:19530
+  #     MILVUS_TOKEN: "${MILVUS_TOKEN:-root:Milvus}"
+  #     MILVUS_COLLECTION: "${MILVUS_COLLECTION:-rag_docs}"
+  #     # embedding 默认是 localhost:11434，容器内必须改写成服务名
+  #     EMBED_BASE_URL: "${EMBED_BASE_URL:-http://ollama:11434/v1}"
+  #     EMBED_API_KEY: "${EMBED_API_KEY:-ollama}"
+  #     EMBED_MODEL: "${EMBED_MODEL:-bge-m3}"
+  #     LLM_BASE_URL: "${LLM_BASE_URL:-https://api.deepseek.com}"
+  #     LLM_API_KEY: "${LLM_API_KEY:-}"
+  #     LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+  #     # 技能落盘目录（容器内 uid 10001 需可写）
+  #     SKILL_SYNC_DIR: /app/data/skills
+  #   # Dockerfile 不 COPY configs（k8s 里是 ConfigMap），本地必须挂载进来
+  #   volumes:
+  #     - ./go_agent/configs:/app/configs:ro
+  #     - skill_data:/app/data/skills
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     milvus:
+  #       condition: service_healthy
+  #   ports:
+  #     - "127.0.0.1:${API_PORT:-8000}:8000"
+  #   networks:
+  #     - app_network
+  #   healthcheck:
+  #     # 唯一的健康检查路由是 GET /api/health（无 I/O，恒 200）
+  #     test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/api/health || exit 1"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 10
+  #     start_period: 60s
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "20m"
+  #       max-file: "5"
+
+  # # ==================== 前端控制台：Nginx 静态托管 + /api 反代 ====================
+  # web:
+  #   container_name: rag-web
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   image: go-agent-frontend:dev
+  #   restart: unless-stopped
+  #   volumes:
+  #     # 运行时 nginx 配置：把 /api 反代到 go_agent:8000
+  #     - ./frontend/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+  #   ports:
+  #     - "${WEB_PORT:-8080}:80"
+  #   depends_on:
+  #     go_agent:
+  #       condition: service_healthy
+  #   networks:
+  #     - app_network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 5
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+
+  # ==================== 可选：本地 embedding / LLM（Ollama） ====================
+  # 默认不启动。需要本地向量化时：
+  #   docker compose --profile embed up -d ollama
+  #   docker compose exec ollama ollama pull bge-m3
+  # ollama:
+  #   container_name: rag-ollama
+  #   image: ollama/ollama:latest
+  #   profiles: ["embed"]
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - app_network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 20s
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+
+volumes:
+  minio_data:
+  milvus_data:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  skill_data:
+    driver: local
+  # ollama_data:
+  #   driver: local  
+  etcd_data:
+    driver: local
+
+networks:
+  app_network:
+    driver: bridge
