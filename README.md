@@ -4,6 +4,8 @@
 
 经线是 RAG 混合检索，纬线是 GraphRAG 图谱推理，交叉处就是每个 Agent 的坐标：Agent 以数据而非代码定义，提示词版本化后可被打分、优化，并由评测 Harness 把真实得分回写进版本历史。
 
+**在线文档：<https://ai.meridians.com.cn>** —— 从 RAG、GraphRAG、Agent 工厂到提示词工程、评测 Harness、部署运维的完整说明。
+
 ## 仓库结构
 
 | 目录 | 说明 |

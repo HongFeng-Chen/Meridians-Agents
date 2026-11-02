@@ -10,6 +10,8 @@
 
 `Go 1.26` · `Kratos v3` · `gRPC / HTTP` · `MySQL` · `Redis` · `Milvus` · `mcp-go` · `React 19` · `Vite 6` · `MIT License`
 
+**在线文档：<https://ai.meridians.com.cn>**
+
 ---
 
 ## 目录
