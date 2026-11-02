@@ -1,0 +1,458 @@
+// Package mcp.v1 定义 MCP（Model Context Protocol）服务与工具管理域的对外契约。
+//
+// 对应 internal/biz/mcp：一个 MCPServer 1:N Tool。
+//   - 配置与工具元数据存 MySQL；工具向量存 Milvus（只放 id + 向量 + 过滤字段）；
+//   - 工具完整对象与运行状态缓存 Redis；
+//   - http.Client 不落库，运行时通过 SetMCPClient 覆盖（超时/代理/TLS）。
+//
+// 路由顺序约定：静态路径必须声明在带 {id} 的路由之前（/tools/search 先于 /tools/{id}）。
+syntax = "proto3";
+
+package mcp.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/mcp/v1;v1";
+
+// MCPStatus 运行状态（内存实例 + Redis 持久状态合并）
+message MCPStatus {
+  uint64 mcp_server_id = 1 [json_name = "mcp_server_id"];
+  string server_name = 2 [json_name = "server_name"];
+  // 当前进程内是否持有可用实例
+  bool running = 3 [json_name = "running"];
+  string last_ping_at = 4 [json_name = "last_ping_at"];
+  string last_sync_at = 5 [json_name = "last_sync_at"];
+  int32 tool_count = 6 [json_name = "tool_count"];
+  // 最近一次失败原因（成功后清空）
+  string error_msg = 7 [json_name = "error_msg"];
+  // 运行时 http client 摘要，如 "timeout=30s proxy=http://127.0.0.1:7890"
+  string http_client = 8 [json_name = "http_client"];
+  string protocol_version = 9 [json_name = "protocol_version"];
+  string server_version = 10 [json_name = "server_version"];
+}
+
+// MCPTool 工具
+message MCPTool {
+  uint64 id = 1 [json_name = "id"];
+  uint64 mcp_server_id = 2 [json_name = "mcp_server_id"];
+  string mcp_server_name = 3 [json_name = "mcp_server_name"];
+  string namespace = 4 [json_name = "namespace"];
+  // MCP 原始工具名，如 list_issues
+  string tool_name = 5 [json_name = "tool_name"];
+  // 全局唯一名：namespace__tool_name
+  string unique_name = 6 [json_name = "unique_name"];
+  string display_name = 7 [json_name = "display_name"];
+  string description = 8 [json_name = "description"];
+  // JSON Schema 原文
+  string input_schema = 9 [json_name = "input_schema"];
+  string output_schema = 10 [json_name = "output_schema"];
+  repeated string examples = 11 [json_name = "examples"];
+  repeated string tags = 12 [json_name = "tags"];
+  bool enabled = 13 [json_name = "enabled"];
+  // 向量是否已写入 Milvus（false 时语义召回检索不到）
+  bool vectorized = 14 [json_name = "vectorized"];
+  string version = 15 [json_name = "version"];
+  string created_at = 16 [json_name = "created_at"];
+  string updated_at = 17 [json_name = "updated_at"];
+}
+
+// MCPServer MCP 服务
+message MCPServer {
+  uint64 id = 1 [json_name = "id"];
+  string name = 2 [json_name = "name"];
+  string namespace = 3 [json_name = "namespace"];
+  // stdio | http
+  string transport = 4 [json_name = "transport"];
+  bool enabled = 5 [json_name = "enabled"];
+  string description = 6 [json_name = "description"];
+  // http 模式
+  string endpoint = 7 [json_name = "endpoint"];
+  map<string, string> headers = 8 [json_name = "headers"];
+  // stdio 模式
+  string command = 9 [json_name = "command"];
+  repeated string args = 10 [json_name = "args"];
+  map<string, string> env = 11 [json_name = "env"];
+
+  int64 health_check_interval = 12 [json_name = "health_check_interval"];
+  int32 tool_count = 13 [json_name = "tool_count"];
+  MCPStatus status = 14 [json_name = "status"];
+  // 详情接口返回，列表接口留空
+  repeated MCPTool tools = 15 [json_name = "tools"];
+  string created_at = 16 [json_name = "created_at"];
+  string updated_at = 17 [json_name = "updated_at"];
+}
+
+// MCPStats 规模统计
+message MCPStats {
+  int64 servers = 1 [json_name = "servers"];
+  int64 enabled_servers = 2 [json_name = "enabled_servers"];
+  // 当前进程运行中的实例数
+  int64 running = 3 [json_name = "running"];
+  int64 tools = 4 [json_name = "tools"];
+  int64 enabled_tools = 5 [json_name = "enabled_tools"];
+  // 已建向量索引的工具数
+  int64 vectorized = 6 [json_name = "vectorized"];
+  int64 namespaces = 7 [json_name = "namespaces"];
+}
+
+// SyncResult 一次工具同步的结果
+message SyncResult {
+  uint64 mcp_server_id = 1 [json_name = "mcp_server_id"];
+  string mcp_server_name = 2 [json_name = "mcp_server_name"];
+  int32 fetched = 3 [json_name = "fetched"];
+  int32 added = 4 [json_name = "added"];
+  int32 updated = 5 [json_name = "updated"];
+  int32 removed = 6 [json_name = "removed"];
+  int32 vectorized = 7 [json_name = "vectorized"];
+  // 非致命问题（如 embedding 失败，元数据已保存）
+  string warning = 8 [json_name = "warning"];
+}
+
+// MCPToolHit 语义召回结果
+message MCPToolHit {
+  MCPTool tool = 1 [json_name = "tool"];
+  double score = 2 [json_name = "score"];
+  // 命中来源：redis | mysql
+  string source = 3 [json_name = "source"];
+}
+
+// MCPContent 工具返回内容块
+message MCPContent {
+  string type = 1 [json_name = "type"];
+  string text = 2 [json_name = "text"];
+  string data = 3 [json_name = "data"];
+}
+
+// MCPClientOptions 运行时 http.Client 参数（不落库）
+message MCPClientOptions {
+  // 0 表示沿用默认（60s）
+  int32 timeout_seconds = 1 [json_name = "timeout_seconds"];
+  // 为空表示走环境变量代理
+  string proxy_url = 2 [json_name = "proxy_url"];
+  // 跳过 TLS 校验（自签证书的内网服务）
+  bool insecure_tls = 3 [json_name = "insecure_tls"];
+}
+
+// —— 请求/响应 ——
+
+message GetMCPStatsRequest {}
+
+message ListMCPNamespacesRequest {}
+
+message ListMCPNamespacesReply {
+  repeated string namespaces = 1 [json_name = "namespaces"];
+}
+
+message ListMCPServersRequest {
+  // 按名称/描述模糊搜索
+  string q = 1 [json_name = "q"];
+  string namespace = 2 [json_name = "namespace"];
+  string transport = 3 [json_name = "transport"];
+  // 1/true、0/false，空表示不过滤
+  string enabled = 4 [json_name = "enabled"];
+  int32 limit = 5 [json_name = "limit"];
+}
+
+message ListMCPServersReply {
+  repeated MCPServer servers = 1 [json_name = "servers"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message CreateMCPServerRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string namespace = 2 [json_name = "namespace"];
+  // stdio | http
+  string transport = 3 [(google.api.field_behavior) = REQUIRED, json_name = "transport"];
+  string description = 4 [json_name = "description"];
+  string endpoint = 5 [json_name = "endpoint"];
+  map<string, string> headers = 6 [json_name = "headers"];
+  string command = 7 [json_name = "command"];
+  repeated string args = 8 [json_name = "args"];
+  map<string, string> env = 9 [json_name = "env"];
+  int64 health_check_interval = 10 [json_name = "health_check_interval"];
+  // 不传默认启用
+  string enabled = 11 [json_name = "enabled"];
+}
+
+message UpdateMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  string name = 2 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string namespace = 3 [json_name = "namespace"];
+  string transport = 4 [(google.api.field_behavior) = REQUIRED, json_name = "transport"];
+  string description = 5 [json_name = "description"];
+  string endpoint = 6 [json_name = "endpoint"];
+  map<string, string> headers = 7 [json_name = "headers"];
+  string command = 8 [json_name = "command"];
+  repeated string args = 9 [json_name = "args"];
+  map<string, string> env = 10 [json_name = "env"];
+  int64 health_check_interval = 11 [json_name = "health_check_interval"];
+  string enabled = 12 [json_name = "enabled"];
+}
+
+message DeleteMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DeleteMCPServerReply {
+  uint64 id = 1 [json_name = "id"];
+  bool deleted = 2 [json_name = "deleted"];
+}
+
+message ToggleMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  bool enabled = 2 [json_name = "enabled"];
+}
+
+message ConnectMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DisconnectMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message PingMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message SetMCPClientRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  MCPClientOptions client = 2 [json_name = "client"];
+}
+
+message SyncMCPServerRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message SyncMCPServerReply {
+  SyncResult result = 1 [json_name = "result"];
+}
+
+message SyncAllMCPServersRequest {}
+
+message SyncAllMCPServersReply {
+  repeated SyncResult results = 1 [json_name = "results"];
+}
+
+message ListMCPToolsRequest {
+  uint64 mcp_server_id = 1 [json_name = "mcp_server_id"];
+  string namespace = 2 [json_name = "namespace"];
+  // 按唯一名/工具名/描述模糊搜索
+  string q = 3 [json_name = "q"];
+  string enabled = 4 [json_name = "enabled"];
+  string vectorized = 5 [json_name = "vectorized"];
+  int32 limit = 6 [json_name = "limit"];
+}
+
+message ListMCPToolsReply {
+  repeated MCPTool tools = 1 [json_name = "tools"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetMCPToolRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message ToggleMCPToolRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  bool enabled = 2 [json_name = "enabled"];
+}
+
+message DeleteMCPToolRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DeleteMCPToolReply {
+  uint64 id = 1 [json_name = "id"];
+  bool deleted = 2 [json_name = "deleted"];
+}
+
+message SearchMCPToolsRequest {
+  // 自然语言查询，如「帮我查一下仓库的 issue」
+  string q = 1 [(google.api.field_behavior) = REQUIRED, json_name = "q"];
+  uint64 mcp_server_id = 2 [json_name = "mcp_server_id"];
+  string namespace = 3 [json_name = "namespace"];
+  int32 limit = 4 [json_name = "limit"];
+}
+
+message SearchMCPToolsReply {
+  repeated MCPToolHit hits = 1 [json_name = "hits"];
+}
+
+message CallMCPToolRequest {
+  uint64 id = 1 [json_name = "id"];
+  // 与 id 二选一
+  string unique_name = 2 [json_name = "unique_name"];
+  // 参数 JSON 文本，如 {"owner":"octocat"}
+  string arguments = 3 [json_name = "arguments"];
+}
+
+message CallMCPToolReply {
+  bool is_error = 1 [json_name = "is_error"];
+  repeated MCPContent content = 2 [json_name = "content"];
+  // structuredContent 原文
+  string structured = 3 [json_name = "structured"];
+  int64 elapsed_ms = 4 [json_name = "elapsed_ms"];
+}
+
+// MCPService MCP 服务与工具管理面。
+service MCPService {
+  // GetMCPStats 规模统计。
+  rpc GetMCPStats(GetMCPStatsRequest) returns (MCPStats) {
+    option (google.api.http) = {
+      get: "/api/mcp/stats"
+    };
+  }
+
+  // ListMCPNamespaces 命名空间清单（过滤下拉用）。
+  rpc ListMCPNamespaces(ListMCPNamespacesRequest) returns (ListMCPNamespacesReply) {
+    option (google.api.http) = {
+      get: "/api/mcp/namespaces"
+    };
+  }
+
+  // ListMCPServers 服务列表（含运行状态）。
+  rpc ListMCPServers(ListMCPServersRequest) returns (ListMCPServersReply) {
+    option (google.api.http) = {
+      get: "/api/mcp/servers"
+    };
+  }
+
+  // CreateMCPServer 新增服务。
+  rpc CreateMCPServer(CreateMCPServerRequest) returns (MCPServer) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers"
+      body: "*"
+    };
+  }
+
+  // SyncAllMCPServers 同步全部启用服务的工具（声明在 {id} 之前）。
+  rpc SyncAllMCPServers(SyncAllMCPServersRequest) returns (SyncAllMCPServersReply) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/sync"
+    };
+  }
+
+  // GetMCPServer 服务详情（含工具明细）。
+  rpc GetMCPServer(GetMCPServerRequest) returns (MCPServer) {
+    option (google.api.http) = {
+      get: "/api/mcp/servers/{id}"
+    };
+  }
+
+  // UpdateMCPServer 更新服务配置。
+  rpc UpdateMCPServer(UpdateMCPServerRequest) returns (MCPServer) {
+    option (google.api.http) = {
+      put: "/api/mcp/servers/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteMCPServer 删除服务（连带工具、向量、缓存）。
+  rpc DeleteMCPServer(DeleteMCPServerRequest) returns (DeleteMCPServerReply) {
+    option (google.api.http) = {
+      delete: "/api/mcp/servers/{id}"
+    };
+  }
+
+  // ToggleMCPServer 启停服务。
+  rpc ToggleMCPServer(ToggleMCPServerRequest) returns (MCPServer) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/{id}/toggle"
+      body: "*"
+    };
+  }
+
+  // ConnectMCPServer 建立连接（http 模式使用运行时注入的 client）。
+  rpc ConnectMCPServer(ConnectMCPServerRequest) returns (MCPStatus) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/{id}/connect"
+    };
+  }
+
+  // DisconnectMCPServer 断开连接。
+  rpc DisconnectMCPServer(DisconnectMCPServerRequest) returns (MCPStatus) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/{id}/disconnect"
+    };
+  }
+
+  // PingMCPServer 探活（未连接时先连接）。
+  rpc PingMCPServer(PingMCPServerRequest) returns (MCPStatus) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/{id}/ping"
+    };
+  }
+
+  // SyncMCPServer 同步工具清单：MySQL → Embedding → Milvus → Redis。
+  rpc SyncMCPServer(SyncMCPServerRequest) returns (SyncMCPServerReply) {
+    option (google.api.http) = {
+      post: "/api/mcp/servers/{id}/sync"
+    };
+  }
+
+  // SetMCPClient 运行时替换 http.Client 参数并重连（不落库）。
+  rpc SetMCPClient(SetMCPClientRequest) returns (MCPStatus) {
+    option (google.api.http) = {
+      put: "/api/mcp/servers/{id}/client"
+      body: "*"
+    };
+  }
+
+  // ListMCPTools 工具列表。
+  rpc ListMCPTools(ListMCPToolsRequest) returns (ListMCPToolsReply) {
+    option (google.api.http) = {
+      get: "/api/mcp/tools"
+    };
+  }
+
+  // SearchMCPTools 工具语义召回（声明在 {id} 之前）。
+  rpc SearchMCPTools(SearchMCPToolsRequest) returns (SearchMCPToolsReply) {
+    option (google.api.http) = {
+      get: "/api/mcp/tools/search"
+    };
+  }
+
+  // CallMCPToolByName 按唯一名调用工具（声明在 {id} 之前）。
+  rpc CallMCPToolByName(CallMCPToolRequest) returns (CallMCPToolReply) {
+    option (google.api.http) = {
+      post: "/api/mcp/tools/call"
+      body: "*"
+    };
+  }
+
+  // GetMCPTool 工具详情。
+  rpc GetMCPTool(GetMCPToolRequest) returns (MCPTool) {
+    option (google.api.http) = {
+      get: "/api/mcp/tools/{id}"
+    };
+  }
+
+  // ToggleMCPTool 启停工具。
+  rpc ToggleMCPTool(ToggleMCPToolRequest) returns (MCPTool) {
+    option (google.api.http) = {
+      post: "/api/mcp/tools/{id}/toggle"
+      body: "*"
+    };
+  }
+
+  // DeleteMCPTool 删除工具。
+  rpc DeleteMCPTool(DeleteMCPToolRequest) returns (DeleteMCPToolReply) {
+    option (google.api.http) = {
+      delete: "/api/mcp/tools/{id}"
+    };
+  }
+
+  // CallMCPTool 调用工具。
+  rpc CallMCPTool(CallMCPToolRequest) returns (CallMCPToolReply) {
+    option (google.api.http) = {
+      post: "/api/mcp/tools/{id}/call"
+      body: "*"
+    };
+  }
+}

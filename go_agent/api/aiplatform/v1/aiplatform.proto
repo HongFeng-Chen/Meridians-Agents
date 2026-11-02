@@ -1,0 +1,263 @@
+// Package aiplatform.v1 定义外部 AI 平台接入域的对外契约。
+//
+// 对应 internal/biz/aiplatform：把「千问 / 百度智能云 / 自建 MCP 广场」这类平台
+// 登记成数据源，从平台目录搜索 MCP 服务并一键接入成本地 MCP 服务；
+// 目录不可用时可按 mcpCode 直接接入（只依赖路径模板）。
+//
+// 千问（阿里云百炼）形态：
+//
+//	Streamable HTTP  https://dashscope.aliyuncs.com/api/v1/mcps/{code}/mcp
+//	SSE              https://dashscope.aliyuncs.com/api/v1/mcps/{code}/sse
+//	鉴权             Authorization: Bearer $DASHSCOPE_API_KEY
+//
+// API Key 只进不出：读取接口只返回 has_key。
+syntax = "proto3";
+
+package aiplatform.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/aiplatform/v1;v1";
+
+// Platform 外部 AI 平台。
+message Platform {
+  int64 id = 1 [json_name = "id"];
+  // 唯一标识（小写），如 qwen
+  string name = 2 [json_name = "name"];
+  // qwen | bailian | generic
+  string kind = 3 [json_name = "kind"];
+  string base_url = 4 [json_name = "base_url"];
+  // 是否已配置 API Key
+  bool has_key = 5 [json_name = "has_key"];
+  // bearer | header | none
+  string auth_scheme = 6 [json_name = "auth_scheme"];
+  // auth_scheme=header 时的头名
+  string auth_header = 7 [json_name = "auth_header"];
+  // 额外请求头（除鉴权头）
+  map<string, string> headers = 8 [json_name = "headers"];
+  // MCP 目录接口路径；为空表示平台不提供目录
+  string catalog_path = 9 [json_name = "catalog_path"];
+  // 接入地址模板，{code} 会替换为 mcpCode
+  string streamable_path = 10 [json_name = "streamable_path"];
+  string sse_path = 11 [json_name = "sse_path"];
+  // 非空时保存平台会幂等登记同名技能市场
+  string skill_base_url = 12 [json_name = "skill_base_url"];
+  // 已登记的技能市场名
+  string skill_hub = 13 [json_name = "skill_hub"];
+  string description = 14 [json_name = "description"];
+  bool enabled = 15 [json_name = "enabled"];
+  bool is_default = 16 [json_name = "is_default"];
+  string created_at = 17 [json_name = "created_at"];
+  string updated_at = 18 [json_name = "updated_at"];
+}
+
+// RemoteMCP 平台目录里的 MCP 服务。
+message RemoteMCP {
+  // mcpCode，接入地址模板里的 {code}
+  string code = 1 [json_name = "code"];
+  string name = 2 [json_name = "name"];
+  string description = 3 [json_name = "description"];
+  // 所属平台
+  string provider = 4 [json_name = "provider"];
+  // 建议传输：http | sse（导入统一走 http）
+  string transport = 5 [json_name = "transport"];
+  // 解析后的接入地址
+  string endpoint = 6 [json_name = "endpoint"];
+  int32 tool_count = 7 [json_name = "tool_count"];
+  repeated string tags = 8 [json_name = "tags"];
+  // 本地是否已接入
+  bool installed = 9 [json_name = "installed"];
+  // 接入后的本地服务名
+  string server_name = 10 [json_name = "server_name"];
+}
+
+// PlatformReply 平台操作结果。
+message PlatformReply {
+  Platform platform = 1 [json_name = "platform"];
+  // 非空表示平台已保存但技能市场登记失败（不阻断）
+  string warning = 2 [json_name = "warning"];
+}
+
+// ImportResult 接入结果。
+message ImportResult {
+  int64 mcp_server_id = 1 [json_name = "mcp_server_id"];
+  string server_name = 2 [json_name = "server_name"];
+  string namespace = 3 [json_name = "namespace"];
+  string endpoint = 4 [json_name = "endpoint"];
+  int32 tool_count = 5 [json_name = "tool_count"];
+  // 本地已有同名服务：复用并重新同步
+  bool reused = 6 [json_name = "reused"];
+  // 部分成功/降级提示
+  string message = 7 [json_name = "message"];
+}
+
+// TestResult 平台连通性测试结果。
+message TestResult {
+  // 能不能用这个平台拉服务（目录可用，或接入模板可用）
+  bool ok = 1 [json_name = "ok"];
+  string message = 2 [json_name = "message"];
+  int64 latency_ms = 3 [json_name = "latency_ms"];
+  bool catalog_ok = 4 [json_name = "catalog_ok"];
+  int32 sample_count = 5 [json_name = "sample_count"];
+  bool auth_configured = 6 [json_name = "auth_configured"];
+}
+
+message ListPlatformsRequest {
+  string q = 1 [json_name = "q"];
+  // 1/0 或 true/false；为空表示不过滤
+  string enabled = 2 [json_name = "enabled"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message ListPlatformsReply {
+  repeated Platform platforms = 1 [json_name = "platforms"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message CreatePlatformRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  // qwen | bailian | generic；省略时按 name 推断（含 qwen / bailian 走对应预设，否则 generic）
+  string kind = 2 [json_name = "kind"];
+  string base_url = 3 [json_name = "base_url"];
+  // 首次写入必填；更新时留空表示不改
+  string api_key = 4 [json_name = "api_key"];
+  string auth_scheme = 5 [json_name = "auth_scheme"];
+  string auth_header = 6 [json_name = "auth_header"];
+  map<string, string> headers = 7 [json_name = "headers"];
+  string catalog_path = 8 [json_name = "catalog_path"];
+  string streamable_path = 9 [json_name = "streamable_path"];
+  string sse_path = 10 [json_name = "sse_path"];
+  string skill_base_url = 11 [json_name = "skill_base_url"];
+  string description = 12 [json_name = "description"];
+  optional bool enabled = 13 [json_name = "enabled"];
+  optional bool is_default = 14 [json_name = "is_default"];
+}
+
+message UpdatePlatformRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  optional string kind = 2 [json_name = "kind"];
+  optional string base_url = 3 [json_name = "base_url"];
+  // 留空表示不改（避免前端回显脱敏值时把 key 清掉）
+  optional string api_key = 4 [json_name = "api_key"];
+  optional string auth_scheme = 5 [json_name = "auth_scheme"];
+  optional string auth_header = 6 [json_name = "auth_header"];
+  map<string, string> headers = 7 [json_name = "headers"];
+  optional string catalog_path = 8 [json_name = "catalog_path"];
+  optional string streamable_path = 9 [json_name = "streamable_path"];
+  optional string sse_path = 10 [json_name = "sse_path"];
+  optional string skill_base_url = 11 [json_name = "skill_base_url"];
+  optional string description = 12 [json_name = "description"];
+  optional bool enabled = 13 [json_name = "enabled"];
+  optional bool is_default = 14 [json_name = "is_default"];
+}
+
+message DeletePlatformRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message DeletePlatformReply {
+  string name = 1 [json_name = "name"];
+  bool deleted = 2 [json_name = "deleted"];
+}
+
+message SetDefaultPlatformRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message TestPlatformRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message SearchMCPRequest {
+  // 平台名；为空取默认平台
+  string platform = 1 [json_name = "platform"];
+  string keyword = 2 [json_name = "keyword"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message SearchMCPReply {
+  repeated RemoteMCP items = 1 [json_name = "items"];
+  int32 total = 2 [json_name = "total"];
+  // 目录不可用时的替代提示
+  string hint = 3 [json_name = "hint"];
+}
+
+message ImportMCPRequest {
+  string platform = 1 [json_name = "platform"];
+  string code = 2 [(google.api.field_behavior) = REQUIRED, json_name = "code"];
+  // 本地服务名，默认 <platform>-<code>
+  string name = 3 [json_name = "name"];
+  // 命名空间，默认取平台名（工具唯一名即 <namespace>__<tool>）
+  string namespace = 4 [json_name = "namespace"];
+  // http（默认）/ sse（本地只支持 http，会自动降级并提示）
+  string transport = 5 [json_name = "transport"];
+  string description = 6 [json_name = "description"];
+  optional bool enabled = 7 [json_name = "enabled"];
+  optional bool sync_tools = 8 [json_name = "sync_tools"];
+}
+
+// AIPlatformService 外部 AI 平台接入（千问 / 百炼 MCP 广场）。
+//
+// 路由顺序说明：集合接口 /platforms 必须声明在单体 /platforms/{name} 之前，
+// gorilla/mux 按注册顺序匹配；contract_test.go 有守卫。
+service AIPlatformService {
+  // ListPlatforms 平台列表。
+  rpc ListPlatforms(ListPlatformsRequest) returns (ListPlatformsReply) {
+    option (google.api.http) = {
+      get: "/api/aiplatform/platforms"
+    };
+  }
+
+  // CreatePlatform 新增平台（千问只需 name=qwen + api_key，其余走默认）。
+  rpc CreatePlatform(CreatePlatformRequest) returns (PlatformReply) {
+    option (google.api.http) = {
+      post: "/api/aiplatform/platforms"
+      body: "*"
+    };
+  }
+
+  // TestPlatform 连通性测试：目录可用或接入模板可用即视为可用。
+  rpc TestPlatform(TestPlatformRequest) returns (TestResult) {
+    option (google.api.http) = {
+      post: "/api/aiplatform/platforms/{name}/test"
+    };
+  }
+
+  // SetDefaultPlatform 设为默认平台。
+  rpc SetDefaultPlatform(SetDefaultPlatformRequest) returns (PlatformReply) {
+    option (google.api.http) = {
+      post: "/api/aiplatform/platforms/{name}/default"
+    };
+  }
+
+  // UpdatePlatform 修改平台（未传字段不改；api_key 留空不改）。
+  rpc UpdatePlatform(UpdatePlatformRequest) returns (PlatformReply) {
+    option (google.api.http) = {
+      patch: "/api/aiplatform/platforms/{name}"
+      body: "*"
+    };
+  }
+
+  // DeletePlatform 删除平台（不影响已接入的 MCP 服务）。
+  rpc DeletePlatform(DeletePlatformRequest) returns (DeletePlatformReply) {
+    option (google.api.http) = {
+      delete: "/api/aiplatform/platforms/{name}"
+    };
+  }
+
+  // SearchMCP 从平台目录搜索 MCP 服务。
+  rpc SearchMCP(SearchMCPRequest) returns (SearchMCPReply) {
+    option (google.api.http) = {
+      get: "/api/aiplatform/mcps"
+    };
+  }
+
+  // ImportMCP 把平台服务接入成本地 MCP 服务并同步工具。
+  rpc ImportMCP(ImportMCPRequest) returns (ImportResult) {
+    option (google.api.http) = {
+      post: "/api/aiplatform/mcps"
+      body: "*"
+    };
+  }
+}

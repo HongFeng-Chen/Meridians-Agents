@@ -1,0 +1,346 @@
+package service
+
+// AgentFactoryService：Agent 低代码工厂域的对外实现（HTTP/gRPC 双协议共用）。
+
+import (
+	"context"
+
+	v1 "go_agent/api/agentfactory/v1"
+	"go_agent/internal/biz/agentfactory"
+)
+
+type AgentFactoryService struct {
+	v1.UnimplementedAgentFactoryServiceServer
+
+	uc *agentfactory.UseCase
+}
+
+var (
+	_ v1.AgentFactoryServiceHTTPServer = (*AgentFactoryService)(nil)
+	_ v1.AgentFactoryServiceServer     = (*AgentFactoryService)(nil)
+)
+
+func NewAgentFactoryService(uc *agentfactory.UseCase) *AgentFactoryService {
+	return &AgentFactoryService{uc: uc}
+}
+
+// ———— 统计与能力 ————
+
+func (s *AgentFactoryService) GetAgentFactoryStats(ctx context.Context, _ *v1.GetAgentFactoryStatsRequest) (*v1.AgentFactoryStats, error) {
+	st, err := s.uc.Stats(ctx)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return &v1.AgentFactoryStats{
+		Agents:        st.Agents,
+		EnabledAgents: st.EnabledAgents,
+		LlmBorn:       st.LLMBorn,
+		Sandboxed:     st.Sandboxed,
+		Vectorized:    st.Vectorized,
+		Tasks:         st.Tasks,
+		Pending:       st.Pending,
+		Running:       st.Running,
+		Succeeded:     st.Succeeded,
+		Failed:        st.Failed,
+		Canceled:      st.Canceled,
+		Capabilities:  st.Capabilities,
+	}, nil
+}
+
+func (s *AgentFactoryService) ListCapabilities(ctx context.Context, _ *v1.ListCapabilitiesRequest) (*v1.ListCapabilitiesReply, error) {
+	caps, err := s.uc.Capabilities(ctx)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	out := make([]*v1.CapabilitySchema, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, &v1.CapabilitySchema{
+			Name:        c.Name,
+			Type:        c.Type,
+			Description: c.Description,
+			ArgsExample: c.ArgsExample,
+			Disabled:    c.Disabled,
+		})
+	}
+	return &v1.ListCapabilitiesReply{Capabilities: out}, nil
+}
+
+// ———— Agent 定义 ————
+
+func (s *AgentFactoryService) ListAgentDefs(ctx context.Context, req *v1.ListAgentDefsRequest) (*v1.ListAgentDefsReply, error) {
+	f := agentfactory.DefFilter{
+		Keyword: req.GetKeyword(),
+		Source:  req.GetSource(),
+		Limit:   int(req.GetLimit()),
+	}
+	f.Enabled = parseBoolFilter(req.GetEnabled())
+	defs, err := s.uc.ListDefs(ctx, f)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	out := make([]*v1.AgentDef, 0, len(defs))
+	for i := range defs {
+		out = append(out, toAgentDef(&defs[i]))
+	}
+	return &v1.ListAgentDefsReply{Agents: out, Total: int64(len(out))}, nil
+}
+
+func (s *AgentFactoryService) CreateAgentDef(ctx context.Context, req *v1.AgentInput) (*v1.AgentDef, error) {
+	def, err := s.uc.CreateDef(ctx, agentInputFromProto(req))
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentDef(def), nil
+}
+
+func (s *AgentFactoryService) CreateAgentByLLM(ctx context.Context, req *v1.CreateAgentByLLMRequest) (*v1.CreateAgentByLLMReply, error) {
+	def, raw, err := s.uc.Factory().CreateByLLM(ctx, req.GetRequirement())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return &v1.CreateAgentByLLMReply{Agent: toAgentDef(def), RawOutput: raw}, nil
+}
+
+func (s *AgentFactoryService) SearchAgentDefs(ctx context.Context, req *v1.SearchAgentDefsRequest) (*v1.SearchAgentDefsReply, error) {
+	hits, err := s.uc.SearchDefs(ctx, req.GetQuery(), int(req.GetLimit()))
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	out := make([]*v1.AgentDefHit, 0, len(hits))
+	for i := range hits {
+		out = append(out, &v1.AgentDefHit{
+			Agent:  toAgentDef(&hits[i].Agent),
+			Score:  hits[i].Score,
+			Source: hits[i].Source,
+		})
+	}
+	return &v1.SearchAgentDefsReply{Hits: out}, nil
+}
+
+func (s *AgentFactoryService) SyncAgentVectors(ctx context.Context, _ *v1.SyncAgentVectorsRequest) (*v1.SyncAgentVectorsReply, error) {
+	n, err := s.uc.SyncAllVectors(ctx)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return &v1.SyncAgentVectorsReply{Synced: int32(n)}, nil
+}
+
+func (s *AgentFactoryService) GetAgentDef(ctx context.Context, req *v1.GetAgentDefRequest) (*v1.AgentDef, error) {
+	def, err := s.uc.GetDef(ctx, req.GetId())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentDef(def), nil
+}
+
+func (s *AgentFactoryService) UpdateAgentDef(ctx context.Context, req *v1.UpdateAgentDefRequest) (*v1.AgentDef, error) {
+	if req.GetInput() == nil {
+		return nil, badRequest("input 必填")
+	}
+	def, err := s.uc.UpdateDef(ctx, req.GetId(), agentInputFromProto(req.GetInput()))
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentDef(def), nil
+}
+
+func (s *AgentFactoryService) DeleteAgentDef(ctx context.Context, req *v1.DeleteAgentDefRequest) (*v1.DeleteAgentDefReply, error) {
+	if err := s.uc.DeleteDef(ctx, req.GetId()); err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return &v1.DeleteAgentDefReply{Id: req.GetId()}, nil
+}
+
+func (s *AgentFactoryService) ToggleAgentDef(ctx context.Context, req *v1.ToggleAgentDefRequest) (*v1.AgentDef, error) {
+	def, err := s.uc.ToggleDef(ctx, req.GetId(), req.GetEnabled())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentDef(def), nil
+}
+
+// ———— 任务 ————
+
+func (s *AgentFactoryService) SubmitTask(ctx context.Context, req *v1.SubmitTaskRequest) (*v1.AgentTask, error) {
+	task, err := s.uc.SubmitTask(ctx, agentfactory.TaskInput{
+		AgentDefID: req.GetAgentDefId(),
+		AgentKey:   req.GetAgentKey(),
+		Input:      req.GetInput(),
+	})
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentTask(task), nil
+}
+
+func (s *AgentFactoryService) GetTaskStats(ctx context.Context, _ *v1.GetTaskStatsRequest) (*v1.TaskStats, error) {
+	st, err := s.uc.Stats(ctx)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return &v1.TaskStats{
+		Tasks:     st.Tasks,
+		Pending:   st.Pending,
+		Running:   st.Running,
+		Succeeded: st.Succeeded,
+		Failed:    st.Failed,
+		Canceled:  st.Canceled,
+	}, nil
+}
+
+func (s *AgentFactoryService) ListTasks(ctx context.Context, req *v1.ListTasksRequest) (*v1.ListTasksReply, error) {
+	tasks, err := s.uc.ListTasks(ctx, agentfactory.TaskFilter{
+		AgentDefID:   req.GetAgentDefId(),
+		AgentKey:     req.GetAgentKey(),
+		Status:       req.GetStatus(),
+		Keyword:      req.GetKeyword(),
+		ParentTaskID: req.GetParentTaskId(),
+		RootOnly:     req.GetRootOnly(),
+		ConvID:       req.GetConvId(),
+		Limit:        int(req.GetLimit()),
+	})
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	out := make([]*v1.AgentTask, 0, len(tasks))
+	for i := range tasks {
+		out = append(out, toAgentTask(&tasks[i]))
+	}
+	return &v1.ListTasksReply{Tasks: out, Total: int64(len(out))}, nil
+}
+
+func (s *AgentFactoryService) GetTask(ctx context.Context, req *v1.GetTaskRequest) (*v1.AgentTask, error) {
+	t, err := s.uc.GetTask(ctx, req.GetId())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentTask(t), nil
+}
+
+func (s *AgentFactoryService) CancelTask(ctx context.Context, req *v1.CancelTaskRequest) (*v1.AgentTask, error) {
+	t, err := s.uc.CancelTask(ctx, req.GetId())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentTask(t), nil
+}
+
+func (s *AgentFactoryService) RetryTask(ctx context.Context, req *v1.RetryTaskRequest) (*v1.AgentTask, error) {
+	t, err := s.uc.RetryTask(ctx, req.GetId())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentTask(t), nil
+}
+
+func (s *AgentFactoryService) ListTaskEvents(ctx context.Context, req *v1.ListTaskEventsRequest) (*v1.ListTaskEventsReply, error) {
+	events, err := s.uc.TaskEvents(ctx, req.GetId(), int(req.GetLimit()))
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	out := make([]*v1.TaskEvent, 0, len(events))
+	for _, e := range events {
+		out = append(out, &v1.TaskEvent{
+			Id:        e.ID,
+			TaskId:    e.TaskID,
+			Turn:      int32(e.Turn),
+			Type:      e.Type,
+			Payload:   e.Payload,
+			CreatedAt: formatTS(e.CreatedAt),
+		})
+	}
+	return &v1.ListTaskEventsReply{Events: out}, nil
+}
+
+// ———— DO ↔ 消息转换 ————
+
+func toAgentDef(d *agentfactory.AgentDef) *v1.AgentDef {
+	if d == nil {
+		return nil
+	}
+	return &v1.AgentDef{
+		Id:               d.ID,
+		AgentKey:         d.AgentKey,
+		Name:             d.Name,
+		Description:      d.Description,
+		System:           d.System,
+		LlmModel:         d.LLMModel,
+		LlmSource:        d.LLMSource,
+		GraphType:        d.GraphType,
+		Capabilities:     d.Capabilities,
+		Middlewares:      d.Middlewares,
+		MaxTurns:         int32(d.MaxTurns),
+		Sandbox:          d.Sandbox,
+		Source:           d.Source,
+		Version:          int32(d.Version),
+		Enabled:          d.Enabled,
+		Vectorized:       d.Vectorized,
+		CreatedAt:        formatTS(d.CreatedAt),
+		UpdatedAt:        formatTS(d.UpdatedAt),
+		Role:             d.Role,
+		Orchestration:    d.Orchestration,
+		Members:          d.Members,
+		SupervisorKey:    d.SupervisorKey,
+		SupervisionScope: d.SupervisionScope,
+		RiskAgentKey:     d.RiskAgentKey,
+		AutoRun:          d.AutoRun,
+		CronExpr:         d.CronExpr,
+		CronInput:        d.CronInput,
+		NextRunAt:        formatTS(d.NextRunAt),
+		LastRunAt:        formatTS(d.LastRunAt),
+		Flow:             d.Flow,
+	}
+}
+
+func agentInputFromProto(in *v1.AgentInput) agentfactory.AgentInput {
+	if in == nil {
+		return agentfactory.AgentInput{}
+	}
+	return agentfactory.AgentInput{
+		AgentKey:         in.GetAgentKey(),
+		Name:             in.GetName(),
+		Description:      in.GetDescription(),
+		System:           in.GetSystem(),
+		LLMModel:         in.GetLlmModel(),
+		LLMSource:        in.GetLlmSource(),
+		GraphType:        in.GetGraphType(),
+		Capabilities:     in.GetCapabilities(),
+		Middlewares:      in.GetMiddlewares(),
+		MaxTurns:         int(in.GetMaxTurns()),
+		Sandbox:          in.GetSandbox(),
+		Role:             in.GetRole(),
+		Orchestration:    in.GetOrchestration(),
+		Members:          in.GetMembers(),
+		SupervisorKey:    in.GetSupervisorKey(),
+		SupervisionScope: in.GetSupervisionScope(),
+		RiskAgentKey:     in.GetRiskAgentKey(),
+		AutoRun:          in.GetAutoRun(),
+		CronExpr:         in.GetCronExpr(),
+		CronInput:        in.GetCronInput(),
+		Flow:             in.GetFlow(),
+	}
+}
+
+func toAgentTask(t *agentfactory.Task) *v1.AgentTask {
+	if t == nil {
+		return nil
+	}
+	return &v1.AgentTask{
+		Id:           t.ID,
+		AgentDefId:   t.AgentDefID,
+		AgentKey:     t.AgentKey,
+		Title:        t.Title,
+		Input:        t.Input,
+		Status:       t.Status,
+		Progress:     int32(t.Progress),
+		Result:       t.Result,
+		ErrorMsg:     t.ErrorMsg,
+		ParentTaskId: t.ParentTaskID,
+		Depth:        int32(t.Depth),
+		CreatedAt:    formatTS(t.CreatedAt),
+		StartedAt:    formatTS(t.StartedAt),
+		FinishedAt:   formatTS(t.FinishedAt),
+		Archived:     t.Archived,
+		ConvId:       t.ConvID,
+	}
+}

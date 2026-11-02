@@ -1,0 +1,23 @@
+version: v2
+inputs:
+  - directory: api
+plugins:
+  # 消息与枚举：protoc-gen-go v1.36.x
+  - local: protoc-gen-go
+    out: api
+    opt: paths=source_relative
+  # gRPC 桩：protoc-gen-go-grpc v1.6.x（kratos grpc.Server 内嵌 grpc-go Server，可直接注册）
+  - local: protoc-gen-go-grpc
+    out: api
+    opt: paths=source_relative
+  # Kratos v3 HTTP 服务端与客户端：按 google.api.http 注解生成路由
+  - local: protoc-gen-go-http
+    out: api
+    opt: paths=source_relative
+  # OpenAPI 3：所有 service 合并输出为 api/openapi.yaml，前端 SDK 以它为输入
+  - local: protoc-gen-openapi
+    out: api
+    strategy: all
+    opt:
+      - fq_schema_naming=true
+      - default_response=false

@@ -1,0 +1,379 @@
+// Package llm.v1 定义大模型数据源管理域的对外契约。
+//
+// 对应 internal/biz/llm：数据源配置以 MySQL 为准，支持多数据源并存、
+// 按场景路由、失败自动降级，以及在线增删改查与连通性测试。
+// 注意：api_key 只进不出——读取接口仅返回 has_key 与脱敏后的 api_key 字段，
+// 该字段在 Go 侧带 json:"-"，因此本契约不声明输出字段。
+syntax = "proto3";
+
+package llm.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/llm/v1;v1";
+
+// Provider LLM 数据源。
+message Provider {
+  uint64 id = 1 [json_name = "id"];
+  // 数据源名称（唯一标识）
+  string name = 2 [json_name = "name"];
+  // openai | deepseek | ollama | qwen | siliconflow | moonshot | custom
+  string kind = 3 [json_name = "kind"];
+  string base_url = 4 [json_name = "base_url"];
+  // 是否已配置密钥
+  bool has_key = 5 [json_name = "has_key"];
+  repeated string models = 6 [json_name = "models"];
+  string default_model = 7 [json_name = "default_model"];
+  double temperature = 8 [json_name = "temperature"];
+  int32 max_tokens = 9 [json_name = "max_tokens"];
+  int32 timeout_seconds = 10 [json_name = "timeout_seconds"];
+  bool enabled = 11 [json_name = "enabled"];
+  bool is_default = 12 [json_name = "is_default"];
+  // 数值越大优先级越高
+  int32 priority = 13 [json_name = "priority"];
+  // general | rag | graph | extract | memory，空表示通用
+  repeated string scenes = 14 [json_name = "scenes"];
+  string description = 15 [json_name = "description"];
+  string created_at = 16 [json_name = "created_at"];
+  string updated_at = 17 [json_name = "updated_at"];
+}
+
+// LLMStats 数据源规模。
+message LLMStats {
+  int64 providers = 1 [json_name = "providers"];
+  int64 enabled = 2 [json_name = "enabled"];
+  // 当前默认数据源名
+  string default = 3 [json_name = "default"];
+}
+
+// CurrentLLM 当前生效的数据源与模型（前端状态栏用）。
+message CurrentLLM {
+  string model = 1 [json_name = "model"];
+  string default = 2 [json_name = "default"];
+  int64 providers = 3 [json_name = "providers"];
+  int64 enabled = 4 [json_name = "enabled"];
+}
+
+// ScenesReply 内置场景清单。
+message ScenesReply {
+  repeated string scenes = 1 [json_name = "scenes"];
+}
+
+// TestResult 连通性测试结果。
+message TestResult {
+  bool ok = 1 [json_name = "ok"];
+  string provider = 2 [json_name = "provider"];
+  string model = 3 [json_name = "model"];
+  int64 latency_ms = 4 [json_name = "latency_ms"];
+  string reply = 5 [json_name = "reply"];
+  string error = 6 [json_name = "error"];
+}
+
+message ChatRequest {
+  // 指定数据源，留空按场景解析
+  string provider = 1 [json_name = "provider"];
+  // general | rag | graph | extract | memory
+  string scene = 2 [json_name = "scene"];
+  string system = 3 [json_name = "system"];
+  string user = 4 [(google.api.field_behavior) = REQUIRED, json_name = "user"];
+  // 0 表示用数据源默认值
+  double temperature = 5 [json_name = "temperature"];
+}
+
+message ChatReply {
+  string reply = 1 [json_name = "reply"];
+}
+
+message ListProvidersRequest {
+  // true 时包含已停用的数据源
+  bool all = 1 [json_name = "all"];
+}
+
+message ListProvidersReply {
+  repeated Provider providers = 1 [json_name = "providers"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetProviderRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message CreateProviderRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string kind = 2 [json_name = "kind"];
+  string base_url = 3 [(google.api.field_behavior) = REQUIRED, json_name = "base_url"];
+  string api_key = 4 [json_name = "api_key"];
+  repeated string models = 5 [json_name = "models"];
+  string default_model = 6 [(google.api.field_behavior) = REQUIRED, json_name = "default_model"];
+  double temperature = 7 [json_name = "temperature"];
+  int32 max_tokens = 8 [json_name = "max_tokens"];
+  int32 timeout_seconds = 9 [json_name = "timeout_seconds"];
+  // 缺省 true
+  optional bool enabled = 10 [json_name = "enabled"];
+  bool is_default = 11 [json_name = "is_default"];
+  int32 priority = 12 [json_name = "priority"];
+  repeated string scenes = 13 [json_name = "scenes"];
+  string description = 14 [json_name = "description"];
+}
+
+// UpdateProviderRequest 指针语义：字段缺省表示不修改。
+message UpdateProviderRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  optional string kind = 2 [json_name = "kind"];
+  optional string base_url = 3 [json_name = "base_url"];
+  optional string api_key = 4 [json_name = "api_key"];
+  repeated string models = 5 [json_name = "models"];
+  optional string default_model = 6 [json_name = "default_model"];
+  optional double temperature = 7 [json_name = "temperature"];
+  optional int32 max_tokens = 8 [json_name = "max_tokens"];
+  optional int32 timeout_seconds = 9 [json_name = "timeout_seconds"];
+  optional bool enabled = 10 [json_name = "enabled"];
+  optional bool is_default = 11 [json_name = "is_default"];
+  optional int32 priority = 12 [json_name = "priority"];
+  repeated string scenes = 13 [json_name = "scenes"];
+  optional string description = 14 [json_name = "description"];
+}
+
+message DeleteProviderRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message DeleteProviderReply {
+  bool deleted = 1 [json_name = "deleted"];
+}
+
+message ToggleProviderRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message RemoteModelsRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message RemoteModelsReply {
+  repeated string models = 1 [json_name = "models"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetLLMStatsRequest {}
+
+message GetCurrentRequest {}
+
+// LLMService 大模型数据源管理。
+service LLMService {
+  // ListProviders 数据源列表。
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersReply) {
+    option (google.api.http) = {
+      get: "/api/llm/providers"
+    };
+  }
+
+  // GetProvider 数据源详情。
+  rpc GetProvider(GetProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      get: "/api/llm/providers/{name}"
+    };
+  }
+
+  // CreateProvider 新建数据源。
+  rpc CreateProvider(CreateProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      post: "/api/llm/providers"
+      body: "*"
+    };
+  }
+
+  // UpdateProvider 修改数据源。
+  rpc UpdateProvider(UpdateProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      patch: "/api/llm/providers/{name}"
+      body: "*"
+    };
+  }
+
+  // DeleteProvider 删除数据源（唯一启用的数据源不允许删除）。
+  rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderReply) {
+    option (google.api.http) = {
+      delete: "/api/llm/providers/{name}"
+    };
+  }
+
+  // EnableProvider 启用数据源。
+  rpc EnableProvider(ToggleProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      post: "/api/llm/providers/{name}/enable"
+    };
+  }
+
+  // DisableProvider 停用数据源。
+  rpc DisableProvider(ToggleProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      post: "/api/llm/providers/{name}/disable"
+    };
+  }
+
+  // SetDefaultProvider 设为默认数据源。
+  rpc SetDefaultProvider(ToggleProviderRequest) returns (Provider) {
+    option (google.api.http) = {
+      post: "/api/llm/providers/{name}/default"
+    };
+  }
+
+  // TestProvider 连通性测试（会真实发起一次对话）。
+  rpc TestProvider(ToggleProviderRequest) returns (TestResult) {
+    option (google.api.http) = {
+      post: "/api/llm/providers/{name}/test"
+    };
+  }
+
+  // ListRemoteModels 拉取远端 /models（不落库，供前端勾选）。
+  rpc ListRemoteModels(RemoteModelsRequest) returns (RemoteModelsReply) {
+    option (google.api.http) = {
+      get: "/api/llm/providers/{name}/models"
+    };
+  }
+
+  // GetLLMStats 数据源规模。
+  rpc GetLLMStats(GetLLMStatsRequest) returns (LLMStats) {
+    option (google.api.http) = {
+      get: "/api/llm/stats"
+    };
+  }
+
+  // GetCurrent 当前生效的数据源与模型。
+  rpc GetCurrent(GetCurrentRequest) returns (CurrentLLM) {
+    option (google.api.http) = {
+      get: "/api/llm/current"
+    };
+  }
+
+  // ListScenes 内置场景清单。
+  rpc ListScenes(GetCurrentRequest) returns (ScenesReply) {
+    option (google.api.http) = {
+      get: "/api/llm/scenes"
+    };
+  }
+
+  // Chat 调试对话（管理端手动调用）。
+  rpc Chat(ChatRequest) returns (ChatReply) {
+    option (google.api.http) = {
+      post: "/api/llm/chat"
+      body: "*"
+    };
+  }
+}
+
+// —— LLM 调用历史 ——
+
+message ListLLMCallsRequest {
+  // 关联任务 ID（0 = 不过滤）
+  uint64 task_id = 1 [json_name = "task_id"];
+  string model = 2 [json_name = "model"];
+  string provider = 3 [json_name = "provider"];
+  string purpose = 4 [json_name = "purpose"];
+  // ok / fail / 空（不过滤）
+  string status = 5 [json_name = "status"];
+  int32 limit = 6 [json_name = "limit"];
+  int32 offset = 7 [json_name = "offset"];
+  // 多模型过滤（与 model 二选一，同时给取并集）
+  repeated string models = 8 [json_name = "models"];
+  // 时间范围（RFC3339，空 = 不限）
+  string since = 9 [json_name = "since"];
+  string until = 10 [json_name = "until"];
+}
+
+message LLMCall {
+  uint64 id = 1 [json_name = "id"];
+  string provider = 2 [json_name = "provider"];
+  string model = 3 [json_name = "model"];
+  string scene = 4 [json_name = "scene"];
+  string purpose = 5 [json_name = "purpose"];
+  uint64 task_id = 6 [json_name = "task_id"];
+  string agent_key = 7 [json_name = "agent_key"];
+  double temperature = 8 [json_name = "temperature"];
+  int64 duration_ms = 9 [json_name = "duration_ms"];
+  bool ok = 10 [json_name = "ok"];
+  string error_msg = 11 [json_name = "error_msg"];
+  int32 prompt_chars = 12 [json_name = "prompt_chars"];
+  int32 reply_chars = 13 [json_name = "reply_chars"];
+  int32 prompt_tokens = 14 [json_name = "prompt_tokens"];
+  int32 completion_tokens = 15 [json_name = "completion_tokens"];
+  int32 total_tokens = 16 [json_name = "total_tokens"];
+  string created_at = 17 [json_name = "created_at"];
+  // 输入内容（system+user 拼接，截断 8000 字符）
+  string prompt_text = 18 [json_name = "prompt_text"];
+  // 输出内容（截断 8000 字符）
+  string reply_text = 19 [json_name = "reply_text"];
+}
+
+message ListLLMCallsReply {
+  repeated LLMCall calls = 1 [json_name = "calls"];
+  int64 total = 2 [json_name = "total"];
+}
+
+message GetLLMCallStatsRequest {}
+
+message LLMModelUsage {
+  string model = 1 [json_name = "model"];
+  int64 calls = 2 [json_name = "calls"];
+  int64 prompt_tokens = 3 [json_name = "prompt_tokens"];
+  int64 completion_tokens = 4 [json_name = "completion_tokens"];
+}
+
+message LLMCallStats {
+  int64 calls = 1 [json_name = "calls"];
+  int64 prompt_tokens = 2 [json_name = "prompt_tokens"];
+  int64 completion_tokens = 3 [json_name = "completion_tokens"];
+  int64 total_tokens = 4 [json_name = "total_tokens"];
+  int64 failures = 5 [json_name = "failures"];
+  repeated LLMModelUsage by_model = 6 [json_name = "by_model"];
+}
+
+service LLMCallQueryService {
+  // ListLLMCalls 调用历史（可按任务/模型/数据源/用途/状态过滤）。
+  rpc ListLLMCalls(ListLLMCallsRequest) returns (ListLLMCallsReply) {
+    option (google.api.http) = {
+      get: "/api/llm/calls"
+    };
+  }
+
+  // GetLLMCallStats 调用统计（token 总量、失败数、按模型聚合）。
+  rpc GetLLMCallStats(GetLLMCallStatsRequest) returns (LLMCallStats) {
+    option (google.api.http) = {
+      get: "/api/llm/calls/stats"
+    };
+  }
+
+  // BreakdownTokens token 用量下钻：按 agent_key / scene / purpose / model 维度聚合排行，
+  // 找出 token 大户（优化哪个 Agent / 能力一目了然）。
+  rpc BreakdownTokens(BreakdownRequest) returns (BreakdownReply) {
+    option (google.api.http) = {
+      get: "/api/llm/calls/breakdown"
+    };
+  }
+}
+
+// BreakdownRequest token 下钻请求
+message BreakdownRequest {
+  // 聚合维度：agent_key | scene | purpose | model（默认 agent_key）
+  string dim = 1 [json_name = "dim"];
+  // 只统计最近 N 天（0 = 全部）
+  int32 days = 2 [json_name = "days"];
+}
+
+// BreakdownRow 一行聚合结果（按 total_tokens 降序）
+message BreakdownRow {
+  string key = 1 [json_name = "key"];
+  int64 calls = 2 [json_name = "calls"];
+  int64 prompt_tokens = 3 [json_name = "prompt_tokens"];
+  int64 completion_tokens = 4 [json_name = "completion_tokens"];
+  int64 total_tokens = 5 [json_name = "total_tokens"];
+  int64 failures = 6 [json_name = "failures"];
+}
+
+// BreakdownReply 下钻结果
+message BreakdownReply {
+  string dim = 1 [json_name = "dim"];
+  repeated BreakdownRow rows = 2 [json_name = "rows"];
+}

@@ -1,0 +1,499 @@
+// Package memory.v1 定义记忆系统的对外契约。
+//
+// 对应 internal/biz/memory：
+//   - 短期记忆：会话消息存 Redis（List + TTL），用于多轮对话上下文；
+//   - 长期记忆：MySQL 权威存储（过期时间、checksum 去重）+ Milvus 向量召回 + 图谱召回；
+//   - 召回结果与 RAG 共用图谱集合（节点跨记忆/文档共享）。
+//
+// 注意：RecalledMemory 在原 Go 结构中是「嵌入 *LongTermMemory + score」，
+// JSON 展开为扁平对象，因此这里也定义成扁平消息，避免前端取值路径不一致。
+syntax = "proto3";
+
+package memory.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "rag/v1/rag.proto";
+
+option go_package = "go_agent/api/memory/v1;v1";
+
+// ShortMessage 一条会话消息（短期记忆）。
+message ShortMessage {
+  // user | assistant | system | tool
+  string role = 1 [json_name = "role"];
+  string content = 2 [json_name = "content"];
+  // RFC3339
+  string at = 3 [json_name = "at"];
+}
+
+// LongTermMemory 长期记忆（MySQL 权威记录）。
+message LongTermMemory {
+  string id = 1 [json_name = "id"];
+  string user_id = 2 [json_name = "user_id"];
+  // fact | preference | event | insight | task
+  string kind = 3 [json_name = "kind"];
+  string content = 4 [json_name = "content"];
+  // 1~5，数值越高越重要
+  int32 importance = 5 [json_name = "importance"];
+  repeated string tags = 6 [json_name = "tags"];
+  string source = 7 [json_name = "source"];
+  int32 entities = 8 [json_name = "entities"];
+  int32 relations = 9 [json_name = "relations"];
+  // null 表示永不过期
+  optional string expires_at = 10 [json_name = "expires_at"];
+  string created_at = 11 [json_name = "created_at"];
+  string updated_at = 12 [json_name = "updated_at"];
+  // 内容未变化，复用了已有记忆
+  bool deduped = 13 [json_name = "deduped"];
+  // 已过失效时间
+  bool expired = 14 [json_name = "expired"];
+  // 提取来源规则名（手动/规则提取时记录，空 = 手动直接写入）
+  string rule_name = 15 [json_name = "rule_name"];
+  // 被召回次数（检索历史统计）
+  int32 recall_count = 16 [json_name = "recall_count"];
+  // 最近一次被召回时间；null = 从未被召回
+  optional string last_recalled_at = 17 [json_name = "last_recalled_at"];
+}
+
+// RecalledMemory 召回的记忆 + 相关度。
+message RecalledMemory {
+  string id = 1 [json_name = "id"];
+  string user_id = 2 [json_name = "user_id"];
+  string kind = 3 [json_name = "kind"];
+  string content = 4 [json_name = "content"];
+  int32 importance = 5 [json_name = "importance"];
+  repeated string tags = 6 [json_name = "tags"];
+  string source = 7 [json_name = "source"];
+  int32 entities = 8 [json_name = "entities"];
+  int32 relations = 9 [json_name = "relations"];
+  optional string expires_at = 10 [json_name = "expires_at"];
+  string created_at = 11 [json_name = "created_at"];
+  string updated_at = 12 [json_name = "updated_at"];
+  bool deduped = 13 [json_name = "deduped"];
+  bool expired = 14 [json_name = "expired"];
+  // 提取来源规则名
+  string rule_name = 16 [json_name = "rule_name"];
+  // 被召回次数
+  int32 recall_count = 17 [json_name = "recall_count"];
+  // 最近一次被召回时间；null = 从未
+  optional string last_recalled_at = 18 [json_name = "last_recalled_at"];
+  float score = 15 [json_name = "score"];
+}
+
+// GraphContext 图谱召回上下文。
+message GraphContext {
+  repeated rag.v1.Entity entities = 1 [json_name = "entities"];
+  repeated rag.v1.Relation relations = 2 [json_name = "relations"];
+}
+
+// RecallResult 召回结果：向量召回的记忆 + 图谱子图。
+message RecallResult {
+  string query = 1 [json_name = "query"];
+  string user_id = 2 [json_name = "user_id"];
+  repeated RecalledMemory memories = 3 [json_name = "memories"];
+  GraphContext graph = 4 [json_name = "graph"];
+}
+
+// RememberResult 写入结果。
+message RememberResult {
+  LongTermMemory memory = 1 [json_name = "memory"];
+  bool deduped = 2 [json_name = "deduped"];
+  int32 entities = 3 [json_name = "entities"];
+  int32 relations = 4 [json_name = "relations"];
+  // 图谱抽取失败时的告警（记忆已落库）
+  string graph_warning = 5 [json_name = "graph_warning"];
+}
+
+// MemoryAnswer 基于记忆的回答（短期历史 + 长期召回 + LLM）。
+message MemoryAnswer {
+  string session_id = 1 [json_name = "session_id"];
+  string question = 2 [json_name = "question"];
+  string answer = 3 [json_name = "answer"];
+  RecallResult recall = 4 [json_name = "recall"];
+}
+
+// MemoryStats 规模统计。
+message MemoryStats {
+  int64 memories_total = 1 [json_name = "memories_total"];
+  int64 memories_expired = 2 [json_name = "memories_expired"];
+  int64 vector_entities = 3 [json_name = "vector_entities"];
+  int64 graph_entities = 4 [json_name = "graph_entities"];
+  int64 graph_relations = 5 [json_name = "graph_relations"];
+}
+
+// MemoryInfo 运行参数。
+message MemoryInfo {
+  string embed_model = 1 [json_name = "embed_model"];
+  int32 embed_dim = 2 [json_name = "embed_dim"];
+  // 短期记忆 TTL，Go duration 字符串
+  string short_ttl = 3 [json_name = "short_ttl"];
+  int32 recall_top_k = 4 [json_name = "recall_top_k"];
+  int32 history_lim = 5 [json_name = "history_lim"];
+  bool graph_on = 6 [json_name = "graph_on"];
+}
+
+message AppendShortRequest {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "session_id"];
+  // user | assistant | system | tool
+  string role = 2 [json_name = "role"];
+  string content = 3 [(google.api.field_behavior) = REQUIRED, json_name = "content"];
+}
+
+message AppendShortReply {
+  string session_id = 1 [json_name = "session_id"];
+  // 写入后会话内的消息条数
+  int32 messages = 2 [json_name = "messages"];
+}
+
+message ListShortRequest {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "session_id"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message ListShortReply {
+  string session_id = 1 [json_name = "session_id"];
+  repeated ShortMessage messages = 2 [json_name = "messages"];
+  int32 total = 3 [json_name = "total"];
+}
+
+message ClearShortRequest {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "session_id"];
+}
+
+message ClearShortReply {
+  string session_id = 1 [json_name = "session_id"];
+  bool cleared = 2 [json_name = "cleared"];
+}
+
+message RememberRequest {
+  // 留空自动生成
+  string id = 1 [json_name = "id"];
+  // 留空为 default
+  string user_id = 2 [json_name = "user_id"];
+  // 留空为 fact
+  string kind = 3 [json_name = "kind"];
+  string content = 4 [(google.api.field_behavior) = REQUIRED, json_name = "content"];
+  int32 importance = 5 [json_name = "importance"];
+  repeated string tags = 6 [json_name = "tags"];
+  string source = 7 [json_name = "source"];
+  // 与 ttl_days 二选一，优先级更高；RFC3339
+  string expire_at = 8 [json_name = "expire_at"];
+  // 相对过期天数
+  int32 ttl_days = 9 [json_name = "ttl_days"];
+  // 是否同时写入图谱，缺省用配置默认值
+  optional bool graph = 10 [json_name = "graph"];
+}
+
+message ListLongRequest {
+  string user_id = 1 [json_name = "user_id"];
+  // "true" 时包含已过期记忆
+  bool include_expired = 2 [json_name = "include_expired"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message ListLongReply {
+  repeated LongTermMemory memories = 1 [json_name = "memories"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetLongRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DeleteLongRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message PurgeExpiredRequest {
+  int32 limit = 1 [json_name = "limit"];
+}
+
+message PurgeExpiredReply {
+  int32 purged = 1 [json_name = "purged"];
+}
+
+message RecallRequest {
+  string query = 1 [(google.api.field_behavior) = REQUIRED, json_name = "query"];
+  string user_id = 2 [json_name = "user_id"];
+  int32 top_k = 3 [json_name = "top_k"];
+  // 缺省 true
+  optional bool with_graph = 4 [json_name = "with_graph"];
+}
+
+message AnswerRequest {
+  // 留空为 default
+  string session_id = 1 [json_name = "session_id"];
+  string user_id = 2 [json_name = "user_id"];
+  string question = 3 [(google.api.field_behavior) = REQUIRED, json_name = "question"];
+}
+
+message GetMemoryStatsRequest {}
+
+message GetMemoryInfoRequest {}
+
+// ---------- 记忆规则（参考阿里云百炼：事实 / 用户画像 / 技能 + 自定义） ----------
+
+// MemoryRule 记忆提取规则。
+// 内置三种（builtin=true）：事实记忆 / 用户画像 / 技能记忆；用户可新建 custom 规则。
+message MemoryRule {
+  uint64 id = 1 [json_name = "id"];
+  string name = 2 [json_name = "name"];
+  // fact | profile | skill | custom
+  string type = 3 [json_name = "type"];
+  // 提取出的记忆类型（LongTermMemory.kind）
+  string kind = 4 [json_name = "kind"];
+  // 提取指令：LLM 按此从会话中筛选该记住的内容
+  string instruction = 5 [json_name = "instruction"];
+  bool builtin = 6 [json_name = "builtin"];
+  bool enabled = 7 [json_name = "enabled"];
+  string created_at = 8 [json_name = "created_at"];
+  string updated_at = 9 [json_name = "updated_at"];
+}
+
+message ListMemoryRulesRequest {}
+
+message ListMemoryRulesReply {
+  repeated MemoryRule rules = 1 [json_name = "rules"];
+}
+
+// SaveMemoryRuleRequest 新建（id=0）或更新（id>0）规则。
+// 内置规则只允许改 name/instruction/enabled，不允许删除。
+message SaveMemoryRuleRequest {
+  string name = 1 [json_name = "name"];
+  // 新建时缺省 custom
+  string type = 2 [json_name = "type"];
+  // 提取记忆类型，缺省 fact
+  string kind = 3 [json_name = "kind"];
+  string instruction = 4 [json_name = "instruction"];
+  bool enabled = 5 [json_name = "enabled"];
+}
+
+message SaveMemoryRuleReply {
+  MemoryRule rule = 1 [json_name = "rule"];
+}
+
+message UpdateMemoryRuleRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  string name = 2 [json_name = "name"];
+  // 更新时忽略 type（规则类型不可变）
+  string kind = 3 [json_name = "kind"];
+  string instruction = 4 [json_name = "instruction"];
+  bool enabled = 5 [json_name = "enabled"];
+}
+
+message DeleteMemoryRuleRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DeleteMemoryRuleReply {
+  bool deleted = 1 [json_name = "deleted"];
+}
+
+// ExtractedMemory 规则提取出的一条记忆（写入结果）。
+message ExtractedMemory {
+  string content = 1 [json_name = "content"];
+  string kind = 2 [json_name = "kind"];
+  int32 importance = 3 [json_name = "importance"];
+  repeated string tags = 4 [json_name = "tags"];
+  // true = 内容未变，复用已有记忆
+  bool deduped = 5 [json_name = "deduped"];
+  string memory_id = 6 [json_name = "memory_id"];
+  uint64 rule_id = 7 [json_name = "rule_id"];
+  string rule_name = 8 [json_name = "rule_name"];
+  // 单条写入失败原因（best-effort，不阻断其他条目）
+  string error = 9 [json_name = "error"];
+}
+
+// RuleExtractResult 单条规则的提取结果。
+message RuleExtractResult {
+  uint64 rule_id = 1 [json_name = "rule_id"];
+  string rule_name = 2 [json_name = "rule_name"];
+  // 规则级失败原因（LLM 调用失败等；空 = 成功）
+  string error = 3 [json_name = "error"];
+  repeated ExtractedMemory memories = 4 [json_name = "memories"];
+}
+
+message ExtractMemoriesRequest {
+  // 会话 ID（平台会话 ID 或短期记忆 session）
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "session_id"];
+  // 留空为 default
+  string user_id = 2 [json_name = "user_id"];
+  // 指定参与提取的规则；留空 = 全部启用规则
+  repeated uint64 rule_ids = 3 [json_name = "rule_ids"];
+  // 取会话最近 N 条消息参与提取，缺省 50
+  int32 last_n = 4 [json_name = "last_n"];
+}
+
+message ExtractMemoriesReply {
+  string session_id = 1 [json_name = "session_id"];
+  repeated RuleExtractResult results = 2 [json_name = "results"];
+  // 新写入条数
+  int32 written = 3 [json_name = "written"];
+  // 内容去重复用条数
+  int32 deduped = 4 [json_name = "deduped"];
+}
+
+// ---------- 记忆检索历史 ----------
+
+// MemoryRecallLog 一次记忆召回的流水记录。
+message MemoryRecallLog {
+  uint64 id = 1 [json_name = "id"];
+  string user_id = 2 [json_name = "user_id"];
+  string query = 3 [json_name = "query"];
+  // chat | api | answer
+  string source = 4 [json_name = "source"];
+  int32 top_k = 5 [json_name = "top_k"];
+  int32 hits = 6 [json_name = "hits"];
+  // 命中的记忆 ID
+  repeated string memory_ids = 7 [json_name = "memory_ids"];
+  int64 latency_ms = 8 [json_name = "latency_ms"];
+  string created_at = 9 [json_name = "created_at"];
+}
+
+message ListRecallLogsRequest {
+  string user_id = 1 [json_name = "user_id"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message ListRecallLogsReply {
+  repeated MemoryRecallLog logs = 1 [json_name = "logs"];
+}
+
+// MemoryService 记忆系统（短期会话 + 长期记忆 + 召回问答）。
+//
+// 注意：gorilla/mux 按注册顺序匹配，/memory/long/stats 必须排在
+// /memory/long/{id} 之前，因此静态路径的 RPC 先声明。
+service MemoryService {
+  // AppendShort 追加一条会话消息。
+  rpc AppendShort(AppendShortRequest) returns (AppendShortReply) {
+    option (google.api.http) = {
+      post: "/api/memory/short"
+      body: "*"
+    };
+  }
+
+  // ListShort 读取会话历史。
+  rpc ListShort(ListShortRequest) returns (ListShortReply) {
+    option (google.api.http) = {
+      get: "/api/memory/short"
+    };
+  }
+
+  // ClearShort 清空会话（删除 Redis key）。
+  rpc ClearShort(ClearShortRequest) returns (ClearShortReply) {
+    option (google.api.http) = {
+      delete: "/api/memory/short"
+    };
+  }
+
+  // Remember 写入长期记忆（向量化 + 可选图谱抽取）。
+  rpc Remember(RememberRequest) returns (RememberResult) {
+    option (google.api.http) = {
+      post: "/api/memory/long"
+      body: "*"
+    };
+  }
+
+  // ListLong 长期记忆列表。
+  rpc ListLong(ListLongRequest) returns (ListLongReply) {
+    option (google.api.http) = {
+      get: "/api/memory/long"
+    };
+  }
+
+  // GetMemoryStats 规模统计。
+  rpc GetMemoryStats(GetMemoryStatsRequest) returns (MemoryStats) {
+    option (google.api.http) = {
+      get: "/api/memory/long/stats"
+    };
+  }
+
+  // GetMemoryInfo 运行参数。
+  rpc GetMemoryInfo(GetMemoryInfoRequest) returns (MemoryInfo) {
+    option (google.api.http) = {
+      get: "/api/memory/info"
+    };
+  }
+
+  // GetLong 单条长期记忆。
+  rpc GetLong(GetLongRequest) returns (LongTermMemory) {
+    option (google.api.http) = {
+      get: "/api/memory/long/{id}"
+    };
+  }
+
+  // DeleteLong 删除单条长期记忆（含向量与关联图谱）。
+  rpc DeleteLong(DeleteLongRequest) returns (RememberResult) {
+    option (google.api.http) = {
+      delete: "/api/memory/long/{id}"
+    };
+  }
+
+  // PurgeExpired 清理已过期记忆。
+  rpc PurgeExpired(PurgeExpiredRequest) returns (PurgeExpiredReply) {
+    option (google.api.http) = {
+      post: "/api/memory/long/purge"
+    };
+  }
+
+  // Recall 向量 + 图谱召回。
+  rpc Recall(RecallRequest) returns (RecallResult) {
+    option (google.api.http) = {
+      post: "/api/memory/recall"
+      body: "*"
+    };
+  }
+
+  // Answer 基于记忆的多轮问答。
+  rpc Answer(AnswerRequest) returns (MemoryAnswer) {
+    option (google.api.http) = {
+      post: "/api/memory/answer"
+      body: "*"
+    };
+  }
+
+  // ListMemoryRules 记忆规则列表（含内置规则）。
+  rpc ListMemoryRules(ListMemoryRulesRequest) returns (ListMemoryRulesReply) {
+    option (google.api.http) = {
+      get: "/api/memory/rules"
+    };
+  }
+
+  // CreateMemoryRule 新建记忆规则（type 缺省 custom）。
+  rpc CreateMemoryRule(SaveMemoryRuleRequest) returns (SaveMemoryRuleReply) {
+    option (google.api.http) = {
+      post: "/api/memory/rules"
+      body: "*"
+    };
+  }
+
+  // UpdateMemoryRule 更新记忆规则（内置规则可改 name/instruction/enabled）。
+  rpc UpdateMemoryRule(UpdateMemoryRuleRequest) returns (SaveMemoryRuleReply) {
+    option (google.api.http) = {
+      put: "/api/memory/rules/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteMemoryRule 删除自定义规则（内置规则不可删）。
+  rpc DeleteMemoryRule(DeleteMemoryRuleRequest) returns (DeleteMemoryRuleReply) {
+    option (google.api.http) = {
+      delete: "/api/memory/rules/{id}"
+    };
+  }
+
+  // ExtractMemories 按记忆规则从会话提取长期记忆。
+  rpc ExtractMemories(ExtractMemoriesRequest) returns (ExtractMemoriesReply) {
+    option (google.api.http) = {
+      post: "/api/memory/extract"
+      body: "*"
+    };
+  }
+
+  // ListRecallLogs 记忆检索历史（按时间倒序）。
+  rpc ListRecallLogs(ListRecallLogsRequest) returns (ListRecallLogsReply) {
+    option (google.api.http) = {
+      get: "/api/memory/recall-logs"
+    };
+  }
+}

@@ -1,0 +1,176 @@
+syntax = "proto3";
+package kratos.api;
+
+option go_package = "go_agent/internal/conf;conf";
+
+import "google/protobuf/duration.proto";
+
+message Bootstrap {
+  Server server = 1;
+  Data data = 2;
+}
+
+message Server {
+  message HTTP {
+    string network = 1;
+    string addr = 2;
+    google.protobuf.Duration timeout = 3;
+  }
+  message GRPC {
+    string network = 1;
+    string addr = 2;
+    google.protobuf.Duration timeout = 3;
+  }
+  HTTP http = 1;
+  GRPC grpc = 2;
+}
+
+message Data {
+  message Database {
+    // Driver name registered with database/sql, e.g. "mysql".
+    string driver = 1;
+    // Driver-specific DSN. Keep credentials out of version control.
+    string source = 2;
+    // Log every generated statement. Development only.
+    bool debug = 3;
+    // Create or update tables from the ent schema on startup. Leave false in
+    // production and apply migrations as a separate, reviewed step.
+    bool auto_migrate = 4;
+  }
+  message Redis {
+    string network = 1;
+    string addr = 2;
+    google.protobuf.Duration read_timeout = 3;
+    google.protobuf.Duration write_timeout = 4;
+    // 连接超时
+    google.protobuf.Duration dial_timeout = 5;
+    // 认证与库号（本地无密码时留空即可）
+    string password = 6;
+    int32 db = 7;
+  }
+  message Embedding {
+    string baseURL = 1;
+    string apiKey = 2;
+    string model = 3;
+    int32 dimension = 4;
+    google.protobuf.Duration httpTimeout = 5;
+  }
+  // LLM 生成模型（OpenAI 兼容接口：DeepSeek / OpenAI / Ollama / SiliconFlow）
+  // 这里的配置只作为「兜底默认值」：运行时以 MySQL 中 llm_providers 表为准，
+  // 表中为空时自动用本块配置播种一个名为 default 的数据源。
+  message LLM {
+    string baseURL = 1;
+    string apiKey = 2;
+    string model = 3;
+    // 默认温度；图谱抽取固定用 0
+    double temperature = 4;
+    google.protobuf.Duration httpTimeout = 5;
+    // 多数据源配置的内存缓存时长：MySQL 变更后最多这么久对本实例生效
+    // （变更接口会立即刷新本实例，这里只兜住多实例场景）
+    google.protobuf.Duration reloadTTL = 6;
+  }
+  // Milvus 向量库（3.x，开启 BM25 混合检索）
+  message Milvus {
+    string uri = 1;
+    string token = 2;
+    string collection = 3;
+    // 连接超时：Milvus 未启动时快速失败，避免进程静默挂住
+    google.protobuf.Duration timeout = 4;
+    // 等待集合加载（LoadCollection）的上限
+    google.protobuf.Duration loadTimeout = 5;
+  }
+  // RAG 检索与图谱参数
+  message Rag {
+    int32 topK = 1;
+    int32 topN = 2;
+    int32 maxChunk = 3;
+    int32 overlap = 4;
+    // 问答结果缓存 TTL（Redis）
+    google.protobuf.Duration cacheTTL = 5;
+    int32 graphTopK = 6;
+    int32 graphHops = 7;
+    int32 graphMaxEdges = 8;
+    int32 graphMaxEntities = 9;
+    int32 graphMaxRelations = 10;
+    // 单次 embedding 请求的文本条数
+    int32 embedBatch = 11;
+  }
+
+  // 提示词工程：模板版本化与在线生效
+  message Prompt {
+    // 生效版本在 Redis 中的缓存时长；0 表示不缓存（每次回源 MySQL）
+    google.protobuf.Duration cacheTTL = 1;
+    // 启动时补齐内置模板（已存在则跳过）
+    bool seedBuiltin = 2;
+    // 列表接口单次返回上限
+    int32 listLimit = 3;
+  }
+
+  // 记忆系统：短期（Redis 会话）+ 长期（MySQL 权威存储 + Milvus 向量召回 + GraphRAG 图谱）
+  message Memory {
+    // 短期会话记忆在 Redis 的存活时长（每次写入自动续期）
+    google.protobuf.Duration shortTTL = 1;
+    // 向量召回条数
+    int32 recallTopK = 2;
+    // 记忆入库时是否抽取实体关系写入知识图谱
+    bool graphEnabled = 3;
+    // 单条记忆最多抽取实体/关系数
+    int32 graphMaxEntities = 4;
+    int32 graphMaxRelations = 5;
+    // 生成回答时携带的短期历史条数
+    int32 historyLimit = 6;
+  }
+
+  // 技能管理：技能清单/文件存 MySQL，可按需落盘供运行时读取；
+  // 技能市场（skillhub）数据源存 MySQL，这里只提供默认兜底。
+  message Skill {
+    // 技能落盘根目录；为空表示只存 MySQL 不下发磁盘
+    string syncDir = 1;
+    // 默认技能市场地址（skill_hubs 表为空时回退到这里）
+    string hubBaseURL = 2;
+    string hubToken = 3;
+    // 单个技能文件内容上限（字节）
+    int64 maxFileBytes = 4;
+    // 技能市场请求超时
+    google.protobuf.Duration httpTimeout = 5;
+  }
+
+  // AgentFactory：Agent 低代码工厂 + 异步任务 worker
+  message Agentfactory {
+    // 任务 worker 并发数
+    int32 workerCount = 1;
+    // Agent 总数配额（防自举失控的兜底）
+    int32 maxAgents = 2;
+    // 未指定 max_turns 时的执行图默认轮数
+    int32 defaultMaxTurns = 3;
+    // 优雅停机：停止服务时等待执行中任务跑完的最长时间（超时则中断，
+    // 任务保持 running，下次启动自动重跑）
+    google.protobuf.Duration shutdownTimeout = 4;
+  }
+
+  // 重排序（RAG 召回后精排；可选能力，未启用或调用失败时按检索原序返回）
+  message Rerank {
+    bool enabled = 1;
+    // cohere：POST {baseURL}/rerank（Jina / SiliconFlow / Cohere 兼容协议）
+    // dashscope：POST {baseURL}/api/v1/services/rerank/rerank（百炼原生，model 如 gte-rerank）
+    string provider = 2;
+    string baseURL = 3;
+    string apiKey = 4;
+    string model = 5;
+    // 重排后保留条数（0 = 沿用 rag.topN）
+    int32 topN = 6;
+    google.protobuf.Duration httpTimeout = 7;
+  }
+
+  Database database = 1;
+  Redis redis = 2;
+  Embedding embedding = 3;
+  LLM llm = 4;
+  Milvus milvus = 5;
+  Rag rag = 6;
+  Prompt prompt = 7;
+  Memory memory = 8;
+  Skill skill = 9;
+  Agentfactory agentfactory = 10;
+  Rerank rerank = 11;
+}

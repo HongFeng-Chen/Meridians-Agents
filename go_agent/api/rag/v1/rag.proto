@@ -1,0 +1,348 @@
+// Package rag.v1 定义 RAG / GraphRAG 两条业务线的对外契约。
+//
+// 设计约定（与 internal/biz 一一对应）：
+//   - 一条 RPC 对应 internal/service/rag_service.go 里的一个 handler，路径前缀 /api；
+//   - 所有字段显式声明 json_name 为 snake_case，与后端 encoding/json 的输出保持一致，
+//     protojson 序列化后即可直接对接前端，不需要做命名转换；
+//   - 时间统一用 RFC3339 字符串（与 Go time.Time 的 JSON 输出一致），
+//     计数类用 int32，仅 id / duration 用 int64（见 api/README.md 的 JSON 映射说明）；
+//   - 文件上传类接口（ExtractText / UploadAndIngest）的 HTTP 传输层是
+//     multipart/form-data：proto 中以 body: "file" 声明「文件走请求体，其余字段走
+//     query」，真实字节由 internal/pkg/httpx 的 multipart 解码器解析；gRPC 调用方
+//     则直接填 bytes 的 file 字段。
+syntax = "proto3";
+
+package rag.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/rag/v1;v1";
+
+// RagInfo 问答链路的运行参数快照（对应 rag.Rag.Info()）。
+message RagInfo {
+  // 向量化模型名，如 bge-m3
+  string embed_model = 1 [json_name = "embed_model"];
+  // 向量维度
+  int32 embed_dim = 2 [json_name = "embed_dim"];
+  // 当前生效的大模型
+  string llm_model = 3 [json_name = "llm_model"];
+  // 召回候选数
+  int32 top_k = 4 [json_name = "top_k"];
+  // 进入提示词的分块数
+  int32 top_n = 5 [json_name = "top_n"];
+  // 问答缓存 TTL，Go duration 字符串（如 5m0s）
+  string cache_ttl = 6 [json_name = "cache_ttl"];
+  // 图谱实体召回数
+  int32 graph_top_k = 7 [json_name = "graph_top_k"];
+}
+
+// Hit 一条检索命中（向量分块）。
+message Hit {
+  int64 id = 1 [json_name = "id"];
+  string doc_id = 2 [json_name = "doc_id"];
+  int32 chunk_idx = 3 [json_name = "chunk_idx"];
+  string source = 4 [json_name = "source"];
+  string text = 5 [json_name = "text"];
+  // RRF 融合后的相关度得分
+  float score = 6 [json_name = "score"];
+}
+
+// Entity 知识图谱实体节点（GraphRAG 与长期记忆共用）。
+message Entity {
+  string name = 1 [json_name = "name"];
+  string type = 2 [json_name = "type"];
+  string description = 3 [json_name = "description"];
+  // 出现频次（合并同名实体时累加）
+  int32 freq = 4 [json_name = "freq"];
+  // 出处引用，形如 "doc_id#chunk_idx"
+  repeated string chunk_refs = 5 [json_name = "chunk_refs"];
+}
+
+// Relation 知识图谱有向关系边。
+message Relation {
+  string source = 1 [json_name = "source"];
+  string target = 2 [json_name = "target"];
+  string relation = 3 [json_name = "relation"];
+  string description = 4 [json_name = "description"];
+  double weight = 5 [json_name = "weight"];
+  repeated string chunk_refs = 6 [json_name = "chunk_refs"];
+}
+
+// Answer 混合检索问答结果。
+message Answer {
+  string question = 1 [json_name = "question"];
+  string answer = 2 [json_name = "answer"];
+  repeated Hit citations = 3 [json_name = "citations"];
+  // 命中 Redis 缓存时为 true
+  bool cached = 4 [json_name = "cached"];
+}
+
+// GraphAnswer 图谱问答结果。
+message GraphAnswer {
+  string question = 1 [json_name = "question"];
+  string answer = 2 [json_name = "answer"];
+  repeated Entity entities = 3 [json_name = "entities"];
+  repeated Relation relations = 4 [json_name = "relations"];
+  // 引用的原文片段
+  repeated string evidence = 5 [json_name = "evidence"];
+  bool cached = 6 [json_name = "cached"];
+}
+
+// Document 文档元数据（MySQL rag_documents 为权威数据源）。
+message Document {
+  string doc_id = 1 [json_name = "doc_id"];
+  string source = 2 [json_name = "source"];
+  // rag | graph
+  string mode = 3 [json_name = "mode"];
+  // ready | failed
+  string status = 4 [json_name = "status"];
+  int32 chars = 5 [json_name = "chars"];
+  int32 chunks = 6 [json_name = "chunks"];
+  int32 entities = 7 [json_name = "entities"];
+  int32 relations = 8 [json_name = "relations"];
+  string checksum = 9 [json_name = "checksum"];
+  // RFC3339
+  string created_at = 10 [json_name = "created_at"];
+  string updated_at = 11 [json_name = "updated_at"];
+}
+
+// IngestResult 入库结果（RAG 与 GraphRAG 共用）。
+message IngestResult {
+  string doc_id = 1 [json_name = "doc_id"];
+  string source = 2 [json_name = "source"];
+  string mode = 3 [json_name = "mode"];
+  int32 chars = 4 [json_name = "chars"];
+  // mode=rag 时的分块数
+  int32 chunks = 5 [json_name = "chunks"];
+  // mode=graph 时抽取的实体数
+  int32 entities = 6 [json_name = "entities"];
+  // mode=graph 时抽取的关系数
+  int32 relations = 7 [json_name = "relations"];
+  // 内容未变化，跳过了重复向量化
+  bool deduped = 8 [json_name = "deduped"];
+  // 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
+  int64 duration = 9 [json_name = "duration"];
+}
+
+// Format 支持的文件格式。
+message Format {
+  // 扩展名，不带点，如 pdf
+  string ext = 1 [json_name = "ext"];
+  // 类型描述，如 PDF 文档
+  string type = 2 [json_name = "type"];
+}
+
+message HealthRequest {}
+
+// HealthReply 健康检查（同时暴露运行参数，前端首屏即用）。
+message HealthReply {
+  string status = 1 [json_name = "status"];
+  // RFC3339
+  string time = 2 [json_name = "time"];
+  RagInfo rag = 3 [json_name = "rag"];
+}
+
+message IngestRequest {
+  // 留空自动生成 doc-{yyyymmddHHMMSS}
+  string doc_id = 1 [json_name = "doc_id"];
+  // 留空取 doc_id
+  string source = 2 [json_name = "source"];
+  string text = 3 [(google.api.field_behavior) = REQUIRED, json_name = "text"];
+  // rag（默认）| graph
+  string mode = 4 [json_name = "mode"];
+}
+
+message QueryRequest {
+  string question = 1 [(google.api.field_behavior) = REQUIRED, json_name = "question"];
+  // Milvus 标量过滤表达式，如 doc_id == "xxx"
+  string filter = 2 [json_name = "filter"];
+}
+
+message GraphQueryRequest {
+  string question = 1 [(google.api.field_behavior) = REQUIRED, json_name = "question"];
+}
+
+message GetStatsRequest {}
+
+// StatsReply 系统概览。
+message StatsReply {
+  string milvus_uri = 1 [json_name = "milvus_uri"];
+  string collection = 2 [json_name = "collection"];
+  // 向量分块数（Milvus 已 flush 段的 row_count）
+  int32 chunks = 3 [json_name = "chunks"];
+  int32 docs = 4 [json_name = "docs"];
+  int32 entities = 5 [json_name = "entities"];
+  int32 relations = 6 [json_name = "relations"];
+  RagInfo rag = 7 [json_name = "rag"];
+  // 存储后端说明：vector / meta / cache
+  map<string, string> stores = 8 [json_name = "stores"];
+}
+
+message ListDocsRequest {
+  // 缺省 200
+  int32 limit = 1 [json_name = "limit"];
+}
+
+message ListDocsReply {
+  repeated Document docs = 1 [json_name = "docs"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message DeleteDocRequest {
+  string doc_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "doc_id"];
+}
+
+message DeleteDocReply {
+  string doc_id = 1 [json_name = "doc_id"];
+  int32 deleted_chunks = 2 [json_name = "deleted_chunks"];
+  int32 deleted_entities = 3 [json_name = "deleted_entities"];
+  int32 deleted_relations = 4 [json_name = "deleted_relations"];
+  // 图谱清理失败时的告警（向量与元数据已删除）
+  string graph_warning = 5 [json_name = "graph_warning"];
+}
+
+message ListFormatsRequest {}
+
+message ListFormatsReply {
+  repeated Format formats = 1 [json_name = "formats"];
+  // 单文件大小上限（字节）
+  int64 max_size = 2 [json_name = "max_size"];
+}
+
+// ExtractTextRequest 只解析不上库。
+//
+// 两种调用方式共用同一份契约：
+//   - HTTP：multipart/form-data，文件放在 part 名 file 里（file/name 字段留空，
+//     由服务端的 multipart 解码器填充文件名与内容）；
+//   - gRPC：直接填 file（字节）与 name（文件名，按扩展名决定解析器）。
+message ExtractTextRequest {
+  // 文件内容（HTTP 下由 multipart 的 file 部分提供，无需填写）
+  bytes file = 1 [json_name = "file"];
+  // 文件名，如 report.pdf（HTTP 下取客户端原名）
+  string name = 2 [json_name = "name"];
+}
+
+message ExtractTextReply {
+  string name = 1 [json_name = "name"];
+  string type = 2 [json_name = "type"];
+  int32 chars = 3 [json_name = "chars"];
+  string text = 4 [json_name = "text"];
+}
+
+// UploadAndIngestRequest 上传并入库。
+//
+// HTTP：multipart/form-data，文件放在 part 名 file 里，mode / doc_id / source
+// 走 query 或表单字段；gRPC：直接填 file 与 name。
+message UploadAndIngestRequest {
+  // 文件内容（HTTP 下由 multipart 的 file 部分提供，无需填写）
+  bytes file = 1 [json_name = "file"];
+  // 文件名，如 report.pdf（HTTP 下取客户端原名）
+  string name = 2 [json_name = "name"];
+  // rag（默认）| graph
+  string mode = 3 [json_name = "mode"];
+  // 留空取文件名（去扩展名）
+  string doc_id = 4 [json_name = "doc_id"];
+  // 留空取文件名
+  string source = 5 [json_name = "source"];
+}
+
+message UploadAndIngestReply {
+  string doc_id = 1 [json_name = "doc_id"];
+  string source = 2 [json_name = "source"];
+  string name = 3 [json_name = "name"];
+  int32 chars = 4 [json_name = "chars"];
+  string mode = 5 [json_name = "mode"];
+  bool deduped = 6 [json_name = "deduped"];
+  // mode=rag
+  int32 chunks = 7 [json_name = "chunks"];
+  // mode=graph
+  int32 entities = 8 [json_name = "entities"];
+  int32 relations = 9 [json_name = "relations"];
+}
+
+// RagService RAG 与 GraphRAG 的统一入口。
+service RagService {
+  // Health 服务健康检查与运行参数。
+  rpc Health(HealthRequest) returns (HealthReply) {
+    option (google.api.http) = {
+      get: "/api/health"
+    };
+  }
+
+  // Ingest 文本入库：分块 -> 向量化 -> Milvus -> MySQL 元数据 -> 清缓存。
+  rpc Ingest(IngestRequest) returns (IngestResult) {
+    option (google.api.http) = {
+      post: "/api/ingest"
+      body: "*"
+    };
+  }
+
+  // Query 混合检索问答（Dense + BM25，RRF 融合）。
+  rpc Query(QueryRequest) returns (Answer) {
+    option (google.api.http) = {
+      post: "/api/query"
+      body: "*"
+    };
+  }
+
+  // GraphIngest 图谱构建：LLM 抽取实体与关系后入图集合。
+  rpc GraphIngest(IngestRequest) returns (IngestResult) {
+    option (google.api.http) = {
+      post: "/api/graph/ingest"
+      body: "*"
+    };
+  }
+
+  // GraphQuery 图谱问答：实体召回 + 多跳扩展 + 原文证据。
+  rpc GraphQuery(GraphQueryRequest) returns (GraphAnswer) {
+    option (google.api.http) = {
+      post: "/api/graph/query"
+      body: "*"
+    };
+  }
+
+  // GetStats 系统概览。
+  rpc GetStats(GetStatsRequest) returns (StatsReply) {
+    option (google.api.http) = {
+      get: "/api/admin/stats"
+    };
+  }
+
+  // ListDocs 文档列表。
+  rpc ListDocs(ListDocsRequest) returns (ListDocsReply) {
+    option (google.api.http) = {
+      get: "/api/admin/docs"
+    };
+  }
+
+  // DeleteDoc 删除文档（向量分块 + 图谱孤儿节点 + 元数据 + 缓存）。
+  rpc DeleteDoc(DeleteDocRequest) returns (DeleteDocReply) {
+    option (google.api.http) = {
+      delete: "/api/admin/docs"
+    };
+  }
+
+  // ListFormats 支持的文件格式清单。
+  rpc ListFormats(ListFormatsRequest) returns (ListFormatsReply) {
+    option (google.api.http) = {
+      get: "/api/formats"
+    };
+  }
+
+  // ExtractText 解析文件为纯文本，不入库（前端预览/编辑用）。
+  rpc ExtractText(ExtractTextRequest) returns (ExtractTextReply) {
+    option (google.api.http) = {
+      post: "/api/extract"
+      body: "file"
+    };
+  }
+
+  // UploadAndIngest 上传文件并直接入库。
+  rpc UploadAndIngest(UploadAndIngestRequest) returns (UploadAndIngestReply) {
+    option (google.api.http) = {
+      post: "/api/upload"
+      body: "file"
+    };
+  }
+}

@@ -1,0 +1,86 @@
+server:
+  http:
+    addr: 0.0.0.0:8100
+    # Kratos 默认每请求 1s 超时；入库要跑 embedding + LLM，图谱抽取更慢，放到 5min
+    timeout: 300s
+  grpc:
+    addr: 0.0.0.0:9100
+    timeout: 300s
+data:
+  database:
+    driver: mysql
+    source: ${DATABASE_SOURCE:root:root@tcp(127.0.0.1:3306)/go_agent?timeout=5s&parseTime=True&loc=Local&charset=utf8mb4}
+    # Development conveniences. Keep both false in production and apply schema
+    # changes as a separate reviewed step.
+    debug: true
+    auto_migrate: true
+  redis:
+    addr: ${REDIS_ADDR:127.0.0.1:6379}
+    # 默认值与 docker-compose.yml 里的 --requirepass 保持一致，本地开箱可跑；
+    # 要连无密码 Redis，直接把这里改成空串或设置 REDIS_PASSWORD 环境变量。
+    # （k8s 里由 Secret 注入 REDIS_PASSWORD）
+    password: ${REDIS_PASSWORD:redis_pass}
+    db: 0
+    read_timeout: 1s
+    write_timeout: 1s
+    dial_timeout: 3s
+  embedding:
+    # 默认本地 Ollama（bge-m3，1024 维）；本地地址不需要真实 key，占位即可
+    baseURL: ${EMBED_BASE_URL:http://localhost:11434/v1}
+    apiKey: ${EMBED_API_KEY:ollama}
+    model: ${EMBED_MODEL:bge-m3}
+    dimension: 1024
+    httpTimeout: 60s
+  milvus:
+    uri: ${MILVUS_URI:http://127.0.0.1:19530}
+    token: ${MILVUS_TOKEN:root:Milvus}
+    collection: ${MILVUS_COLLECTION:rag_docs}
+    timeout: 10s
+    loadTimeout: 120s
+  rag:
+    topK: 10
+    topN: 5
+    maxChunk: 600
+    overlap: 100
+    cacheTTL: 300s
+    graphTopK: 8
+    graphHops: 2
+    graphMaxEdges: 200
+    graphMaxEntities: 10
+    graphMaxRelations: 8
+    embedBatch: 32
+  # 提示词工程：模板存 MySQL，生效版本缓存到 Redis，发布/激活即失效
+  prompt:
+    cacheTTL: 60s
+    # 启动时补齐内置模板（已存在则跳过，不会覆盖线上改动）
+    seedBuiltin: true
+    listLimit: 200
+  # 记忆系统：短期 Redis（TTL 续期）+ 长期 MySQL（过期时间/去重）+ Milvus 向量召回 + GraphRAG 图谱
+  memory:
+    shortTTL: 86400s
+    recallTopK: 8
+    graphEnabled: true
+    graphMaxEntities: 8
+    graphMaxRelations: 6
+    historyLimit: 20
+  # 技能管理：技能与市场存 MySQL；启用技能可落盘供运行时读取
+  skill:
+    # 落盘根目录（为空则只存数据库）
+    syncDir: ${SKILL_SYNC_DIR:./data/skills}
+    # 默认技能市场（skill_hubs 表为空时自动播种）
+    hubBaseURL: ${SKILLHUB_BASE_URL:}
+    hubToken: ${SKILLHUB_TOKEN:}
+    # 单个技能文件上限（8MB）；技能包里的运行时资源分片常有 1MB+，
+    # 上限受 skill_files.content 的 mediumtext（16MB）约束
+    maxFileBytes: 8388608
+    httpTimeout: 30s
+  # AgentFactory：Agent 低代码工厂 + 异步任务 worker
+  agentfactory:
+    # 任务 worker 并发数
+    workerCount: 2
+    # Agent 总数配额（防自举失控兜底）
+    maxAgents: 200
+    # 未指定 max_turns 时的执行图默认轮数
+    defaultMaxTurns: 12
+    # 优雅停机：等待执行中任务跑完的最长时间（超时中断，下次启动重跑）
+    shutdownTimeout: 20s

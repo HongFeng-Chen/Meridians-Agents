@@ -1,0 +1,393 @@
+// Package skill.v1 定义技能管理域的对外契约。
+//
+// 对应 internal/biz/skill：技能以 name 为稳定标识（重复安装=升级），支持
+// 多文件包、在线启停、落盘同步，以及从技能市场（skillhub）搜索与下载安装。
+// token 只进不出：读取接口仅返回 has_token。
+syntax = "proto3";
+
+package skill.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/skill/v1;v1";
+
+// File 技能附带文件。
+message File {
+  // 相对技能目录的路径，如 SKILL.md、scripts/run.py
+  string path = 1 [json_name = "path"];
+  string content = 2 [json_name = "content"];
+  int32 size = 3 [json_name = "size"];
+}
+
+// Skill 技能。
+message Skill {
+  string name = 1 [json_name = "name"];
+  string version = 2 [json_name = "version"];
+  string title = 3 [json_name = "title"];
+  string description = 4 [json_name = "description"];
+  string category = 5 [json_name = "category"];
+  repeated string tags = 6 [json_name = "tags"];
+  // hub | upload | builtin
+  string source = 7 [json_name = "source"];
+  string source_url = 8 [json_name = "source_url"];
+  bool enabled = 9 [json_name = "enabled"];
+  string checksum = 10 [json_name = "checksum"];
+  // SKILL.md 正文（列表接口不返回）
+  string content = 11 [json_name = "content"];
+  // 文件正文（列表接口不返回，单文件接口返回单条）
+  repeated File files = 12 [json_name = "files"];
+  int32 file_count = 13 [json_name = "file_count"];
+  int32 size = 14 [json_name = "size"];
+  string installed_at = 15 [json_name = "installed_at"];
+  string updated_at = 16 [json_name = "updated_at"];
+}
+
+// Hub 技能市场数据源。
+message Hub {
+  string name = 1 [json_name = "name"];
+  string base_url = 2 [json_name = "base_url"];
+  // 是否已配置访问令牌
+  bool has_token = 3 [json_name = "has_token"];
+  bool enabled = 4 [json_name = "enabled"];
+  bool is_default = 5 [json_name = "is_default"];
+  string description = 6 [json_name = "description"];
+  string created_at = 7 [json_name = "created_at"];
+  string updated_at = 8 [json_name = "updated_at"];
+}
+
+// HubSkill 市场里的技能条目（搜索结果）。
+message HubSkill {
+  string name = 1 [json_name = "name"];
+  string version = 2 [json_name = "version"];
+  string title = 3 [json_name = "title"];
+  string description = 4 [json_name = "description"];
+  string category = 5 [json_name = "category"];
+  repeated string tags = 6 [json_name = "tags"];
+  int32 downloads = 7 [json_name = "downloads"];
+  // 本地是否已安装
+  bool installed = 8 [json_name = "installed"];
+  // 来源市场名
+  string hub = 9 [json_name = "hub"];
+}
+
+// SyncResult 落盘结果。
+message SyncResult {
+  string dir = 1 [json_name = "dir"];
+  repeated string synced = 2 [json_name = "synced"];
+  repeated string removed = 3 [json_name = "removed"];
+}
+
+// SkillStats 规模统计。
+message SkillStats {
+  int64 skills = 1 [json_name = "skills"];
+  int64 enabled = 2 [json_name = "enabled"];
+  int64 hubs = 3 [json_name = "hubs"];
+}
+
+// SkillFiles 技能文件清单（只含路径与大小）。
+message SkillFiles {
+  string name = 1 [json_name = "name"];
+  int32 file_count = 2 [json_name = "file_count"];
+  int32 size = 3 [json_name = "size"];
+  repeated File files = 4 [json_name = "files"];
+}
+
+message ListSkillsRequest {
+  // 关键字（name / title / description）
+  string q = 1 [json_name = "q"];
+  string category = 2 [json_name = "category"];
+  // hub | upload | builtin
+  string source = 3 [json_name = "source"];
+  // "1"/"true" 只看启用，"0"/"false" 只看停用，空为全部
+  string enabled = 4 [json_name = "enabled"];
+  int32 limit = 5 [json_name = "limit"];
+}
+
+message ListSkillsReply {
+  repeated Skill skills = 1 [json_name = "skills"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetSkillRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message InstallSkillRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string version = 2 [json_name = "version"];
+  string title = 3 [json_name = "title"];
+  string description = 4 [json_name = "description"];
+  string category = 5 [json_name = "category"];
+  repeated string tags = 6 [json_name = "tags"];
+  // SKILL.md 内容
+  string content = 7 [json_name = "content"];
+  // 附加文件，与 content 至少提供一项
+  repeated File files = 8 [json_name = "files"];
+  // 缺省 true
+  optional bool enabled = 9 [json_name = "enabled"];
+}
+
+message UninstallSkillRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message UninstallSkillReply {
+  bool deleted = 1 [json_name = "deleted"];
+}
+
+message ToggleSkillRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+// UseSkillRequest 技能使用：返回技能内容并落一条使用历史（op_histories）。
+message UseSkillRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  // 用途说明，记入历史（如 console 预览、runtime 加载）
+  string purpose = 2 [json_name = "purpose"];
+}
+
+message ListSkillFilesRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message ReadSkillFileRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string path = 2 [(google.api.field_behavior) = REQUIRED, json_name = "path"];
+}
+
+message SyncSkillsRequest {}
+
+message SearchHubSkillsRequest {
+  string q = 1 [json_name = "q"];
+  // 指定市场名，留空用默认市场
+  string hub = 2 [json_name = "hub"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message SearchHubSkillsReply {
+  repeated HubSkill skills = 1 [json_name = "skills"];
+  int32 total = 2 [json_name = "total"];
+}
+
+// ImportSkillFromURLRequest 从技能包 URL 安装。
+//
+// 用于没有市场 API、只给下载链接的分发方式（千问技能包 / 内部归档）：
+// zip 按包内结构入库；单文件按 SKILL.md 正文处理（此时 name 必填）；JSON 包按字段解析。
+message ImportSkillFromURLRequest {
+  // 技能包地址，只支持 http/https
+  string url = 1 [(google.api.field_behavior) = REQUIRED, json_name = "url"];
+  // 包内没有技能名时必填
+  string name = 2 [json_name = "name"];
+  string version = 3 [json_name = "version"];
+  // 私有链接的访问令牌（Authorization: Bearer）
+  string token = 4 [json_name = "token"];
+  optional bool enable = 5 [json_name = "enable"];
+}
+
+message InstallFromHubRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  // 留空安装最新版
+  string version = 2 [json_name = "version"];
+  string hub = 3 [json_name = "hub"];
+  // 缺省 true
+  optional bool enable = 4 [json_name = "enable"];
+}
+
+message ListHubsRequest {}
+
+message ListHubsReply {
+  repeated Hub hubs = 1 [json_name = "hubs"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message CreateHubRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string base_url = 2 [(google.api.field_behavior) = REQUIRED, json_name = "base_url"];
+  string token = 3 [json_name = "token"];
+  optional bool enabled = 4 [json_name = "enabled"];
+  bool is_default = 5 [json_name = "is_default"];
+  string description = 6 [json_name = "description"];
+}
+
+message UpdateHubRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  optional string base_url = 2 [json_name = "base_url"];
+  optional string token = 3 [json_name = "token"];
+  optional bool enabled = 4 [json_name = "enabled"];
+  optional bool is_default = 5 [json_name = "is_default"];
+  optional string description = 6 [json_name = "description"];
+}
+
+message DeleteHubRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message DeleteHubReply {
+  bool deleted = 1 [json_name = "deleted"];
+}
+
+message SetDefaultHubRequest {
+  string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+}
+
+message GetSkillStatsRequest {}
+
+// SkillService 技能与技能市场管理。
+//
+// 注意：gorilla/mux 按注册顺序匹配，/skills/stats、/skills/from-hub、/skills/hubs
+// 必须排在 /skills/{name} 之前，因此静态路径的 RPC 先声明。
+service SkillService {
+  // ListSkills 技能列表。
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsReply) {
+    option (google.api.http) = {
+      get: "/api/skills"
+    };
+  }
+
+  // GetSkillStats 规模统计。
+  rpc GetSkillStats(GetSkillStatsRequest) returns (SkillStats) {
+    option (google.api.http) = {
+      get: "/api/skills/stats"
+    };
+  }
+
+  // SearchHubSkills 搜索技能市场。
+  rpc SearchHubSkills(SearchHubSkillsRequest) returns (SearchHubSkillsReply) {
+    option (google.api.http) = {
+      get: "/api/skills/from-hub"
+    };
+  }
+
+  // ListHubs 技能市场列表。
+  rpc ListHubs(ListHubsRequest) returns (ListHubsReply) {
+    option (google.api.http) = {
+      get: "/api/skills/hubs"
+    };
+  }
+
+  // SearchSkillhub 搜索技能市场（与 SearchHubSkills 等价的语义入口）。
+  rpc SearchSkillhub(SearchHubSkillsRequest) returns (SearchHubSkillsReply) {
+    option (google.api.http) = {
+      get: "/api/skillhub/search"
+    };
+  }
+
+  // ListSkillhubHubs 技能市场列表（语义入口）。
+  rpc ListSkillhubHubs(ListHubsRequest) returns (ListHubsReply) {
+    option (google.api.http) = {
+      get: "/api/skillhub/hubs"
+    };
+  }
+
+  // ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
+  rpc ImportSkillFromURL(ImportSkillFromURLRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills/import-url"
+      body: "*"
+    };
+  }
+
+  // GetSkill 技能详情（含 SKILL.md 与文件正文）。
+  rpc GetSkill(GetSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      get: "/api/skills/{name}"
+    };
+  }
+
+  // InstallSkill 手动安装/上传技能（同名视为升级）。
+  rpc InstallSkill(InstallSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills"
+      body: "*"
+    };
+  }
+
+  // UninstallSkill 卸载技能。
+  rpc UninstallSkill(UninstallSkillRequest) returns (UninstallSkillReply) {
+    option (google.api.http) = {
+      delete: "/api/skills/{name}"
+    };
+  }
+
+  // EnableSkill 启用技能。
+  rpc EnableSkill(ToggleSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills/{name}/enable"
+    };
+  }
+
+  // DisableSkill 停用技能。
+  rpc DisableSkill(ToggleSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills/{name}/disable"
+    };
+  }
+
+  // UseSkill 使用技能：返回技能内容，同时落一条技能使用历史（task 内调用自动关联任务）。
+  rpc UseSkill(UseSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills/{name}/use"
+      body: "*"
+    };
+  }
+
+  // ListSkillFiles 技能文件清单（只返回路径与大小）。
+  rpc ListSkillFiles(ListSkillFilesRequest) returns (SkillFiles) {
+    option (google.api.http) = {
+      get: "/api/skills/{name}/files"
+    };
+  }
+
+  // ReadSkillFile 读取单个文件正文。
+  rpc ReadSkillFile(ReadSkillFileRequest) returns (File) {
+    option (google.api.http) = {
+      get: "/api/skills/{name}/file"
+    };
+  }
+
+  // SyncSkills 把启用技能落盘到 sync_dir。
+  rpc SyncSkills(SyncSkillsRequest) returns (SyncResult) {
+    option (google.api.http) = {
+      post: "/api/skills/sync"
+    };
+  }
+
+  // InstallFromHub 从技能市场安装。
+  rpc InstallFromHub(InstallFromHubRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/skills/from-hub"
+      body: "*"
+    };
+  }
+
+  // CreateHub 新增技能市场。
+  rpc CreateHub(CreateHubRequest) returns (Hub) {
+    option (google.api.http) = {
+      post: "/api/skills/hubs"
+      body: "*"
+    };
+  }
+
+  // UpdateHub 修改技能市场。
+  rpc UpdateHub(UpdateHubRequest) returns (Hub) {
+    option (google.api.http) = {
+      patch: "/api/skills/hubs/{name}"
+      body: "*"
+    };
+  }
+
+  // DeleteHub 删除技能市场。
+  rpc DeleteHub(DeleteHubRequest) returns (DeleteHubReply) {
+    option (google.api.http) = {
+      delete: "/api/skills/hubs/{name}"
+    };
+  }
+
+  // SetDefaultHub 设为默认市场。
+  rpc SetDefaultHub(SetDefaultHubRequest) returns (Hub) {
+    option (google.api.http) = {
+      post: "/api/skills/hubs/{name}/default"
+    };
+  }
+}

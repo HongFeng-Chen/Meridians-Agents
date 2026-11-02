@@ -1,0 +1,324 @@
+// Package conversation.v1 定义会话域的对外契约。
+//
+// 会话（conversation）= 用户与平台的一次多轮对话目录，会话 ID 优先复用
+// AgentFactory 任务 ID（会话 id = task id），使任务 trace 链路与会话直接互通。
+// 会话内允许调用 Agent、MCP 工具，以及 RAG / GraphRAG / Memory 检索召回，
+// 每轮交互落一条消息（role = user / assistant），meta JSON 记录本轮能力
+// 调用链路（task_id / 检索 kind 与命中数 / 工具与耗时等），同时各能力自身
+// 仍会写统一操作历史（op_histories）。
+syntax = "proto3";
+
+package conversation.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/conversation/v1;v1";
+
+// Conversation 会话目录条目。
+message Conversation {
+  // 会话 ID：agent 驱动的会话 = 首轮任务 ID；其他 = 自动生成
+  string id = 1 [json_name = "id"];
+  string title = 2 [json_name = "title"];
+  // 默认会话 Agent（可空 = 纯检索 / 工具会话）
+  string agent_key = 3 [json_name = "agent_key"];
+  int64 message_count = 4 [json_name = "message_count"];
+  // 最新一条消息预览（截断），列表展示用
+  string last_message = 5 [json_name = "last_message"];
+  string created_at = 6 [json_name = "created_at"];
+  string updated_at = 7 [json_name = "updated_at"];
+  // 该会话是否发生过辩论（目录「辩论历史」分组过滤用）
+  bool has_debate = 8 [json_name = "has_debate"];
+}
+
+// ConversationMessage 会话内一条消息。
+message ConversationMessage {
+  int64 id = 1 [json_name = "id"];
+  string conversation_id = 2 [json_name = "conversation_id"];
+  // user / assistant
+  string role = 3 [json_name = "role"];
+  string content = 4 [json_name = "content"];
+  // 能力调用链路 JSON：{op:"agent", task_id} / {op:"rag", kind, hits} / {op:"mcp", tool, ok} …
+  string meta = 5 [json_name = "meta"];
+  // 关联任务 ID（0 = 无）
+  uint64 task_id = 6 [json_name = "task_id"];
+  string created_at = 7 [json_name = "created_at"];
+  // 发言者：普通会话为空；辩论为角色名 / 主持人
+  string speaker = 8 [json_name = "speaker"];
+}
+
+message CreateConversationRequest {
+  // 可选：会话 ID（传任务 ID 即「会话 id = task id」）；空 = 自动生成
+  string id = 1 [json_name = "id"];
+  string title = 2 [json_name = "title"];
+  string agent_key = 3 [json_name = "agent_key"];
+}
+
+message CreateConversationReply {
+  Conversation conversation = 1 [json_name = "conversation"];
+}
+
+message ListConversationsRequest {
+  // 标题 / 最近消息关键词，空 = 全部
+  string kw = 1 [json_name = "kw"];
+  int32 limit = 2 [json_name = "limit"];
+  int32 offset = 3 [json_name = "offset"];
+}
+
+message ListConversationsReply {
+  repeated Conversation conversations = 1 [json_name = "conversations"];
+  int64 total = 2 [json_name = "total"];
+}
+
+message GetConversationRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GetConversationReply {
+  Conversation conversation = 1 [json_name = "conversation"];
+  repeated ConversationMessage messages = 2 [json_name = "messages"];
+}
+
+message ListMessagesRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  // 每页条数（默认 20，上限 100）
+  uint32 limit = 2 [json_name = "limit"];
+  // 游标：取 id < before_id 的更早一页；0 = 从最新开始
+  int64 before_id = 3 [json_name = "before_id"];
+}
+
+message ListMessagesReply {
+  // 按时间正序的一页消息
+  repeated ConversationMessage messages = 1 [json_name = "messages"];
+  // 是否还有更早的消息（可继续向上翻页）
+  bool has_more = 2 [json_name = "has_more"];
+}
+
+message UpdateConversationRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  string title = 2 [json_name = "title"];
+}
+
+message UpdateConversationReply {
+  Conversation conversation = 1 [json_name = "conversation"];
+}
+
+message DeleteConversationRequest {
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteConversationReply {}
+
+message AppendMessageRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  // user / assistant
+  string role = 2 [(google.api.field_behavior) = REQUIRED];
+  string content = 3 [json_name = "content"];
+  // 能力调用链路 JSON（可空）
+  string meta = 4 [json_name = "meta"];
+  // 关联任务 ID（0 = 无）
+  uint64 task_id = 5 [json_name = "task_id"];
+}
+
+message AppendMessageReply {
+  ConversationMessage message = 1 [json_name = "message"];
+}
+
+message ChatRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  // 用户本轮输入
+  string content = 2 [json_name = "content"];
+}
+
+message ChatReply {
+  ConversationMessage user_message = 1 [json_name = "user_message"];
+  ConversationMessage assistant_message = 2 [json_name = "assistant_message"];
+}
+
+// —— 辩论会话 ——
+
+// DebateRole 辩论角色（临时自定义）
+message DebateRole {
+  string name = 1 [json_name = "name"];
+  string persona = 2 [json_name = "persona"];
+  string stance = 3 [json_name = "stance"];
+  string style = 4 [json_name = "style"];
+}
+
+// Debate 一场辩论
+message Debate {
+  int64 id = 1 [json_name = "id"];
+  string conversation_id = 2 [json_name = "conversation_id"];
+  string topic = 3 [json_name = "topic"];
+  // running / stopping / finished / stopped
+  string status = 4 [json_name = "status"];
+  int32 round = 5 [json_name = "round"];
+  int32 max_rounds = 6 [json_name = "max_rounds"];
+  // rounds / consensus
+  string end_rule = 7 [json_name = "end_rule"];
+  repeated DebateRole roles = 8 [json_name = "roles"];
+  string created_at = 9 [json_name = "created_at"];
+  string updated_at = 10 [json_name = "updated_at"];
+  string finished_at = 11 [json_name = "finished_at"];
+}
+
+message CreateDebateRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  string topic = 2 [(google.api.field_behavior) = REQUIRED];
+  repeated DebateRole roles = 3 [json_name = "roles"];
+  int32 max_rounds = 4 [json_name = "max_rounds"];
+  // rounds / consensus
+  string end_rule = 5 [json_name = "end_rule"];
+}
+
+message CreateDebateReply {
+  Debate debate = 1 [json_name = "debate"];
+}
+
+message GetDebateReply {
+  Debate debate = 1 [json_name = "debate"];
+}
+
+message StopDebateReply {
+  Debate debate = 1 [json_name = "debate"];
+}
+
+message AddDebateRoleRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  DebateRole role = 2 [json_name = "role"];
+}
+
+message AddDebateRoleReply {
+  Debate debate = 1 [json_name = "debate"];
+}
+
+message RemoveDebateRoleRequest {
+  // 会话 ID（即路径 {id}）
+  string id = 1 [(google.api.field_behavior) = REQUIRED];
+  string name = 2 [json_name = "name"];
+}
+
+message RemoveDebateRoleReply {
+  Debate debate = 1 [json_name = "debate"];
+}
+
+service ConversationService {
+  // CreateConversation 新建会话（id 可传任务 ID）。
+  rpc CreateConversation(CreateConversationRequest) returns (CreateConversationReply) {
+    option (google.api.http) = {
+      post: "/api/conversations"
+      body: "*"
+    };
+  }
+
+  // ListConversations 会话目录（按最近更新倒序，支持关键词）。
+  rpc ListConversations(ListConversationsRequest) returns (ListConversationsReply) {
+    option (google.api.http) = {
+      get: "/api/conversations"
+    };
+  }
+
+  // GetConversation 会话详情 + 全部消息（按时间正序）。
+  rpc GetConversation(GetConversationRequest) returns (GetConversationReply) {
+    option (google.api.http) = {
+      get: "/api/conversations/{id}"
+    };
+  }
+
+  // ListMessages 会话消息分页（微信式向上翻页）：
+  // 默认取最新 limit 条（id 正序返回）；before_id > 0 时取该条之前的更早一页。
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesReply) {
+    option (google.api.http) = {
+      get: "/api/conversations/{id}/messages"
+    };
+  }
+
+  // UpdateConversation 重命名会话。
+  rpc UpdateConversation(UpdateConversationRequest) returns (UpdateConversationReply) {
+    option (google.api.http) = {
+      put: "/api/conversations/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteConversation 删除会话（消息一并删除）。
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationReply) {
+    option (google.api.http) = {
+      delete: "/api/conversations/{id}"
+    };
+  }
+
+  // AppendMessage 追加一条消息（user 输入 / assistant 回复，含链路 meta）。
+  rpc AppendMessage(AppendMessageRequest) returns (AppendMessageReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/messages"
+      body: "*"
+    };
+  }
+
+  // Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
+  // 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+  rpc Chat(ChatRequest) returns (ChatReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/chat"
+      body: "*"
+    };
+  }
+
+  // CreateDebate 在会话内创建辩论：多角色按人设自主辩论，用户仅监督。
+  rpc CreateDebate(CreateDebateRequest) returns (CreateDebateReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates"
+      body: "*"
+    };
+  }
+
+  // GetCurrentDebate 会话当前 / 最近一场辩论（前端轮询展示进度）。
+  rpc GetCurrentDebate(GetConversationRequest) returns (GetDebateReply) {
+    option (google.api.http) = {
+      get: "/api/conversations/{id}/debates/current"
+    };
+  }
+
+  // StopDebate 请求停止辩论（当前发言结束后收尾汇总）。
+  rpc StopDebate(GetConversationRequest) returns (StopDebateReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates/current/stop"
+    };
+  }
+
+  // PauseDebate 暂停辩论（当前发言结束后挂起，可恢复）。
+  rpc PauseDebate(GetConversationRequest) returns (StopDebateReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates/current/pause"
+    };
+  }
+
+  // ResumeDebate 恢复已暂停的辩论。
+  rpc ResumeDebate(GetConversationRequest) returns (StopDebateReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates/current/resume"
+    };
+  }
+
+  // AddDebateRole 辩论进行中追加角色（下一轮生效）。
+  rpc AddDebateRole(AddDebateRoleRequest) returns (AddDebateRoleReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates/current/roles"
+      body: "*"
+    };
+  }
+
+  // RemoveDebateRole 辩论进行中移除角色（下一轮生效）。
+  rpc RemoveDebateRole(RemoveDebateRoleRequest) returns (RemoveDebateRoleReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/{id}/debates/current/roles/remove"
+      body: "*"
+    };
+  }
+}

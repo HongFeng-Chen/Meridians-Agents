@@ -1,0 +1,88 @@
+// Package history.v1 定义统一操作历史域的对外契约。
+//
+// 对应 internal/biz/history：MCP 调用、技能使用、记忆召回、RAG 召回、
+// GraphRAG 召回五类「用到了什么」的记录，统一落 op_histories 表，
+// task_id 关联 AgentFactory 任务（0 = 控制台手动调用）。
+// 写路径在各 biz 内部异步完成，本服务只提供查询面。
+syntax = "proto3";
+
+package history.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/history/v1;v1";
+
+// ListHistoriesRequest 操作历史查询。
+message ListHistoriesRequest {
+  // kind 过滤：mcp_call / skill_use / memory_recall / rag_recall / graph_recall，空 = 全部
+  string kind = 1 [json_name = "kind"];
+  // 关联任务 ID（0 = 不过滤）
+  uint64 task_id = 2 [json_name = "task_id"];
+  // 操作对象精确匹配（工具唯一名 / 技能名 / 召回源），空 = 不过滤
+  string ref = 3 [json_name = "ref"];
+  // 操作状态过滤：ok / fail / 空（不过滤）
+  string status = 4 [json_name = "status"];
+  // 按来源会话 ID 过滤（会话链路时间线查询该会话的召回/调用记录），空 = 不过滤
+  string conv_id = 7 [json_name = "conv_id"];
+  int32 limit = 5 [json_name = "limit"];
+  int32 offset = 6 [json_name = "offset"];
+}
+
+// History 一条操作历史。
+message History {
+  uint64 id = 1 [json_name = "id"];
+  // 五类之一
+  string kind = 2 [json_name = "kind"];
+  // 关联任务（0 = 手动/控制台调用）
+  uint64 task_id = 3 [json_name = "task_id"];
+  string agent_key = 4 [json_name = "agent_key"];
+  // 操作对象：工具唯一名 / 技能名 / 召回源标识
+  string ref = 5 [json_name = "ref"];
+  // 输入摘要：查询词或参数 JSON（截断）
+  string query = 6 [json_name = "query"];
+  // 结果摘要：命中数 / 结果片段 / 错误信息（截断）
+  string summary = 7 [json_name = "summary"];
+  bool ok = 8 [json_name = "ok"];
+  int64 latency_ms = 9 [json_name = "latency_ms"];
+  string created_at = 10 [json_name = "created_at"];
+  // 结构化明细 JSON：召回类记录含逐条命中（doc_id / score / 片段正文）
+  string detail = 11 [json_name = "detail"];
+  // 来源会话 ID（会话内调用自动带上；0/空 = 会话外调用）
+  string conv_id = 12 [json_name = "conv_id"];
+}
+
+message ListHistoriesReply {
+  repeated History histories = 1 [json_name = "histories"];
+  int64 total = 2 [json_name = "total"];
+}
+
+// HistoryKindStat 按 kind 聚合的数量。
+message HistoryKindStat {
+  string kind = 1 [json_name = "kind"];
+  string label = 2 [json_name = "label"];
+  int64 count = 3 [json_name = "count"];
+}
+
+message GetHistoryStatsRequest {}
+
+message HistoryStats {
+  int64 total = 1 [json_name = "total"];
+  repeated HistoryKindStat by_kind = 2 [json_name = "by_kind"];
+}
+
+service HistoryService {
+  // ListHistories 操作历史列表（可按 kind / 任务 / 对象 / 状态过滤，时间倒序）。
+  rpc ListHistories(ListHistoriesRequest) returns (ListHistoriesReply) {
+    option (google.api.http) = {
+      get: "/api/histories"
+    };
+  }
+
+  // GetHistoryStats 操作历史统计（总量 + 按 kind 聚合）。
+  rpc GetHistoryStats(GetHistoryStatsRequest) returns (HistoryStats) {
+    option (google.api.http) = {
+      get: "/api/histories/stats"
+    };
+  }
+}

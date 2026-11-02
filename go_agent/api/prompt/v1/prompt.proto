@@ -1,0 +1,437 @@
+// Package prompt.v1 定义提示词工程域的对外契约。
+//
+// 对应 internal/biz/prompt：模板 key 稳定、版本只增不改、任一时刻只有一个
+// active 版本，渲染走「Redis 缓存 → MySQL 活跃版本 → 内置默认」三级回落。
+// 所有字段显式 json_name = snake_case，与后端 encoding/json 输出一致。
+syntax = "proto3";
+
+package prompt.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/prompt/v1;v1";
+
+// Prompt 模板元信息。
+message Prompt {
+  // 稳定标识：字母开头，可含字母数字 _ . -，最长 128 字符
+  string key = 1 [json_name = "key"];
+  string name = 2 [json_name = "name"];
+  // rag | graph | extract | memory | general
+  string scene = 3 [json_name = "scene"];
+  string description = 4 [json_name = "description"];
+  repeated string tags = 5 [json_name = "tags"];
+  // 当前生效版本号，0 表示尚未发布
+  int32 active_version = 6 [json_name = "active_version"];
+  // 是否代码内置模板
+  bool builtin = 7 [json_name = "builtin"];
+  int32 version_count = 8 [json_name = "version_count"];
+  string created_at = 9 [json_name = "created_at"];
+  string updated_at = 10 [json_name = "updated_at"];
+}
+
+// Version 不可变的版本快照。
+message Version {
+  string prompt_key = 1 [json_name = "prompt_key"];
+  int32 version = 2 [json_name = "version"];
+  string content = 3 [json_name = "content"];
+  // 模板里出现的变量名（{{var}} 形式）
+  repeated string variables = 4 [json_name = "variables"];
+  double temperature = 5 [json_name = "temperature"];
+  int32 max_tokens = 6 [json_name = "max_tokens"];
+  string note = 7 [json_name = "note"];
+  string author = 8 [json_name = "author"];
+  bool active = 9 [json_name = "active"];
+  string created_at = 10 [json_name = "created_at"];
+}
+
+// Detail 模板详情 = 元信息 + 当前生效版本（Go 侧是嵌入结构，JSON 为扁平结构）。
+message Detail {
+  string key = 1 [json_name = "key"];
+  string name = 2 [json_name = "name"];
+  string scene = 3 [json_name = "scene"];
+  string description = 4 [json_name = "description"];
+  repeated string tags = 5 [json_name = "tags"];
+  int32 active_version = 6 [json_name = "active_version"];
+  bool builtin = 7 [json_name = "builtin"];
+  int32 version_count = 8 [json_name = "version_count"];
+  string created_at = 9 [json_name = "created_at"];
+  string updated_at = 10 [json_name = "updated_at"];
+  // 尚未发布时为 null
+  Version active = 11 [json_name = "active"];
+}
+
+// BuiltinPrompt 代码内置模板（前端「恢复默认」入口用）。
+message BuiltinPrompt {
+  string key = 1 [json_name = "key"];
+  string name = 2 [json_name = "name"];
+  string scene = 3 [json_name = "scene"];
+  string description = 4 [json_name = "description"];
+  repeated string tags = 5 [json_name = "tags"];
+  string content = 6 [json_name = "content"];
+  repeated string variables = 7 [json_name = "variables"];
+  double temperature = 8 [json_name = "temperature"];
+  int32 max_tokens = 9 [json_name = "max_tokens"];
+}
+
+// PromptStats 规模统计。
+message PromptStats {
+  int64 prompts = 1 [json_name = "prompts"];
+  int64 versions = 2 [json_name = "versions"];
+}
+
+message ListPromptsRequest {
+  // 按场景过滤
+  string scene = 1 [json_name = "scene"];
+  // 关键字（key / name / description）
+  string q = 2 [json_name = "q"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message ListPromptsReply {
+  repeated Prompt prompts = 1 [json_name = "prompts"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetPromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+}
+
+message CreatePromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  string name = 2 [json_name = "name"];
+  string scene = 3 [json_name = "scene"];
+  string description = 4 [json_name = "description"];
+  repeated string tags = 5 [json_name = "tags"];
+  // 首个版本的内容
+  string content = 6 [(google.api.field_behavior) = REQUIRED, json_name = "content"];
+  double temperature = 7 [json_name = "temperature"];
+  int32 max_tokens = 8 [json_name = "max_tokens"];
+  string note = 9 [json_name = "note"];
+  string author = 10 [json_name = "author"];
+}
+
+// UpdatePromptRequest 只改元信息；内容变更走版本发布。
+message UpdatePromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  optional string name = 2 [json_name = "name"];
+  optional string scene = 3 [json_name = "scene"];
+  optional string description = 4 [json_name = "description"];
+  repeated string tags = 5 [json_name = "tags"];
+}
+
+message DeletePromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+}
+
+message DeletePromptReply {
+  bool deleted = 1 [json_name = "deleted"];
+}
+
+message ListVersionsRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message ListVersionsReply {
+  repeated Version versions = 1 [json_name = "versions"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message GetVersionRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  int32 version = 2 [(google.api.field_behavior) = REQUIRED, json_name = "version"];
+}
+
+// PublishVersionRequest 发布新版本；activate 缺省 true（发布即生效）。
+message PublishVersionRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  string content = 2 [(google.api.field_behavior) = REQUIRED, json_name = "content"];
+  double temperature = 3 [json_name = "temperature"];
+  int32 max_tokens = 4 [json_name = "max_tokens"];
+  string note = 5 [json_name = "note"];
+  string author = 6 [json_name = "author"];
+  optional bool activate = 7 [json_name = "activate"];
+}
+
+message ActivatePromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  int32 version = 2 [(google.api.field_behavior) = REQUIRED, json_name = "version"];
+}
+
+message RollbackPromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+}
+
+message RenderPromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  map<string, string> vars = 2 [json_name = "vars"];
+  // 0 表示用当前生效版本
+  int32 version = 3 [json_name = "version"];
+}
+
+// RenderResult 预览渲染结果（缺变量不报错，列出来给前端高亮）。
+message RenderResult {
+  string key = 1 [json_name = "key"];
+  int32 version = 2 [json_name = "version"];
+  string content = 3 [json_name = "content"];
+  string rendered = 4 [json_name = "rendered"];
+  repeated string variables = 5 [json_name = "variables"];
+  repeated string missing = 6 [json_name = "missing"];
+}
+
+message ResetPromptRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  string author = 2 [json_name = "author"];
+}
+
+message GetPromptStatsRequest {}
+
+message ListBuiltinsRequest {}
+
+message ListBuiltinsReply {
+  repeated BuiltinPrompt builtins = 1 [json_name = "builtins"];
+  int32 total = 2 [json_name = "total"];
+}
+
+// PromptService 提示词模板与版本管理 + 提示词工程（LLM 打分/生成/优化）。
+//
+// 注意：gorilla/mux 按注册顺序匹配，/{key} 必须排在 /stats、/builtins 之后，
+// 因此声明顺序里把静态路径的 RPC 放前面（生成代码按本顺序注册路由）。
+
+// StudioScoreRequest 对一段提示词做 LLM 评分。
+message StudioScoreRequest {
+  // 待评分的提示词原文
+  string prompt = 1 [(google.api.field_behavior) = REQUIRED, json_name = "prompt"];
+  // 该提示词要完成的任务/场景描述（可选，越准打分越有针对性）
+  string task = 2 [json_name = "task"];
+  // 指定 LLM 数据源（空 = 平台 default 链路）
+  string llm_source = 3 [json_name = "llm_source"];
+}
+
+// ScoreDimension 单个评分维度。
+message ScoreDimension {
+  // 维度名：清晰度 / 结构化 / 角色设定 / 约束完备 / 可执行性 等
+  string name = 1 [json_name = "name"];
+  // 0-100
+  int32 score = 2 [json_name = "score"];
+  string comment = 3 [json_name = "comment"];
+}
+
+// PromptScoreReport 评分报告。
+message PromptScoreReport {
+  // 加权总分 0-100
+  int32 total = 1 [json_name = "total"];
+  // A / B / C / D
+  string grade = 2 [json_name = "grade"];
+  repeated ScoreDimension dimensions = 3 [json_name = "dimensions"];
+  // 主要问题（按严重程度排序）
+  repeated string issues = 4 [json_name = "issues"];
+  // 改进建议
+  repeated string suggestions = 5 [json_name = "suggestions"];
+  // 一句话总评
+  string summary = 6 [json_name = "summary"];
+  // 实际使用的模型
+  string model = 7 [json_name = "model"];
+}
+
+// StudioGenerateRequest 按需求描述生成提示词。
+message StudioGenerateRequest {
+  // 需求描述：这个 Agent 要做什么、擅长什么（必填）
+  string task = 1 [(google.api.field_behavior) = REQUIRED, json_name = "task"];
+  // 角色名（可选，用于人设）
+  string role_name = 2 [json_name = "role_name"];
+  // 额外要求：语气 / 输出格式 / 禁止事项 等（可选）
+  string extra_requirements = 3 [json_name = "extra_requirements"];
+  string llm_source = 4 [json_name = "llm_source"];
+}
+
+// StudioPromptDraft 生成结果。
+message StudioPromptDraft {
+  string prompt = 1 [json_name = "prompt"];
+  // 建议的 Agent 名称
+  string name = 2 [json_name = "name"];
+  // 设计要点说明
+  repeated string highlights = 3 [json_name = "highlights"];
+  string model = 4 [json_name = "model"];
+}
+
+// StudioOptimizeRequest 优化已有提示词。
+message StudioOptimizeRequest {
+  string prompt = 1 [(google.api.field_behavior) = REQUIRED, json_name = "prompt"];
+  // 任务/场景描述（可选，帮助对齐优化方向）
+  string task = 2 [json_name = "task"];
+  // 优化目标，如「更简洁」「输出更稳定」「减少幻觉」（可选）
+  string goal = 3 [json_name = "goal"];
+  string llm_source = 4 [json_name = "llm_source"];
+}
+
+// StudioOptimizeResult 优化结果：新提示词 + 改动说明 + 前后分。
+message StudioOptimizeResult {
+  string prompt = 1 [json_name = "prompt"];
+  // 改了什么、为什么改
+  repeated string changes = 2 [json_name = "changes"];
+  int32 score_before = 3 [json_name = "score_before"];
+  int32 score_after = 4 [json_name = "score_after"];
+  string model = 5 [json_name = "model"];
+}
+
+// ListPromptScoresRequest 版本得分查询
+message ListPromptScoresRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+// PromptScoreRecord 一次版本评测得分（harness 运行回写）
+message PromptScoreRecord {
+  int32 version = 1 [json_name = "version"];
+  int64 run_id = 2 [json_name = "run_id"];
+  double score = 3 [json_name = "score"];
+  int32 cases = 4 [json_name = "cases"];
+  string created_at = 5 [json_name = "created_at"];
+}
+
+// PromptScoresReply 版本得分列表
+message PromptScoresReply {
+  repeated PromptScoreRecord scores = 1 [json_name = "scores"];
+}
+
+service PromptService {
+  // ListPrompts 模板列表。
+  rpc ListPrompts(ListPromptsRequest) returns (ListPromptsReply) {
+    option (google.api.http) = {
+      get: "/api/prompts"
+    };
+  }
+
+  // GetPromptStats 模板与版本数量。
+  rpc GetPromptStats(GetPromptStatsRequest) returns (PromptStats) {
+    option (google.api.http) = {
+      get: "/api/prompts/stats"
+    };
+  }
+
+  // ListBuiltins 代码内置模板清单。
+  rpc ListBuiltins(ListBuiltinsRequest) returns (ListBuiltinsReply) {
+    option (google.api.http) = {
+      get: "/api/prompts/builtins"
+    };
+  }
+
+  // GetPrompt 模板详情（含当前生效版本）。
+  rpc GetPrompt(GetPromptRequest) returns (Detail) {
+    option (google.api.http) = {
+      get: "/api/prompts/{key}"
+    };
+  }
+
+  // CreatePrompt 新建模板并写入首个版本（默认立即生效）。
+  rpc CreatePrompt(CreatePromptRequest) returns (Detail) {
+    option (google.api.http) = {
+      post: "/api/prompts"
+      body: "*"
+    };
+  }
+
+  // UpdatePrompt 修改模板元信息。
+  rpc UpdatePrompt(UpdatePromptRequest) returns (Detail) {
+    option (google.api.http) = {
+      patch: "/api/prompts/{key}"
+      body: "*"
+    };
+  }
+
+  // DeletePrompt 删除模板（内置模板不可删除，用 ResetPrompt 恢复）。
+  rpc DeletePrompt(DeletePromptRequest) returns (DeletePromptReply) {
+    option (google.api.http) = {
+      delete: "/api/prompts/{key}"
+    };
+  }
+
+  // ListVersions 版本历史。
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsReply) {
+    option (google.api.http) = {
+      get: "/api/prompts/{key}/versions"
+    };
+  }
+
+  // PublishVersion 发布新版本。
+  rpc PublishVersion(PublishVersionRequest) returns (Version) {
+    option (google.api.http) = {
+      post: "/api/prompts/{key}/versions"
+      body: "*"
+    };
+  }
+
+  // GetVersion 查询指定版本。
+  rpc GetVersion(GetVersionRequest) returns (Version) {
+    option (google.api.http) = {
+      get: "/api/prompts/{key}/versions/{version}"
+    };
+  }
+
+  // ActivatePrompt 激活指定版本。
+  rpc ActivatePrompt(ActivatePromptRequest) returns (Detail) {
+    option (google.api.http) = {
+      post: "/api/prompts/{key}/activate"
+      body: "*"
+    };
+  }
+
+  // RollbackPrompt 回滚到上一个版本。
+  rpc RollbackPrompt(RollbackPromptRequest) returns (Detail) {
+    option (google.api.http) = {
+      post: "/api/prompts/{key}/rollback"
+    };
+  }
+
+  // RenderPrompt 渲染预览（不调用大模型）。
+  rpc RenderPrompt(RenderPromptRequest) returns (RenderResult) {
+    option (google.api.http) = {
+      post: "/api/prompts/{key}/render"
+      body: "*"
+    };
+  }
+
+// ResetPrompt 恢复内置默认内容（追加为新版本）。
+  rpc ResetPrompt(ResetPromptRequest) returns (Version) {
+    option (google.api.http) = {
+      post: "/api/prompts/{key}/reset"
+      body: "*"
+    };
+  }
+  // ===== 提示词工程（LLM 驱动：打分 / 生成 / 优化）=====
+  //
+  // 三个 RPC 都会真实调用大模型（走 llm.Manager，可指定数据源），
+  // 返回结构化 JSON；失败统一报 upstream 错误。
+
+  // ScorePrompt 提示词打分：多维评分 + 问题清单 + 改进建议。
+  rpc ScorePrompt(StudioScoreRequest) returns (PromptScoreReport) {
+    option (google.api.http) = {
+      post: "/api/prompts/studio/score"
+      body: "*"
+    };
+  }
+
+  // GeneratePrompt 按需求描述生成角色提示词。
+  rpc GeneratePrompt(StudioGenerateRequest) returns (StudioPromptDraft) {
+    option (google.api.http) = {
+      post: "/api/prompts/studio/generate"
+      body: "*"
+    };
+  }
+
+  // OptimizePrompt 优化已有提示词，返回改后版本与改动说明。
+  rpc OptimizePrompt(StudioOptimizeRequest) returns (StudioOptimizeResult) {
+    option (google.api.http) = {
+      post: "/api/prompts/studio/optimize"
+      body: "*"
+    };
+  }
+
+  // ListPromptScores 提示词版本的评测得分列表（harness 回写，时间倒序）。
+  rpc ListPromptScores(ListPromptScoresRequest) returns (PromptScoresReply) {
+    option (google.api.http) = { get: "/api/prompts/{key}/scores" };
+  }
+
+}

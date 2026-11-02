@@ -1,0 +1,50 @@
+# go_agent 本地开发依赖：MySQL（文档元数据）+ Redis（问答缓存/入库锁）
+# Milvus 仍复用 rag-system/docker-compose.yml（或 k8s 里的 rag-system 命名空间）。
+#
+#   docker compose -f deploy/compose.yaml up -d
+#   docker compose -f deploy/compose.yaml ps
+#
+# 连接信息与 configs/config.yaml 默认值一致：
+#   MySQL  root/root@tcp(127.0.0.1:3306)/go_agent?charset=utf8mb4
+#   Redis  127.0.0.1:6379
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: go-agent-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: go_agent
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: go-agent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql_data:
+  redis_data:

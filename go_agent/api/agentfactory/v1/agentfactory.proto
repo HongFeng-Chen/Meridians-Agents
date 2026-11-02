@@ -1,0 +1,454 @@
+// Package agentfactory.v1 定义 Agent 低代码工厂域的对外契约。
+//
+// 对应 internal/biz/agentfactory：
+//   - Agent 是数据（AgentDef 定义）：MySQL 存定义，Milvus 向量注册表做语义召回，Redis 热缓存；
+//   - AgentFactory 把「造 Agent」做成能力（create_agent 元编程），护栏：能力白名单、防自举、配额、沙箱；
+//   - AgentRuntime 读定义执行（react / simple 执行图），Agent 也是能力（agent:<key>），支持多 Agent 委派协作；
+//   - 任务异步执行：Redis 队列 + worker 池，事件流（trace）支撑链路检索，任务快照支撑实时状态轮询。
+//
+// 路由顺序约定：静态路径必须声明在带 {id} 的路由之前（/agents/create-by-llm、/agents/search
+// 先于 /agents/{id}；/tasks/stats 先于 /tasks/{id}）。
+syntax = "proto3";
+
+package agentfactory.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/agentfactory/v1;v1";
+
+// —— Agent 定义 ——
+
+// AgentDef Agent 的可配置定义（数据，不是代码）
+message AgentDef {
+  uint64 id = 1 [json_name = "id"];
+  // 全局唯一标识（委派能力名 = agent:<agent_key>）
+  string agent_key = 2 [json_name = "agent_key"];
+  string name = 3 [json_name = "name"];
+  // 给 LLM 看的职责描述（语义召回向量化来源）
+  string description = 4 [json_name = "description"];
+  // 角色提示词
+  string system = 5 [json_name = "system"];
+  // 指定模型（空 = 平台默认数据源）
+  string llm_model = 6 [json_name = "llm_model"];
+  // 执行图：react | simple
+  string graph_type = 7 [json_name = "graph_type"];
+  // 能力白名单：create_agent / agent:<key> / mcp:<unique_name>
+  repeated string capabilities = 8 [json_name = "capabilities"];
+  // 中间件：audit（恒开启）
+  repeated string middlewares = 9 [json_name = "middlewares"];
+  int32 max_turns = 10 [json_name = "max_turns"];
+  // 沙箱灰度：禁止委派其他 Agent
+  bool sandbox = 11 [json_name = "sandbox"];
+  // 来源：manual | llm
+  string source = 12 [json_name = "source"];
+  // 定义版本（每次更新 +1）
+  int32 version = 13 [json_name = "version"];
+  bool enabled = 14 [json_name = "enabled"];
+  // 向量是否已写入 Milvus
+  bool vectorized = 15 [json_name = "vectorized"];
+  string created_at = 16 [json_name = "created_at"];
+  string updated_at = 17 [json_name = "updated_at"];
+  // 角色：root | sub | supervisor | risk
+  string role = 18 [json_name = "role"];
+  // 成员编排方式：auto | serial | parallel（仅 root 生效）
+  string orchestration = 19 [json_name = "orchestration"];
+  // 编排成员（agent_key 列表）
+  repeated string members = 20 [json_name = "members"];
+  // 监察 Agent（role=supervisor 的 agent_key）
+  string supervisor_key = 21 [json_name = "supervisor_key"];
+  // 监察范围（仅 supervisor 角色使用，空或 * = 全部成员）
+  repeated string supervision_scope = 22 [json_name = "supervision_scope"];
+  // 风险评估 Agent（role=risk 的 agent_key，仅 MCP 调用前生效）
+  string risk_agent_key = 23 [json_name = "risk_agent_key"];
+  // 后台自动运行
+  bool auto_run = 24 [json_name = "auto_run"];
+  // 5 段 cron 表达式
+  string cron_expr = 25 [json_name = "cron_expr"];
+  // 定时运行的固定输入
+  string cron_input = 26 [json_name = "cron_input"];
+  // 下次 / 上次自动运行时间
+  string next_run_at = 27 [json_name = "next_run_at"];
+  string last_run_at = 28 [json_name = "last_run_at"];
+  // 编排画布布局（JSON 字符串：{"positions":{"<agent_key>":{"x":120,"y":112}}}）
+  string flow = 29 [json_name = "flow"];
+  // 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
+  string llm_source = 30 [json_name = "llm_source"];
+}
+
+// AgentInput 创建/更新定义的入参
+message AgentInput {
+  string agent_key = 1 [json_name = "agent_key"];
+  string name = 2 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string description = 3 [json_name = "description"];
+  string system = 4 [json_name = "system"];
+  string llm_model = 5 [json_name = "llm_model"];
+  string graph_type = 6 [json_name = "graph_type"];
+  repeated string capabilities = 7 [json_name = "capabilities"];
+  repeated string middlewares = 8 [json_name = "middlewares"];
+  int32 max_turns = 9 [json_name = "max_turns"];
+  bool sandbox = 10 [json_name = "sandbox"];
+  // 角色：root | sub | supervisor | risk
+  string role = 11 [json_name = "role"];
+  // 成员编排方式：auto | serial | parallel
+  string orchestration = 12 [json_name = "orchestration"];
+  repeated string members = 13 [json_name = "members"];
+  string supervisor_key = 14 [json_name = "supervisor_key"];
+  repeated string supervision_scope = 15 [json_name = "supervision_scope"];
+  string risk_agent_key = 16 [json_name = "risk_agent_key"];
+  bool auto_run = 17 [json_name = "auto_run"];
+  string cron_expr = 18 [json_name = "cron_expr"];
+  string cron_input = 19 [json_name = "cron_input"];
+  // 编排画布布局（JSON 字符串）
+  string flow = 20 [json_name = "flow"];
+  // 默认模型数据源（空 = 平台默认），调用失败回退 default
+  string llm_source = 21 [json_name = "llm_source"];
+}
+
+// CapabilitySchema 能力的自描述（白名单选择器 + LLM 提示词共用）
+message CapabilitySchema {
+  // create_agent / agent:<key> / mcp:<unique_name>
+  string name = 1 [json_name = "name"];
+  // factory | agent | mcp
+  string type = 2 [json_name = "type"];
+  string description = 3 [json_name = "description"];
+  // 参数示例（JSON 对象字符串）
+  string args_example = 4 [json_name = "args_example"];
+  bool disabled = 5 [json_name = "disabled"];
+}
+
+// —— 任务 ——
+
+// AgentTask 异步任务（parent_task_id 形成多 Agent 协作链路树）
+message AgentTask {
+  uint64 id = 1 [json_name = "id"];
+  uint64 agent_def_id = 2 [json_name = "agent_def_id"];
+  string agent_key = 3 [json_name = "agent_key"];
+  // 输入摘要（列表展示）
+  string title = 4 [json_name = "title"];
+  string input = 5 [json_name = "input"];
+  // pending | running | succeeded | failed | canceled
+  string status = 6 [json_name = "status"];
+  // 0~100
+  int32 progress = 7 [json_name = "progress"];
+  string result = 8 [json_name = "result"];
+  string error_msg = 9 [json_name = "error_msg"];
+  // 父任务（0 = 根任务）
+  uint64 parent_task_id = 10 [json_name = "parent_task_id"];
+  // 委派深度（根=0）
+  int32 depth = 11 [json_name = "depth"];
+  string created_at = 12 [json_name = "created_at"];
+  string started_at = 13 [json_name = "started_at"];
+  string finished_at = 14 [json_name = "finished_at"];
+  // 是否已归档到任务历史表（终态任务从任务池迁出）
+  bool archived = 15 [json_name = "archived"];
+  // 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
+  string conv_id = 16 [json_name = "conv_id"];
+}
+
+// TaskEvent 任务事件（trace 链路检索单元）
+message TaskEvent {
+  uint64 id = 1 [json_name = "id"];
+  uint64 task_id = 2 [json_name = "task_id"];
+  // 执行轮次（0 = 状态类事件）
+  int32 turn = 3 [json_name = "turn"];
+  // status | thought | tool_call | tool_result | delegate | final | error
+  string type = 4 [json_name = "type"];
+  // JSON 字符串
+  string payload = 5 [json_name = "payload"];
+  string created_at = 6 [json_name = "created_at"];
+}
+
+// AgentFactoryService Agent 低代码工厂 + 异步任务管理。
+service AgentFactoryService {
+  // GetAgentFactoryStats 规模统计（Agent / 任务 / 能力）。
+  rpc GetAgentFactoryStats(GetAgentFactoryStatsRequest) returns (AgentFactoryStats) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/stats"
+    };
+  }
+
+  // ListCapabilities 当前全部可用能力（白名单选择器数据源）。
+  rpc ListCapabilities(ListCapabilitiesRequest) returns (ListCapabilitiesReply) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/capabilities"
+    };
+  }
+
+  // ListAgentDefs 定义列表。
+  rpc ListAgentDefs(ListAgentDefsRequest) returns (ListAgentDefsReply) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/agents"
+    };
+  }
+
+  // CreateAgentDef 人工低代码创建定义。
+  rpc CreateAgentDef(AgentInput) returns (AgentDef) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/agents"
+      body: "*"
+    };
+  }
+
+  // CreateAgentByLLM 元编程入口：把需求交给 LLM 生成 Agent 定义（默认沙箱灰度）。
+  rpc CreateAgentByLLM(CreateAgentByLLMRequest) returns (CreateAgentByLLMReply) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/agents/create-by-llm"
+      body: "*"
+    };
+  }
+
+  // SearchDefs 语义召回：需求 → 最匹配的 Agent 定义（静态路径，声明在 {id} 之前）。
+  rpc SearchAgentDefs(SearchAgentDefsRequest) returns (SearchAgentDefsReply) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/agents/search"
+    };
+  }
+
+  // SyncAgentVectors 全量修复向量注册表。
+  rpc SyncAgentVectors(SyncAgentVectorsRequest) returns (SyncAgentVectorsReply) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/agents/sync-vectors"
+      body: "*"
+    };
+  }
+
+  // GetAgentDef 定义详情。
+  rpc GetAgentDef(GetAgentDefRequest) returns (AgentDef) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/agents/{id}"
+    };
+  }
+
+  // UpdateAgentDef 更新定义（版本 +1，白名单重新校验）。
+  rpc UpdateAgentDef(UpdateAgentDefRequest) returns (AgentDef) {
+    option (google.api.http) = {
+      put: "/api/agentfactory/agents/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteAgentDef 删除定义（连带向量与缓存，任务历史保留）。
+  rpc DeleteAgentDef(DeleteAgentDefRequest) returns (DeleteAgentDefReply) {
+    option (google.api.http) = {
+      delete: "/api/agentfactory/agents/{id}"
+    };
+  }
+
+  // ToggleAgentDef 启停定义（LLM 造的 Agent 验证通过后在此关闭沙箱前先启用）。
+  rpc ToggleAgentDef(ToggleAgentDefRequest) returns (AgentDef) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/agents/{id}/toggle"
+      body: "*"
+    };
+  }
+
+  // SubmitTask 提交异步任务（Redis 队列 + worker 执行）。
+  rpc SubmitTask(SubmitTaskRequest) returns (AgentTask) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/tasks"
+      body: "*"
+    };
+  }
+
+  // GetTaskStats 任务统计（静态路径，声明在 {id} 之前）。
+  rpc GetTaskStats(GetTaskStatsRequest) returns (TaskStats) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/tasks/stats"
+    };
+  }
+
+  // ListTasks 任务列表（可按 agent/status/父任务过滤）。
+  rpc ListTasks(ListTasksRequest) returns (ListTasksReply) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/tasks"
+    };
+  }
+
+  // GetTask 任务详情（运行中任务优先读 Redis 快照，实时性更好）。
+  rpc GetTask(GetTaskRequest) returns (AgentTask) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/tasks/{id}"
+    };
+  }
+
+  // CancelTask 取消任务（pending 直接置 canceled；running 中断执行）。
+  rpc CancelTask(CancelTaskRequest) returns (AgentTask) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/tasks/{id}/cancel"
+      body: "*"
+    };
+  }
+
+  // RetryTask 重试终态任务（重置为 pending 重新入队，trace 保留）。
+  rpc RetryTask(RetryTaskRequest) returns (AgentTask) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/tasks/{id}/retry"
+      body: "*"
+    };
+  }
+
+  // ListTaskEvents 任务事件流（trace 链路检索）。
+  rpc ListTaskEvents(ListTaskEventsRequest) returns (ListTaskEventsReply) {
+    option (google.api.http) = {
+      get: "/api/agentfactory/tasks/{id}/events"
+    };
+  }
+}
+
+// —— 请求/响应 ——
+
+message GetAgentFactoryStatsRequest {}
+
+message AgentFactoryStats {
+  int64 agents = 1 [json_name = "agents"];
+  int64 enabled_agents = 2 [json_name = "enabled_agents"];
+  // LLM 元编程创建的 Agent 数
+  int64 llm_born = 3 [json_name = "llm_born"];
+  // 沙箱灰度中的 Agent 数
+  int64 sandboxed = 4 [json_name = "sandboxed"];
+  int64 vectorized = 5 [json_name = "vectorized"];
+  int64 tasks = 6 [json_name = "tasks"];
+  int64 pending = 7 [json_name = "pending"];
+  int64 running = 8 [json_name = "running"];
+  int64 succeeded = 9 [json_name = "succeeded"];
+  int64 failed = 10 [json_name = "failed"];
+  int64 canceled = 11 [json_name = "canceled"];
+  // 当前可用能力总数（含 MCP 工具与可委派 Agent）
+  int64 capabilities = 12 [json_name = "capabilities"];
+}
+
+message ListCapabilitiesRequest {}
+
+message ListCapabilitiesReply {
+  repeated CapabilitySchema capabilities = 1 [json_name = "capabilities"];
+}
+
+message ListAgentDefsRequest {
+  string keyword = 1 [json_name = "keyword"];
+  // manual | llm | 空
+  string source = 2 [json_name = "source"];
+  // "1/true/0/false/空"
+  string enabled = 3 [json_name = "enabled"];
+  int32 limit = 4 [json_name = "limit"];
+}
+
+message ListAgentDefsReply {
+  repeated AgentDef agents = 1 [json_name = "agents"];
+  int64 total = 2 [json_name = "total"];
+}
+
+message CreateAgentByLLMRequest {
+  // 需求描述：想造一个干什么、需要哪些能力的 Agent
+  string requirement = 1 [(google.api.field_behavior) = REQUIRED, json_name = "requirement"];
+}
+
+message CreateAgentByLLMReply {
+  AgentDef agent = 1 [json_name = "agent"];
+  // LLM 生成的原始定义（调试用）
+  string raw_output = 2 [json_name = "raw_output"];
+}
+
+message SearchAgentDefsRequest {
+  string query = 1 [(google.api.field_behavior) = REQUIRED, json_name = "query"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message SearchAgentDefsReply {
+  repeated AgentDefHit hits = 1 [json_name = "hits"];
+}
+
+message AgentDefHit {
+  AgentDef agent = 1 [json_name = "agent"];
+  double score = 2 [json_name = "score"];
+  // 命中来源（milvus）
+  string source = 3 [json_name = "source"];
+}
+
+message SyncAgentVectorsRequest {}
+
+message SyncAgentVectorsReply {
+  int32 synced = 1 [json_name = "synced"];
+}
+
+message GetAgentDefRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message UpdateAgentDefRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  AgentInput input = 2 [(google.api.field_behavior) = REQUIRED, json_name = "input"];
+}
+
+message DeleteAgentDefRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message DeleteAgentDefReply {
+  uint64 id = 1 [json_name = "id"];
+}
+
+message ToggleAgentDefRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  bool enabled = 2 [json_name = "enabled"];
+}
+
+message SubmitTaskRequest {
+  // 与 agent_key 二选一
+  uint64 agent_def_id = 1 [json_name = "agent_def_id"];
+  string agent_key = 2 [json_name = "agent_key"];
+  // 任务输入（自然语言）
+  string input = 3 [(google.api.field_behavior) = REQUIRED, json_name = "input"];
+}
+
+message GetTaskStatsRequest {}
+
+message TaskStats {
+  int64 tasks = 1 [json_name = "tasks"];
+  int64 pending = 2 [json_name = "pending"];
+  int64 running = 3 [json_name = "running"];
+  int64 succeeded = 4 [json_name = "succeeded"];
+  int64 failed = 5 [json_name = "failed"];
+  int64 canceled = 6 [json_name = "canceled"];
+}
+
+message ListTasksRequest {
+  uint64 agent_def_id = 1 [json_name = "agent_def_id"];
+  string agent_key = 2 [json_name = "agent_key"];
+  // pending | running | succeeded | failed | canceled | 空
+  string status = 3 [json_name = "status"];
+  string keyword = 4 [json_name = "keyword"];
+  // >0 时只列出该父任务的直接子任务
+  uint64 parent_task_id = 5 [json_name = "parent_task_id"];
+  int32 limit = 6 [json_name = "limit"];
+  // 只列出根任务（parent_task_id = 0）；任务中心列表用，子任务经链路弹层查看
+  bool root_only = 7 [json_name = "root_only"];
+  // 按来源会话 ID 过滤（会话链路弹层查该会话编排产生的任务）
+  string conv_id = 8 [json_name = "conv_id"];
+}
+
+message ListTasksReply {
+  repeated AgentTask tasks = 1 [json_name = "tasks"];
+  int64 total = 2 [json_name = "total"];
+}
+
+message GetTaskRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message CancelTaskRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message RetryTaskRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message ListTaskEventsRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message ListTaskEventsReply {
+  repeated TaskEvent events = 1 [json_name = "events"];
+}

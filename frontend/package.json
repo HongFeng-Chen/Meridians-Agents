@@ -1,0 +1,26 @@
+{
+  "name": "meridians-console",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Meridians 经纬 · 智能体平台管理控制台（Agent 工厂 / RAG+GraphRAG / 提示词工程 / 评测）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "gen:sdk": "node scripts/gen-sdk.mjs",
+    "test:sdk": "node scripts/test-sdk.mjs",
+    "smoke:pages": "node scripts/smoke-pages.mjs"
+  },
+  "dependencies": {
+    "mermaid": "^12.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "puppeteer-core": "^25.16.0",
+    "vite": "^6.0.0",
+    "yaml": "^2.9.1"
+  }
+}

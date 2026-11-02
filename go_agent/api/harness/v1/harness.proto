@@ -1,0 +1,274 @@
+// Package harness.v1 定义评测 Harness 域的对外契约。
+//
+// 对应 internal/biz/harness：评测执行框架——用例集（被测对象 + 用例集合）→
+// 启动异步运行 → 逐例执行（agent:<key> 走 Agent 执行图，model:<name> 走模型直连）→
+// 规则断言 + LLM-as-Judge 判分 → 报告聚合（进度实时落库，前端轮询）。
+//
+// 判分七类断言：contains / not_contains / regex / json_valid /
+// min_length / max_length / llm_judge（Pattern 为评分要点）。
+syntax = "proto3";
+
+package harness.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/harness/v1;v1";
+
+// Check 一条断言规则。
+message Check {
+  // contains | not_contains | regex | json_valid | min_length | max_length | llm_judge
+  string kind = 1 [json_name = "kind"];
+  // 文本 / 正则 / 长度数字 / 评分要点
+  string pattern = 2 [json_name = "pattern"];
+  // 权重，0 按 1 计
+  double weight = 3 [json_name = "weight"];
+}
+
+// CheckResult 单条断言的判定结果。
+message CheckResult {
+  string kind = 1 [json_name = "kind"];
+  string pattern = 2 [json_name = "pattern"];
+  bool passed = 3 [json_name = "passed"];
+  double weight = 4 [json_name = "weight"];
+  // 失败原因 / LLM Judge 评语
+  string detail = 5 [json_name = "detail"];
+}
+
+// EvalSet 用例集：一个被测对象的一组用例（评测的调度单位）。
+message EvalSet {
+  int64 id = 1 [json_name = "id"];
+  string name = 2 [json_name = "name"];
+  string description = 3 [json_name = "description"];
+  // 默认被测对象：agent:<agent_key> 或 model:<模型名>
+  string target = 4 [json_name = "target"];
+  repeated string tags = 5 [json_name = "tags"];
+  bool enabled = 6 [json_name = "enabled"];
+  // 派生：启用用例数
+  int32 case_count = 7 [json_name = "case_count"];
+  string created_at = 8 [json_name = "created_at"];
+  string updated_at = 9 [json_name = "updated_at"];
+}
+
+// EvalCase 评测用例：输入 + 期望 + 判分规则。
+message EvalCase {
+  int64 id = 1 [json_name = "id"];
+  int64 set_id = 2 [json_name = "set_id"];
+  string name = 3 [json_name = "name"];
+  // 喂给被测对象的输入
+  string input = 4 [json_name = "input"];
+  // 可选前置上下文（拼接在输入前）
+  string context = 5 [json_name = "context"];
+  // 参考答案（llm_judge 与人工比对用）
+  string expect = 6 [json_name = "expect"];
+  repeated Check checks = 7 [json_name = "checks"];
+  repeated string tags = 8 [json_name = "tags"];
+  bool enabled = 9 [json_name = "enabled"];
+  string created_at = 10 [json_name = "created_at"];
+  string updated_at = 11 [json_name = "updated_at"];
+}
+
+// RunConfig 运行配置。
+message RunConfig {
+  // 覆盖用例集默认被测对象；空用默认值
+  string target = 1 [json_name = "target"];
+  // LLM Judge 使用的模型；空走默认源
+  string judge_model = 2 [json_name = "judge_model"];
+  // 并发用例数（默认 2）
+  int32 concurrency = 3 [json_name = "concurrency"];
+  // 单用例超时秒（默认 120）
+  int32 per_case_timeout_sec = 4 [json_name = "per_case_timeout_sec"];
+}
+
+// EvalRun 一次评测运行（进度实时落库，前端轮询）。
+message EvalRun {
+  int64 id = 1 [json_name = "id"];
+  int64 set_id = 2 [json_name = "set_id"];
+  string set_name = 3 [json_name = "set_name"];
+  string target = 4 [json_name = "target"];
+  // pending | running | succeeded | failed | canceled
+  string status = 5 [json_name = "status"];
+  int32 total = 6 [json_name = "total"];
+  int32 done = 7 [json_name = "done"];
+  int32 passed = 8 [json_name = "passed"];
+  int32 failed = 9 [json_name = "failed"];
+  // 执行报错的用例数（不计入判分分母）
+  int32 errored = 10 [json_name = "errored"];
+  // 加权平均分 0-100
+  double score = 11 [json_name = "score"];
+  // 提示词版本评测标注（可选，运行时回写得分到提示词工程）
+  string prompt_key = 18 [json_name = "prompt_key"];
+  int32 prompt_version = 19 [json_name = "prompt_version"];
+  int64 cost_ms = 12 [json_name = "cost_ms"];
+  RunConfig config = 13 [json_name = "config"];
+  string error = 14 [json_name = "error"];
+  string created_at = 15 [json_name = "created_at"];
+  string finished_at = 16 [json_name = "finished_at"];
+}
+
+// RunItem 单用例运行结果。
+message RunItem {
+  int64 id = 1 [json_name = "id"];
+  int64 run_id = 2 [json_name = "run_id"];
+  int64 case_id = 3 [json_name = "case_id"];
+  string case_name = 4 [json_name = "case_name"];
+  // 被测对象原始输出
+  string output = 5 [json_name = "output"];
+  repeated CheckResult checks = 6 [json_name = "checks"];
+  bool passed = 7 [json_name = "passed"];
+  double score = 8 [json_name = "score"];
+  int64 latency_ms = 9 [json_name = "latency_ms"];
+  int64 prompt_tokens = 10 [json_name = "prompt_tokens"];
+  int64 completion_tokens = 11 [json_name = "completion_tokens"];
+  string error = 12 [json_name = "error"];
+  string created_at = 13 [json_name = "created_at"];
+}
+
+message ListSetsRequest {
+  // 关键词：名称 / 描述 / 被测对象
+  string q = 1 [json_name = "q"];
+  int32 limit = 2 [json_name = "limit"];
+}
+
+message ListSetsReply {
+  repeated EvalSet sets = 1 [json_name = "sets"];
+}
+
+message SaveSetRequest {
+  // 0 = 新建
+  int64 id = 1 [json_name = "id"];
+  string name = 2 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
+  string description = 3 [json_name = "description"];
+  string target = 4 [json_name = "target"];
+  repeated string tags = 5 [json_name = "tags"];
+  bool enabled = 6 [json_name = "enabled"];
+}
+
+message GetSetRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message GetSetReply {
+  EvalSet set = 1 [json_name = "set"];
+  // 全部用例（含停用）
+  repeated EvalCase cases = 2 [json_name = "cases"];
+}
+
+message DeleteSetRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message SaveCaseRequest {
+  // 0 = 新建
+  int64 id = 1 [json_name = "id"];
+  int64 set_id = 2 [(google.api.field_behavior) = REQUIRED, json_name = "set_id"];
+  string name = 3 [json_name = "name"];
+  string input = 4 [(google.api.field_behavior) = REQUIRED, json_name = "input"];
+  string context = 5 [json_name = "context"];
+  string expect = 6 [json_name = "expect"];
+  repeated Check checks = 7 [json_name = "checks"];
+  repeated string tags = 8 [json_name = "tags"];
+  bool enabled = 9 [json_name = "enabled"];
+}
+
+message CaseReply {
+  EvalCase case = 1 [json_name = "case"];
+}
+
+message DeleteCaseRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message StartRunRequest {
+  int64 set_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "set_id"];
+  string target = 2 [json_name = "target"];
+  string judge_model = 3 [json_name = "judge_model"];
+  int32 concurrency = 4 [json_name = "concurrency"];
+  int32 per_case_timeout_sec = 5 [json_name = "per_case_timeout_sec"];
+  // 提示词版本评测标注：运行完成后得分回写提示词工程（提示词优化验证闭环）
+  string prompt_key = 6 [json_name = "prompt_key"];
+  int32 prompt_version = 7 [json_name = "prompt_version"];
+}
+
+message StartRunReply {
+  EvalRun run = 1 [json_name = "run"];
+}
+
+message StopRunRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message ListRunsRequest {
+  int64 set_id = 1 [json_name = "set_id"];
+  string status = 2 [json_name = "status"];
+  int32 limit = 3 [json_name = "limit"];
+}
+
+message ListRunsReply {
+  repeated EvalRun runs = 1 [json_name = "runs"];
+}
+
+message GetRunRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message RunReportReply {
+  EvalRun run = 1 [json_name = "run"];
+  repeated RunItem items = 2 [json_name = "items"];
+}
+
+message DeleteRunRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message StopRunReply {}
+
+message DeleteReply {}
+
+// HarnessService 评测 Harness：用例集 / 用例 / 运行管理。
+service HarnessService {
+  // ListSets 用例集列表（附启用用例数）。
+  rpc ListSets(ListSetsRequest) returns (ListSetsReply) {
+    option (google.api.http) = { get: "/api/harness/sets" };
+  }
+  // SaveSet 新建（id=0）或更新用例集。
+  rpc SaveSet(SaveSetRequest) returns (EvalSet) {
+    option (google.api.http) = { post: "/api/harness/sets" body: "*" };
+  }
+  // GetSet 用例集详情（含全部用例）。
+  rpc GetSet(GetSetRequest) returns (GetSetReply) {
+    option (google.api.http) = { get: "/api/harness/sets/{id}" };
+  }
+  // DeleteSet 删除用例集（进行中的运行会被拒绝）。
+  rpc DeleteSet(DeleteSetRequest) returns (DeleteReply) {
+    option (google.api.http) = { delete: "/api/harness/sets/{id}" };
+  }
+  // SaveCase 新建（id=0）或更新用例。
+  rpc SaveCase(SaveCaseRequest) returns (CaseReply) {
+    option (google.api.http) = { post: "/api/harness/cases" body: "*" };
+  }
+  // DeleteCase 删除用例。
+  rpc DeleteCase(DeleteCaseRequest) returns (DeleteReply) {
+    option (google.api.http) = { delete: "/api/harness/cases/{id}" };
+  }
+  // StartRun 启动评测运行（异步，立即返回运行行）。
+  rpc StartRun(StartRunRequest) returns (StartRunReply) {
+    option (google.api.http) = { post: "/api/harness/sets/{set_id}/runs" body: "*" };
+  }
+  // StopRun 停止运行（在每个用例边界生效，不中断进行中的单例）。
+  rpc StopRun(StopRunRequest) returns (StopRunReply) {
+    option (google.api.http) = { post: "/api/harness/runs/{id}/stop" };
+  }
+  // ListRuns 运行列表（按 set / 状态过滤）。
+  rpc ListRuns(ListRunsRequest) returns (ListRunsReply) {
+    option (google.api.http) = { get: "/api/harness/runs" };
+  }
+  // GetRun 运行报告（运行行 + 全部逐例结果）。
+  rpc GetRun(GetRunRequest) returns (RunReportReply) {
+    option (google.api.http) = { get: "/api/harness/runs/{id}" };
+  }
+  // DeleteRun 删除运行及其逐例结果。
+  rpc DeleteRun(DeleteRunRequest) returns (DeleteReply) {
+    option (google.api.http) = { delete: "/api/harness/runs/{id}" };
+  }
+}
