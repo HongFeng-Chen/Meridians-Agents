@@ -638,6 +638,53 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
     });
   };
 
+  // ---- Ctrl+V 粘贴与拖拽添加附件 ----
+  // 只拦截「剪贴板里是图片/视频文件」的情况（截图工具粘贴即命中），
+  // 纯文本粘贴照常走 textarea 默认行为；辩论模式不收附件，不做拦截。
+  const onPasteFiles = (e) => {
+    if (inDebate) return;
+    const files = [...(e.clipboardData?.files || [])].filter(
+      (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
+    );
+    if (!files.length) return;
+    e.preventDefault();
+    addFiles(files);
+  };
+
+  // 拖拽：挂在聊天主体整块（消息区 + 输入区都可作为落点），
+  // 用 dragenter/dragleave 计数解决子元素来回触发导致的闪烁。
+  const dragDepth = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
+  const onDragEnter = (e) => {
+    if (inDebate || !e.dataTransfer) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragActive(true);
+  };
+  const onDragOver = (e) => {
+    if (inDebate) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDragLeave = (e) => {
+    e.preventDefault();
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0;
+      setDragActive(false);
+    }
+  };
+  const onDropFiles = (e) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    if (inDebate) return;
+    const files = [...(e.dataTransfer?.files || [])].filter(
+      (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
+    );
+    if (files.length) addFiles(files);
+  };
+
   // 组件卸载时回收预览用的 objectURL（经 ref 读最新列表，避免卸载后 setState）
   const pendingRef = useRef([]);
   useEffect(() => {
@@ -863,8 +910,19 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
         </div>
       </aside>
 
-      {/* 会话主体 */}
-      <section className="chat-main panel">
+      {/* 会话主体：整块接受拖拽（图片/视频文件拖进来即加入待发送附件） */}
+      <section
+        className={`chat-main panel${dragActive ? ' chat-drag-active' : ''}`}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDropFiles}
+      >
+        {dragActive && (
+          <div className="chat-drop-hint">
+            <div className="chat-drop-hint-card">🖼 松开鼠标，把图片 / 视频加入待发送附件</div>
+          </div>
+        )}
         {setup ? (
           <>
             {/* 开局失败的报错必须在这里可见：否则「开始辩论」失败时表现为没反应 */}
@@ -1068,11 +1126,12 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
                   placeholder={
                     inDebate
                       ? '监督引导：写下你的补充要求或追问，角色下一轮会读到（不会强迫它们改立场）'
-                      : '发消息…（可点 📎 附图片 / 视频；Enter 发送，Shift+Enter 换行）LLM 会自动决定是否调用 Agent / MCP 工具'
+                      : '发消息…（可点 📎、Ctrl+V 粘贴或拖入图片 / 视频；Enter 发送，Shift+Enter 换行）LLM 会自动决定是否调用 Agent / MCP 工具'
                   }
                   value={input}
                   disabled={busy}
                   onChange={(e) => setInput(e.target.value)}
+                  onPaste={onPasteFiles}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();

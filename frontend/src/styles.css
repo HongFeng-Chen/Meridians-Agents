@@ -1657,6 +1657,28 @@ pre.block {
 .chat-msg.user .chat-atts { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 .nav-conv .nav-conv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
 
+/* 拖拽添加附件：整块高亮 + 居中提示卡 */
+.chat-main.chat-drag-active { outline: 2px dashed #818cf8; outline-offset: -6px; }
+.chat-main.chat-drag-active .chat-composer { background: #eef2ff; }
+.chat-drop-hint {
+  position: absolute; inset: 0; z-index: 30;
+  display: grid; place-items: center;
+  background: rgba(238, 242, 255, 0.55);
+  pointer-events: none;
+}
+.chat-drop-hint-card {
+  padding: 14px 26px;
+  background: #fff;
+  border: 2px dashed #818cf8;
+  border-radius: 14px;
+  color: #4f46e5;
+  font-weight: 600;
+  font-size: 14px;
+  box-shadow: 0 8px 24px rgba(79, 70, 229, 0.15);
+}
+/* 拖拽提示需要相对定位的父容器 */
+.chat-main.panel { position: relative; }
+
 /* ---- 辩论会话 ---- */
 .chat-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .chat-msg { gap: 8px; align-items: flex-start; }
