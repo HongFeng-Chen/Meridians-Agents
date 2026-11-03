@@ -10,7 +10,7 @@
 
 | 目录 | 说明 |
 |---|---|
-| [`go_agent/`](./go_agent) | 后端单体（Go 1.26 · Kratos v3）：RAG / GraphRAG 双知识线、Agent 工厂（12 种执行图）、提示词工程与评测闭环、MCP 工具接入。完整文档见 [go_agent/README.md](./go_agent/README.md) |
+| [`go_agent/`](./go_agent) | 后端单体（Go 1.26 · Kratos v3）：RAG / GraphRAG 双知识线、Agent 工厂（13 种执行图，含自动编排）、提示词工程与评测闭环、MCP 工具接入。完整文档见 [go_agent/README.md](./go_agent/README.md) |
 | [`frontend/`](./frontend) | 管理控制台（React 19 · Vite 6）：会话、知识库、Agent 工厂、提示词工程、评测中心、LLM 观测 |
 
 ## 快速开始

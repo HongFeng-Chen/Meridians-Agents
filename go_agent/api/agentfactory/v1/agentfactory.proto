@@ -74,6 +74,8 @@ message AgentDef {
   string flow = 29 [json_name = "flow"];
   // 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
   string llm_source = 30 [json_name = "llm_source"];
+  // 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
+  bool auto_compose = 31 [json_name = "auto_compose"];
 }
 
 // AgentInput 创建/更新定义的入参
@@ -103,6 +105,8 @@ message AgentInput {
   string flow = 20 [json_name = "flow"];
   // 默认模型数据源（空 = 平台默认），调用失败回退 default
   string llm_source = 21 [json_name = "llm_source"];
+  // 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
+  bool auto_compose = 22 [json_name = "auto_compose"];
 }
 
 // CapabilitySchema 能力的自描述（白名单选择器 + LLM 提示词共用）

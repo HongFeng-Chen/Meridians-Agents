@@ -245,6 +245,11 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 	if rec.task.ConvID != "" {
 		ctx = history.WithConv(ctx, rec.task.ConvID)
 	}
+	// 自动编排：graph_type=auto、多 Agent 图缺成员、或开了 auto_compose 时，
+	// 先让 LLM 判定架构与成员并落库（每任务一次，结果记 orchestrate 事件）。
+	if composed := u.ensureOrchestration(ctx, def, input, rec); composed != nil && composed != def {
+		def = composed
+	}
 	// 编排图优先：flow 里有节点时按 DAG 执行（串并行可混排 + 条件分支）
 	if g := ParseFlowGraph(def.Flow); g != nil && len(g.Nodes) > 1 {
 		return u.runFlowGraph(ctx, def, g, input, rec)
@@ -256,7 +261,7 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 	switch def.GraphType {
 	case GraphSimple:
 		return u.runSimple(ctx, def, input, rec)
-	case GraphReact, "":
+	case GraphReact, "", GraphAuto: // auto 已在 ensureOrchestration 里解析成具体图，这里只是兜底
 		return u.runReact(ctx, def, input, rec)
 	case GraphPlanExecute:
 		return u.runPlanExecute(ctx, def, input, rec)

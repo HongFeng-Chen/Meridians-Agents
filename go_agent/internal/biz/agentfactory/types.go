@@ -52,6 +52,10 @@ const (
 	// GraphBlackboard 黑板：成员围绕同一块共享状态板读写推进
 	GraphBlackboard = "blackboard"
 
+	// GraphAuto 自动编排：任务执行前由 LLM 判定该用哪种执行图、需要几个成员、各自身份，
+	// 需要时自动创建子 Agent（role=sub）后再按选定架构执行。
+	GraphAuto = "auto"
+
 	// CapFactory create_agent 能力名（LLM 元编程入口）
 	CapFactory = "create_agent"
 	// CapAgentPrefix 委派 Agent 能力的前缀，全名 agent:<agent_key>
@@ -69,6 +73,7 @@ const (
 
 // GraphTypes 全部可用的执行图（架构模式），顺序即前端下拉顺序
 var GraphTypes = []string{
+	GraphAuto,
 	GraphSimple,
 	GraphReact,
 	GraphPlanExecute,
@@ -181,6 +186,7 @@ const (
 	EventEvaluate   = "evaluate"    // 评估打分（reflexion），payload: {"round":n,"pass":bool,"score":n,"issues":""}
 	EventReflect    = "reflect"     // 反思教训（reflexion），payload: {"round":n,"lesson":""}
 	EventRoute      = "route"       // 路由决策（router），payload: {"target":"","args":{},"reason":""}
+	EventOrchestrate = "orchestrate" // 自动编排：LLM 选定架构与成员，payload: {"graph_type":"","reason":"","members":[...],"created":[...],"reused":[...]}
 	EventFinal      = "final"       // 最终答案，payload: {"answer":""}
 	EventError      = "error"       // 错误，payload: {"message":""}
 )
@@ -220,9 +226,12 @@ type AgentDef struct {
 	LLMModel string `json:"llm_model"`
 	// LLMSource 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
 	LLMSource string `json:"llm_source"`
-	// GraphType 执行图（架构模式）：simple | react | plan_execute | reflexion | router |
+	// GraphType 执行图（架构模式）：auto | simple | react | plan_execute | reflexion | router |
 	// self_ask | function_call | state_machine | orchestrator | hierarchical | debate | blackboard
 	GraphType string `json:"graph_type"`
+	// AutoCompose 自动装配：每次任务执行前由 LLM 判定架构与成员，必要时自动创建子 Agent。
+	// graph_type=auto 时恒为真；多 Agent 图但 members 为空时也会自动触发一次。
+	AutoCompose bool `json:"auto_compose"`
 	// Role 角色：root | sub | supervisor | risk
 	Role string `json:"role"`
 	// Orchestration 成员编排方式：auto | serial | parallel（仅 root 生效）
@@ -310,6 +319,8 @@ type AgentInput struct {
 	LLMModel     string   `json:"llm_model"`
 	LLMSource    string   `json:"llm_source"`
 	GraphType    string   `json:"graph_type"`
+	// AutoCompose 自动装配（见 AgentDef.AutoCompose）
+	AutoCompose bool     `json:"auto_compose"`
 	Capabilities []string `json:"capabilities"`
 	Middlewares  []string `json:"middlewares"`
 	MaxTurns     int      `json:"max_turns"`
@@ -356,6 +367,10 @@ func (in *AgentInput) Normalize(defaultMaxTurns int) error {
 	}
 	if !ValidGraphType(in.GraphType) {
 		return fmt.Errorf("%w: 执行图 %q 不支持（可选 %s）", ErrInvalidDef, in.GraphType, strings.Join(GraphTypes, " / "))
+	}
+	// 自动图意味着「运行时由 LLM 决定架构」，自动装配开关恒为真
+	if in.GraphType == GraphAuto {
+		in.AutoCompose = true
 	}
 	if in.AgentKey == "" && in.Name != "" {
 		in.AgentKey = SlugKey(in.Name)

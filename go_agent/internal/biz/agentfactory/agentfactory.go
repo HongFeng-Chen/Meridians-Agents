@@ -201,6 +201,7 @@ func (u *UseCase) UpdateDef(ctx context.Context, id uint64, in AgentInput) (*Age
 	def.LLMModel = in.LLMModel
 	def.LLMSource = in.LLMSource
 	def.GraphType = in.GraphType
+	def.AutoCompose = in.AutoCompose
 	def.Capabilities = in.Capabilities
 	def.Middlewares = in.Middlewares
 	def.MaxTurns = in.MaxTurns

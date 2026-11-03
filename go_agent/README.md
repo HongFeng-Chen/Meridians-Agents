@@ -2,7 +2,7 @@
 
 **Go 实现的一体化智能体平台**：把「知识怎么进来、智能体怎么造、提示词怎么变好」这三件通常散落在四五个系统里的事，做成一条闭环。
 
-文档经 RAG 混合检索与 GraphRAG 多跳推理两条线并行入库；Agent 以数据而非代码定义，由 12 种执行图驱动，可用 LLM 元编程批量生成；提示词版本化后可被 LLM 打分、优化，并在评测 Harness 中用真实用例拿回得分、回写进版本历史。配套完整 React 管理控制台。
+文档经 RAG 混合检索与 GraphRAG 多跳推理两条线并行入库；Agent 以数据而非代码定义，由 13 种执行图驱动（含 auto 自动编排），可用 LLM 元编程批量生成；提示词版本化后可被 LLM 打分、优化，并在评测 Harness 中用真实用例拿回得分、回写进版本历史。配套完整 React 管理控制台。
 
 > **给知识定坐标，给智能体定分寸。**
 >
@@ -60,7 +60,7 @@
 ### Agent 工厂
 
 - Agent 定义即数据：`agent_definitions` 表 + 向量化语义召回
-- **12 种执行图**：ReAct / Plan-Execute / Reflexion / Orchestrator / 多 Agent 协作 / Debate 等，DAG Flow 工作流编排
+- **13 种执行图**：ReAct / Plan-Execute / Reflexion / Orchestrator / 多 Agent 协作 / Debate 等，另有 `auto` 由 LLM 执行前判定架构与成员并自动建子 Agent；DAG Flow 工作流编排
 - LLM 元编程造 Agent + 配额护栏（上限 200，防自举失控）
 - **默认模型数据源**：Agent 可指定 `llm_source`（llm 数据源名），所有轮次优先走该源；不可用或调用失败自动回退 default 链路（`llm.Manager.ChatSource`），任务不中断
 - **技能即能力**：能力目录含四类——`factory`（元编程）/ `agent:`（委派）/ `mcp:`（工具）/ `skill:`（技能）；
@@ -148,7 +148,7 @@ api/*/v1 (proto) ──► internal/service ──► internal/biz ──► int
 | 模块 | 一句话职责 | 对外入口（HTTP） | 主要存储 |
 | --- | --- | --- | --- |
 | `conversation` | 会话目录 + 消息 + LLM 自主编排 + 多角色辩论 | `/api/conversations/**` | MySQL |
-| `agentfactory` | Agent 低代码工厂：定义 / 任务 / 12 种执行图 / worker / cron | `/api/agentfactory/**` | MySQL · Milvus `_agents` · Redis |
+| `agentfactory` | Agent 低代码工厂：定义 / 任务 / 13 种执行图（含自动编排）/ worker / cron | `/api/agentfactory/**` | MySQL · Milvus `_agents` · Redis |
 | `rag` | 文档入库 + 混合检索问答 + GraphRAG 图谱 | `/api/ingest` `/api/query` `/api/graph/**` | MySQL · Milvus · Redis |
 | `memory` | 短期（Redis）+ 长期（MySQL+Milvus）+ 记忆图谱 | `/api/memory/**` | MySQL · Milvus `_memories` · Redis |
 | `prompt` | 提示词模板版本化 + 在线生效 + 渲染 | `/api/prompts/**` | MySQL · Redis |

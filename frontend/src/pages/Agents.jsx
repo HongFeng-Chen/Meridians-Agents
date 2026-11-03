@@ -25,6 +25,7 @@ function emptyForm() {
     llm_model: '',
     llm_source: '',
     graph_type: 'react',
+    auto_compose: false,
     capabilities: [],
     max_turns: '12',
     sandbox: false,
@@ -51,6 +52,7 @@ function formFrom(def) {
     llm_model: def.llm_model || '',
     llm_source: def.llm_source || '',
     graph_type: def.graph_type || 'react',
+    auto_compose: !!def.auto_compose,
     capabilities: def.capabilities || [],
     max_turns: def.max_turns ? String(def.max_turns) : '12',
     sandbox: !!def.sandbox,
@@ -316,6 +318,8 @@ export default function Agents() {
       llm_model: form.llm_model,
       llm_source: form.llm_source,
       graph_type: form.graph_type,
+      // auto 图恒自动装配；其他图由开关决定
+      auto_compose: form.graph_type === 'auto' || !!form.auto_compose,
       capabilities: form.capabilities,
       middlewares: ['audit'],
       max_turns: Number(form.max_turns) || 0,
@@ -557,7 +561,9 @@ export default function Agents() {
                       <span className="cell-sub" style={{ marginTop: 4 }}>
                         {GRAPH_HINTS[form.graph_type] || ''}
                         {MULTI_AGENT_GRAPHS.includes(form.graph_type) && form.flow?.nodes?.length === 0
-                          ? ' 该模式需要在下方编排画布上连入成员 Agent。'
+                          ? form.auto_compose
+                            ? ' 未连成员也没关系：执行前会自动创建成员 Agent。'
+                            : ' 该模式需要在下方编排画布上连入成员 Agent，或勾选「自动装配成员」。'
                           : ''}
                       </span>
                     </label>
@@ -608,6 +614,24 @@ export default function Agents() {
                 {form.role === 'root' && (
                   <section className="form-section">
                     <div className="form-section-title">编排（节点数据在编排组件内管理）</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <input
+                        type="checkbox"
+                        checked={form.graph_type === 'auto' || form.auto_compose}
+                        disabled={form.graph_type === 'auto'}
+                        onChange={(e) => setForm({ ...form, auto_compose: e.target.checked })}
+                      />
+                      <span className="field-label" style={{ margin: 0 }}>自动装配成员（执行前由 LLM 判定架构与分工，缺角色时自动创建子 Agent）</span>
+                    </label>
+                    <div className="cell-sub" style={{ marginBottom: 12 }}>
+                      {form.graph_type === 'auto'
+                        ? '当前为「自动编排」：每次任务先由 LLM 选择执行图（含是否需要多 Agent），再按结果执行，规划记录在任务链路的 orchestrate 事件里。'
+                        : (form.flow?.nodes?.length || 0) > 1
+                          ? '画布上已有编排节点：手绘 DAG 优先执行，自动装配不会改动这张图（取消全部连线后才会接管）。'
+                          : form.auto_compose
+                            ? '每次任务都会重新评估架构与成员；成员集合有变化时回写本定义（控制台可见）。'
+                          : '勾选后无需手工连成员：首次执行会自动创建 role=sub、sandbox=true 的子 Agent，之后复用同名成员。'}
+                    </div>
                     <AgentFlow
                       agents={otherAgents}
                       flow={form.flow}

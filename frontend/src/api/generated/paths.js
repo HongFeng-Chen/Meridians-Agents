@@ -60,7 +60,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["agent_key","name","description","system","llm_model","graph_type","capabilities","middlewares","max_turns","sandbox","role","orchestration","members","supervisor_key","supervision_scope","risk_agent_key","auto_run","cron_expr","cron_input","flow","llm_source"],
+    bodyProps: ["agent_key","name","description","system","llm_model","graph_type","capabilities","middlewares","max_turns","sandbox","role","orchestration","members","supervisor_key","supervision_scope","risk_agent_key","auto_run","cron_expr","cron_input","flow","llm_source","auto_compose"],
   },
   AgentFactoryService_CreateAgentByLLM: {
     service: 'AgentFactoryService',

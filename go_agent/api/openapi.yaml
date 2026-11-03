@@ -3739,6 +3739,9 @@ components:
                 llm_source:
                     type: string
                     description: 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
+                auto_compose:
+                    type: boolean
+                    description: 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
             description: AgentDef Agent 的可配置定义（数据，不是代码）
         agentfactory.v1.AgentDefHit:
             type: object
@@ -3841,6 +3844,9 @@ components:
                 llm_source:
                     type: string
                     description: 默认模型数据源（空 = 平台默认），调用失败回退 default
+                auto_compose:
+                    type: boolean
+                    description: 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
             description: AgentInput 创建/更新定义的入参
         agentfactory.v1.AgentTask:
             type: object

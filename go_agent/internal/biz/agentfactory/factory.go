@@ -147,6 +147,7 @@ func (f *AgentFactory) Create(ctx context.Context, source string, in AgentInput)
 		LLMModel:         in.LLMModel,
 		LLMSource:        in.LLMSource,
 		GraphType:        in.GraphType,
+		AutoCompose:      in.AutoCompose,
 		Capabilities:     in.Capabilities,
 		Middlewares:      in.Middlewares,
 		MaxTurns:         in.MaxTurns,

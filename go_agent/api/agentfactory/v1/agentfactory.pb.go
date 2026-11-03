@@ -88,7 +88,9 @@ type AgentDef struct {
 	// 编排画布布局（JSON 字符串：{"positions":{"<agent_key>":{"x":120,"y":112}}}）
 	Flow string `protobuf:"bytes,29,opt,name=flow,proto3" json:"flow,omitempty"`
 	// 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
-	LlmSource     string `protobuf:"bytes,30,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
+	LlmSource string `protobuf:"bytes,30,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
+	// 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
+	AutoCompose   bool `protobuf:"varint,31,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -333,6 +335,13 @@ func (x *AgentDef) GetLlmSource() string {
 	return ""
 }
 
+func (x *AgentDef) GetAutoCompose() bool {
+	if x != nil {
+		return x.AutoCompose
+	}
+	return false
+}
+
 // AgentInput 创建/更新定义的入参
 type AgentInput struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
@@ -360,7 +369,9 @@ type AgentInput struct {
 	// 编排画布布局（JSON 字符串）
 	Flow string `protobuf:"bytes,20,opt,name=flow,proto3" json:"flow,omitempty"`
 	// 默认模型数据源（空 = 平台默认），调用失败回退 default
-	LlmSource     string `protobuf:"bytes,21,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
+	LlmSource string `protobuf:"bytes,21,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
+	// 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
+	AutoCompose   bool `protobuf:"varint,22,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -540,6 +551,13 @@ func (x *AgentInput) GetLlmSource() string {
 		return x.LlmSource
 	}
 	return ""
+}
+
+func (x *AgentInput) GetAutoCompose() bool {
+	if x != nil {
+		return x.AutoCompose
+	}
+	return false
 }
 
 // CapabilitySchema 能力的自描述（白名单选择器 + LLM 提示词共用）
@@ -2405,7 +2423,7 @@ var File_agentfactory_v1_agentfactory_proto protoreflect.FileDescriptor
 
 const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\n" +
-	"\"agentfactory/v1/agentfactory.proto\x12\x0fagentfactory.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\x92\a\n" +
+	"\"agentfactory/v1/agentfactory.proto\x12\x0fagentfactory.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xb6\a\n" +
 	"\bAgentDef\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1c\n" +
 	"\tagent_key\x18\x02 \x01(\tR\tagent_key\x12\x12\n" +
@@ -2449,7 +2467,8 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\x04flow\x18\x1d \x01(\tR\x04flow\x12\x1e\n" +
 	"\n" +
 	"llm_source\x18\x1e \x01(\tR\n" +
-	"llm_source\"\x99\x05\n" +
+	"llm_source\x12\"\n" +
+	"\fauto_compose\x18\x1f \x01(\bR\fauto_compose\"\xbd\x05\n" +
 	"\n" +
 	"AgentInput\x12\x1c\n" +
 	"\tagent_key\x18\x01 \x01(\tR\tagent_key\x12\x17\n" +
@@ -2479,7 +2498,8 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\x04flow\x18\x14 \x01(\tR\x04flow\x12\x1e\n" +
 	"\n" +
 	"llm_source\x18\x15 \x01(\tR\n" +
-	"llm_source\"\x9c\x01\n" +
+	"llm_source\x12\"\n" +
+	"\fauto_compose\x18\x16 \x01(\bR\fauto_compose\"\x9c\x01\n" +
 	"\x10CapabilitySchema\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +

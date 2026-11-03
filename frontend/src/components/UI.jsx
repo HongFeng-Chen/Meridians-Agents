@@ -197,6 +197,12 @@ export function Pagination({ page, pages, total, size, onPage, onSize, className
 // 执行图（Agent 架构模式）：单 Agent 推理 / 多 Agent 协作（Agent 页与编排画布共用）
 export const GRAPH_GROUPS = [
   {
+    label: '自动',
+    options: [
+      ['auto', 'auto · 自动判定架构 + 自动组队'],
+    ],
+  },
+  {
     label: '单 Agent',
     options: [
       ['simple', 'simple · 单轮直答'],
@@ -221,6 +227,7 @@ export const GRAPH_GROUPS = [
 ];
 export const GRAPH_LABELS = Object.fromEntries(GRAPH_GROUPS.flatMap((g) => g.options));
 export const GRAPH_HINTS = {
+  auto: '不预设架构：每次任务先让 LLM 判定该用哪种执行图（单 Agent 还是多 Agent）、需要几个成员、各自负责什么，缺角色时自动创建子 Agent 再执行。适合任务形态不固定的通用助手。',
   simple: '一次模型调用直接作答，最快最省；适合分类、抽取、改写这类不需要工具的短任务。',
   react: '走一步想一步：思考 → 调用能力 → 观察结果，循环到得出答案；通用性最好。',
   plan_execute: '先一次性生成完整步骤清单，再逐步执行，某步失败自动重规划；步骤可审计，适合长任务与固定流程。',

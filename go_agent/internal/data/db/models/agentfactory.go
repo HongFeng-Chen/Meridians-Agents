@@ -20,8 +20,10 @@ type AgentDefPO struct {
 	LLMModel string `gorm:"column:llm_model;size:128;not null;default:''" json:"llm_model"`
 	// LLMSource 默认模型数据源（空 = 平台默认），调用失败回退 default
 	LLMSource string `gorm:"column:llm_source;size:64;not null;default:''" json:"llm_source"`
-	// GraphType 执行图：react | simple
+	// GraphType 执行图：auto | react | simple | ...
 	GraphType string `gorm:"column:graph_type;size:32;not null;default:'react'" json:"graph_type"`
+	// AutoCompose 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
+	AutoCompose bool `gorm:"column:auto_compose;not null;default:false" json:"auto_compose"`
 	// Capabilities 能力白名单，JSON 数组字符串（空集必须写 []，MySQL JSON 列拒收空串）
 	Capabilities string `gorm:"column:capabilities;type:json" json:"capabilities"`
 	// Middlewares 中间件，JSON 数组字符串

@@ -29,6 +29,7 @@ export const EVENT_LABELS = {
   tool_result: '结果',
   delegate: '委派',
   plan: '计划',
+  orchestrate: '编排',
   evaluate: '评估',
   reflect: '反思',
   route: '路由',
@@ -44,6 +45,7 @@ export const EVENT_TONES = {
   tool_result: 'teal',
   delegate: 'violet',
   plan: 'indigo',
+  orchestrate: 'violet',
   evaluate: 'warn',
   reflect: 'violet',
   route: 'indigo',
@@ -111,6 +113,14 @@ function eventSummary(type, payload) {
       const steps = Array.isArray(p.steps) ? p.steps : [];
       const head = steps.map((s, i) => `${i + 1}.${s.goal ?? s}${s.agent ? `（${s.agent}）` : ''}`).join(' → ');
       return `${p.revised ? '重规划' : '计划'} ${steps.length} 步：${head}`;
+    }
+    case 'orchestrate': {
+      const ms = Array.isArray(p.members) ? p.members : [];
+      const who = ms.map((m) => `${m.name || m.agent_key}${m.duty ? `（${m.duty}）` : ''}`).join(' / ');
+      const extra = [];
+      if (Array.isArray(p.created) && p.created.length) extra.push(`新建 ${p.created.length}`);
+      if (Array.isArray(p.reused) && p.reused.length) extra.push(`复用 ${p.reused.length}`);
+      return `选用 ${p.graph_type}${p.reason ? `（${p.reason}）` : ''} · ${ms.length} 个成员${who ? `：${who}` : ''}${extra.length ? ` · ${extra.join(' / ')}` : ''}`;
     }
     case 'evaluate':
       return `第 ${p.round} 轮评分 ${p.score ?? '—'} · ${p.pass ? '通过' : '未通过'}${p.issues ? `：${p.issues}` : ''}`;
@@ -334,7 +344,7 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
                           ) : (
                             <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{eventSummary(e.type, e.payload)}</div>
                           )}
-                          {['tool_result', 'delegate', 'plan', 'evaluate', 'reflect', 'route', 'node', 'supervise', 'risk_assess'].includes(e.type) && (
+                          {['tool_result', 'delegate', 'plan', 'orchestrate', 'evaluate', 'reflect', 'route', 'node', 'supervise', 'risk_assess'].includes(e.type) && (
                             <details style={{ marginTop: 4 }}>
                               <summary className="muted" style={{ cursor: 'pointer', fontSize: 12 }}>原始 payload</summary>
                               <pre className="block mono" style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{prettyPayload(e.payload)}</pre>
