@@ -25,7 +25,9 @@ var ValidRoles = []string{RoleUser, RoleAssistant}
 
 // Conversation 会话
 type Conversation struct {
-	ID           string    `json:"id"`
+	ID string `json:"id"`
+	// UserID 归属用户（隔离键）：非空且与当前请求身份不一致时拒绝访问
+	UserID       string    `json:"user_id"`
 	Title        string    `json:"title"`
 	AgentKey     string    `json:"agent_key"` // 默认会话 Agent（可空）
 	MessageCount int64     `json:"message_count"`
@@ -104,6 +106,7 @@ type Debate struct {
 // Filter 会话目录查询条件
 type Filter struct {
 	Kw     string // 标题 / 最近消息关键词，空 = 全部
+	UserID string // 归属用户过滤（空 = 不按用户过滤，仅内部任务/运维查询使用）
 	Limit  int
 	Offset int
 }

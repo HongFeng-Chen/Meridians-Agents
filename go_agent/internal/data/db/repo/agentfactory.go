@@ -389,6 +389,10 @@ func applyTaskFilter(q *gorm.DB, f agentfactory.TaskFilter) *gorm.DB {
 	if cid := strings.TrimSpace(f.ConvID); cid != "" {
 		q = q.Where("conv_id = ?", cid)
 	}
+	// 用户隔离：非空时只返回归属该用户的任务（任务中心按登录用户过滤）
+	if uid := strings.TrimSpace(f.UserID); uid != "" {
+		q = q.Where("user_id = ?", uid)
+	}
 	if kw := strings.TrimSpace(f.Keyword); kw != "" {
 		like := "%" + escapeLike(kw) + "%"
 		q = q.Where("(title LIKE ? ESCAPE '\\\\' OR input LIKE ? ESCAPE '\\\\' OR agent_key LIKE ? ESCAPE '\\\\')", like, like, like)
@@ -552,6 +556,7 @@ func taskToHistoryPO(src models.AgentTaskPO) models.AgentTaskHistoryPO {
 		ParentTaskID: src.ParentTaskID,
 		Depth:        src.Depth,
 		ConvID:       src.ConvID,
+		UserID:       src.UserID,
 		CreatedAt:    src.CreatedAt,
 		StartedAt:    src.StartedAt,
 		FinishedAt:   src.FinishedAt,
@@ -573,6 +578,7 @@ func taskHistoryToBiz(row models.AgentTaskHistoryPO) agentfactory.Task {
 		ParentTaskID: row.ParentTaskID,
 		Depth:        row.Depth,
 		ConvID:       row.ConvID,
+		UserID:       row.UserID,
 		CreatedAt:    row.CreatedAt,
 		Archived:     true,
 	}
@@ -667,6 +673,7 @@ func taskToBiz(row models.AgentTaskPO) agentfactory.Task {
 		ParentTaskID: row.ParentTaskID,
 		Depth:        row.Depth,
 		ConvID:       row.ConvID,
+		UserID:       row.UserID,
 		CreatedAt:    row.CreatedAt,
 	}
 	if row.StartedAt != nil {
@@ -692,6 +699,7 @@ func taskFromBiz(t agentfactory.Task) models.AgentTaskPO {
 		ParentTaskID: t.ParentTaskID,
 		Depth:        t.Depth,
 		ConvID:       t.ConvID,
+		UserID:       ownerOr(t.UserID),
 		CreatedAt:    t.CreatedAt,
 	}
 	if !t.StartedAt.IsZero() {

@@ -25,7 +25,9 @@ type Answer struct {
 
 // Document 文档元数据（MySQL 落库，作为文档管理的权威数据源）
 type Document struct {
-	DocID     string    `json:"doc_id"`
+	DocID string `json:"doc_id"`
+	// UserID 归属用户（隔离键）：检索只返回本人文档，列表亦按此过滤
+	UserID    string    `json:"user_id"`
 	Source    string    `json:"source"`
 	Mode      string    `json:"mode"` // rag | graph
 	Status    string    `json:"status"`
@@ -81,7 +83,10 @@ type ChunkStore interface {
 type DocumentRepo interface {
 	Upsert(ctx context.Context, doc *Document) error
 	Get(ctx context.Context, docID string) (*Document, error)
-	List(ctx context.Context, limit int) ([]Document, error)
+	// List 文档列表；userID 非空时只返回该用户的文档
+	List(ctx context.Context, userID string, limit int) ([]Document, error)
+	// ListDocIDs 该用户全部文档 ID（检索时拼 Milvus 白名单过滤用）
+	ListDocIDs(ctx context.Context, userID string) ([]string, error)
 	Delete(ctx context.Context, docID string) error
 	Count(ctx context.Context) (int64, error)
 }

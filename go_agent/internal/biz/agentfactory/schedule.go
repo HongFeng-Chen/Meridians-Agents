@@ -14,6 +14,8 @@ import (
 	"context"
 	"time"
 
+	"go_agent/internal/pkg/identity"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -92,6 +94,8 @@ func (u *UseCase) tickOneSchedule(ctx context.Context, d *AgentDef, now time.Tim
 		Title:      "定时运行 · " + truncateRunes(d.Name, 60),
 		Input:      d.CronInput,
 		Status:     TaskPending,
+		// 定时任务无请求身份（baseCtx）→ 落在 default 作用域，运维可见
+		UserID: identity.UserID(ctx),
 	}
 	if err := u.repo.CreateTask(ctx, task); err != nil {
 		u.warn("定时任务创建失败", "agent", d.AgentKey, "err", err)

@@ -270,7 +270,8 @@ func (u *UseCase) recallMemory(ctx context.Context, content string) (string, map
 // recallRag 知识库混合检索：RRF 相对分数线过滤长尾
 func (u *UseCase) recallRag(ctx context.Context, content string) (string, map[string]any) {
 	meta := map[string]any{}
-	hits, err := u.deps.Rag.Retrieve(ctx, content, "")
+	// 按当前用户隔离检索：只召回本人文档的分块（认证未启用时 = default 作用域）
+	hits, err := u.deps.Rag.RetrieveForUser(ctx, content, identity.UserID(ctx))
 	if err != nil {
 		meta["rag_error"] = err.Error()
 		return "", meta
@@ -297,7 +298,7 @@ func (u *UseCase) recallRag(ctx context.Context, content string) (string, map[st
 // recallGraph 图谱召回（只检索不生成）
 func (u *UseCase) recallGraph(ctx context.Context, content string) (string, map[string]any) {
 	meta := map[string]any{}
-	g, err := u.deps.Rag.GraphRecall(ctx, content)
+	g, err := u.deps.Rag.GraphRecallForUser(ctx, content, identity.UserID(ctx))
 	if err != nil {
 		meta["graph_error"] = err.Error()
 		return "", meta

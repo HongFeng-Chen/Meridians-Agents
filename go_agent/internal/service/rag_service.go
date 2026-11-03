@@ -81,7 +81,16 @@ func (s *RagService) Query(ctx context.Context, req *v1.QueryRequest) (*v1.Answe
 	if strings.TrimSpace(req.GetQuestion()) == "" {
 		return nil, badRequest("请求体无效，需要 question 字段")
 	}
-	ans, err := s.uc.Query(ctx, req.GetQuestion(), req.GetFilter())
+	// 隔离：过滤条件一律由服务端按当前登录用户生成，忽略客户端传入的 filter，
+	// 否则客户端可用任意表达式检索他人文档（也是表达式注入面）。
+	filter, empty, err := s.uc.DocFilterForUser(ctx, scopeUser(ctx))
+	if err != nil {
+		return nil, internalErr(err)
+	}
+	if empty {
+		return &v1.Answer{Question: req.GetQuestion(), Answer: "你当前没有已入库的文档，无法回答。", Citations: []*v1.Hit{}}, nil
+	}
+	ans, err := s.uc.Query(ctx, req.GetQuestion(), filter)
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -98,7 +107,7 @@ func (s *RagService) GraphQuery(ctx context.Context, req *v1.GraphQueryRequest) 
 	if strings.TrimSpace(req.GetQuestion()) == "" {
 		return nil, badRequest("请求体无效，需要 question 字段")
 	}
-	ans, err := s.uc.GraphQuery(ctx, req.GetQuestion())
+	ans, err := s.uc.GraphQueryForUser(ctx, req.GetQuestion(), scopeUser(ctx))
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -126,7 +135,7 @@ func (s *RagService) GetStats(ctx context.Context, _ *v1.GetStatsRequest) (*v1.S
 
 // ListDocs 文档列表。
 func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1.ListDocsReply, error) {
-	list, err := s.uc.ListDocs(ctx, int(req.GetLimit()))
+	list, err := s.uc.ListDocs(ctx, scopeUser(ctx), int(req.GetLimit()))
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -153,6 +162,16 @@ func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1
 func (s *RagService) DeleteDoc(ctx context.Context, req *v1.DeleteDocRequest) (*v1.DeleteDocReply, error) {
 	if strings.TrimSpace(req.GetDocId()) == "" {
 		return nil, badRequest("doc_id 不能为空")
+	}
+	doc, err := s.uc.GetDoc(ctx, req.GetDocId())
+	if err != nil {
+		return nil, internalErr(err)
+	}
+	if doc == nil {
+		return nil, notFound("文档不存在：" + req.GetDocId())
+	}
+	if err := ensureOwned(ctx, doc.UserID, "知识库文档"); err != nil {
+		return nil, err
 	}
 	res, err := s.uc.DeleteDoc(ctx, req.GetDocId())
 	if err != nil {

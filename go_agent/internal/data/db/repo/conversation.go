@@ -39,6 +39,7 @@ func NewConversationRepo(c *conf.Data, d *db.Data) (*ConversationRepo, error) {
 func toConversationPO(c *conversation.Conversation) *models.ConversationPO {
 	return &models.ConversationPO{
 		ID:           c.ID,
+		UserID:       ownerOr(c.UserID),
 		Title:        c.Title,
 		AgentKey:     c.AgentKey,
 		MessageCount: c.MessageCount,
@@ -51,6 +52,7 @@ func toConversationPO(c *conversation.Conversation) *models.ConversationPO {
 func fromConversationPO(p *models.ConversationPO) conversation.Conversation {
 	return conversation.Conversation{
 		ID:           p.ID,
+		UserID:       p.UserID,
 		Title:        p.Title,
 		AgentKey:     p.AgentKey,
 		MessageCount: p.MessageCount,
@@ -60,12 +62,25 @@ func fromConversationPO(p *models.ConversationPO) conversation.Conversation {
 	}
 }
 
+// ownerOr 归属用户兜底：空值落 'default'（与 identity.DefaultUser 一致），
+// 保证认证未启用时的单机开发态与历史数据同一作用域。
+func ownerOr(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "default"
+	}
+	return v
+}
+
 func (r *ConversationRepo) Create(ctx context.Context, c *conversation.Conversation) error {
 	return r.db.WithContext(ctx).Create(toConversationPO(c)).Error
 }
 
 func (r *ConversationRepo) List(ctx context.Context, f conversation.Filter) ([]conversation.Conversation, int64, error) {
 	q := r.db.WithContext(ctx).Model(&models.ConversationPO{})
+	// 用户隔离：非空时只返回归属该用户的会话（会话中心按登录用户过滤）
+	if f.UserID != "" {
+		q = q.Where("user_id = ?", f.UserID)
+	}
 	if kw := strings.TrimSpace(f.Kw); kw != "" {
 		like := "%" + kw + "%"
 		q = q.Where("title LIKE ? OR last_message LIKE ?", like, like)

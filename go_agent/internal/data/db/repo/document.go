@@ -38,6 +38,7 @@ func NewDocumentRepo(c *conf.Data, d *db.Data) (rag.DocumentRepo, error) {
 func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 	po := &models.DocumentPO{
 		DocID:     doc.DocID,
+		UserID:    ownerOr(doc.UserID),
 		Source:    clip(doc.Source, 512),
 		Mode:      doc.Mode,
 		Status:    doc.Status,
@@ -49,6 +50,7 @@ func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 	}
 	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "doc_id"}},
+		// user_id 不参与更新：文档归属在首次入库时确定，重复入库不改归属
 		DoUpdates: clause.AssignmentColumns([]string{
 			"source", "mode", "status", "chars", "chunks", "entities", "relations", "checksum", "updated_at",
 		}),
@@ -72,13 +74,17 @@ func (r *DocumentRepo) Get(ctx context.Context, docID string) (*rag.Document, er
 	return documentToBiz(&po), nil
 }
 
-// List 按更新时间倒序返回文档列表
-func (r *DocumentRepo) List(ctx context.Context, limit int) ([]rag.Document, error) {
+// List 按更新时间倒序返回文档列表；userID 非空时只返回该用户的文档
+func (r *DocumentRepo) List(ctx context.Context, userID string, limit int) ([]rag.Document, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	q := r.db.WithContext(ctx).Model(&models.DocumentPO{})
+	if userID != "" {
+		q = q.Where("user_id = ?", userID)
+	}
 	var pos []models.DocumentPO
-	if err := r.db.WithContext(ctx).Order("updated_at DESC").Limit(limit).Find(&pos).Error; err != nil {
+	if err := q.Order("updated_at DESC").Limit(limit).Find(&pos).Error; err != nil {
 		return nil, err
 	}
 	out := make([]rag.Document, 0, len(pos))
@@ -86,6 +92,19 @@ func (r *DocumentRepo) List(ctx context.Context, limit int) ([]rag.Document, err
 		out = append(out, *documentToBiz(&pos[i]))
 	}
 	return out, nil
+}
+
+// ListDocIDs 该用户全部文档 ID（用于向量层白名单过滤）
+func (r *DocumentRepo) ListDocIDs(ctx context.Context, userID string) ([]string, error) {
+	q := r.db.WithContext(ctx).Model(&models.DocumentPO{})
+	if userID != "" {
+		q = q.Where("user_id = ?", userID)
+	}
+	var ids []string
+	if err := q.Pluck("doc_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // Delete 删除元数据
@@ -105,6 +124,7 @@ func (r *DocumentRepo) Count(ctx context.Context) (int64, error) {
 func documentToBiz(po *models.DocumentPO) *rag.Document {
 	return &rag.Document{
 		DocID:     po.DocID,
+		UserID:    po.UserID,
 		Source:    po.Source,
 		Mode:      po.Mode,
 		Status:    po.Status,

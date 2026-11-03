@@ -282,6 +282,74 @@ func (s *Service) Recall(ctx context.Context, question string) (*GraphAnswer, er
 	return &GraphAnswer{Question: question, Entities: ents, Relations: rels}, nil
 }
 
+// QueryScoped 按文档白名单隔离的图谱问答：召回后先裁剪到本人文档的实体/关系再生成。
+// docIDs 为空表示该用户没有任何文档 → 直接返回"无相关实体"，不做跨用户召回。
+func (s *Service) QueryScoped(ctx context.Context, question string, docIDs []string) (*GraphAnswer, error) {
+	if len(docIDs) == 0 {
+		return &GraphAnswer{Question: question, Answer: "你当前没有已入库的文档，无法回答。"}, nil
+	}
+	g, rels, empty, err := s.recall(ctx, question)
+	if err != nil {
+		return nil, err
+	}
+	if empty {
+		return &GraphAnswer{Question: question, Answer: "知识图谱中未找到相关实体，无法回答。"}, nil
+	}
+	g, rels = scopeByDocs(g, rels, docIDs)
+	if len(g.entities) == 0 {
+		return &GraphAnswer{Question: question, Answer: "你的文档中未找到相关实体，无法回答。"}, nil
+	}
+	return s.generate(ctx, question, g, rels)
+}
+
+// RecallScoped 按文档白名单隔离的图谱召回（只检索不生成）。
+func (s *Service) RecallScoped(ctx context.Context, question string, docIDs []string) (*GraphAnswer, error) {
+	if len(docIDs) == 0 {
+		return &GraphAnswer{Question: question}, nil
+	}
+	g, rels, empty, err := s.recall(ctx, question)
+	if err != nil {
+		return nil, err
+	}
+	if empty {
+		return &GraphAnswer{Question: question}, nil
+	}
+	g, rels = scopeByDocs(g, rels, docIDs)
+	ents := make([]Entity, 0, len(g.entities))
+	for _, e := range g.entities {
+		ents = append(ents, *e)
+	}
+	return &GraphAnswer{Question: question, Entities: ents, Relations: rels}, nil
+}
+
+// scopeByDocs 按文档归属裁剪子图：实体/关系的 chunk_refs 形如 "doc_id#chunk_idx"。
+// refs 为空时保守丢弃（fail closed）——无归属的节点不跨用户共享，避免隐式泄漏。
+func scopeByDocs(g *graph, rels []Relation, docIDs []string) (*graph, []Relation) {
+	owned := func(refs []string) bool {
+		for _, ref := range refs {
+			for _, id := range docIDs {
+				if strings.HasPrefix(ref, id+"#") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	out := newGraph()
+	for key, e := range g.entities {
+		if owned(e.ChunkRefs) {
+			out.entities[key] = e
+		}
+	}
+	kept := make([]Relation, 0, len(rels))
+	for _, rel := range rels {
+		if owned(rel.ChunkRefs) {
+			kept = append(kept, rel)
+		}
+	}
+	return out, kept
+}
+
 // recall 召回公共步骤：返回子图、关系；empty 表示图中无相关实体
 func (s *Service) recall(ctx context.Context, question string) (*graph, []Relation, bool, error) {
 	qvec, err := s.embed.EmbedOne(ctx, question)

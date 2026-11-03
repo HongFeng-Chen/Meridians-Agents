@@ -188,6 +188,19 @@ func (s *AgentFactoryService) GetTaskStats(ctx context.Context, _ *v1.GetTaskSta
 	}, nil
 }
 
+// ensureTaskOwned 任务归属校验：不属于当前用户的返回 403。
+// 详情 / 取消 / 重试 / 事件流都走这里，避免知道任务 ID 就能看他人链路或终止他人任务。
+func (s *AgentFactoryService) ensureTaskOwned(ctx context.Context, id uint64) (*agentfactory.Task, error) {
+	t, err := s.uc.GetTask(ctx, id)
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	if err := ensureOwned(ctx, t.UserID, "任务"); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
 func (s *AgentFactoryService) ListTasks(ctx context.Context, req *v1.ListTasksRequest) (*v1.ListTasksReply, error) {
 	tasks, err := s.uc.ListTasks(ctx, agentfactory.TaskFilter{
 		AgentDefID:   req.GetAgentDefId(),
@@ -197,6 +210,7 @@ func (s *AgentFactoryService) ListTasks(ctx context.Context, req *v1.ListTasksRe
 		ParentTaskID: req.GetParentTaskId(),
 		RootOnly:     req.GetRootOnly(),
 		ConvID:       req.GetConvId(),
+		UserID:       scopeUser(ctx), // 任务中心只列当前用户的任务
 		Limit:        int(req.GetLimit()),
 	})
 	if err != nil {
@@ -210,14 +224,17 @@ func (s *AgentFactoryService) ListTasks(ctx context.Context, req *v1.ListTasksRe
 }
 
 func (s *AgentFactoryService) GetTask(ctx context.Context, req *v1.GetTaskRequest) (*v1.AgentTask, error) {
-	t, err := s.uc.GetTask(ctx, req.GetId())
+	t, err := s.ensureTaskOwned(ctx, req.GetId())
 	if err != nil {
-		return nil, mapAgentFactoryErr(err)
+		return nil, err
 	}
 	return toAgentTask(t), nil
 }
 
 func (s *AgentFactoryService) CancelTask(ctx context.Context, req *v1.CancelTaskRequest) (*v1.AgentTask, error) {
+	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	t, err := s.uc.CancelTask(ctx, req.GetId())
 	if err != nil {
 		return nil, mapAgentFactoryErr(err)
@@ -226,6 +243,9 @@ func (s *AgentFactoryService) CancelTask(ctx context.Context, req *v1.CancelTask
 }
 
 func (s *AgentFactoryService) RetryTask(ctx context.Context, req *v1.RetryTaskRequest) (*v1.AgentTask, error) {
+	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	t, err := s.uc.RetryTask(ctx, req.GetId())
 	if err != nil {
 		return nil, mapAgentFactoryErr(err)
@@ -234,6 +254,9 @@ func (s *AgentFactoryService) RetryTask(ctx context.Context, req *v1.RetryTaskRe
 }
 
 func (s *AgentFactoryService) ListTaskEvents(ctx context.Context, req *v1.ListTaskEventsRequest) (*v1.ListTaskEventsReply, error) {
+	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	events, err := s.uc.TaskEvents(ctx, req.GetId(), int(req.GetLimit()))
 	if err != nil {
 		return nil, mapAgentFactoryErr(err)
@@ -342,5 +365,6 @@ func toAgentTask(t *agentfactory.Task) *v1.AgentTask {
 		FinishedAt:   formatTS(t.FinishedAt),
 		Archived:     t.Archived,
 		ConvId:       t.ConvID,
+		UserId:       t.UserID,
 	}
 }

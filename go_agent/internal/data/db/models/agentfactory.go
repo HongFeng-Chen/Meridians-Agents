@@ -89,6 +89,9 @@ type AgentTaskPO struct {
 	Depth int `gorm:"column:depth;not null;default:0" json:"depth"`
 	// ConvID 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
 	ConvID string `gorm:"column:conv_id;size:64;not null;default:'';index:idx_agent_tasks_conv" json:"conv_id"`
+	// UserID 任务归属用户（隔离键）：任务中心列表与取消/重试只允许归属人操作。
+	// 默认 'default' 兼容认证未启用时的单机开发态与历史数据。
+	UserID string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_agent_tasks_user" json:"user_id"`
 
 	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_tasks_created" json:"created_at"`
 	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`
@@ -121,6 +124,8 @@ type AgentTaskHistoryPO struct {
 	Depth        int    `gorm:"column:depth;not null;default:0" json:"depth"`
 	// ConvID 来源会话（与任务池同义）
 	ConvID string `gorm:"column:conv_id;size:64;not null;default:'';index:idx_agent_task_history_conv" json:"conv_id"`
+	// UserID 任务归属用户（与任务池同义，归档时原样迁移）
+	UserID string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_agent_task_history_user" json:"user_id"`
 
 	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_task_history_created" json:"created_at"`
 	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`

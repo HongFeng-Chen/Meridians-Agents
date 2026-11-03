@@ -16,9 +16,10 @@ import (
 // ---------- fakes ----------
 
 type fakeStore struct {
-	mu      sync.Mutex
-	chunks  []string
-	inserts int
+	mu         sync.Mutex
+	chunks     []string
+	inserts    int
+	lastFilter string // 最近一次 HybridSearch 收到的过滤表达式（隔离断言用）
 }
 
 func (f *fakeStore) EnsureCollection(ctx context.Context) error { return nil }
@@ -30,6 +31,9 @@ func (f *fakeStore) Insert(ctx context.Context, docID, source string, chunks []s
 	return nil
 }
 func (f *fakeStore) HybridSearch(ctx context.Context, q string, vec []float32, topK int, filter string) ([]Hit, error) {
+	f.mu.Lock()
+	f.lastFilter = filter
+	f.mu.Unlock()
 	return []Hit{{DocID: "d1", Source: "a.txt", Text: "命中片段", Score: 0.9}}, nil
 }
 func (f *fakeStore) GetTexts(ctx context.Context, filter string, limit int) ([]Hit, error) {
@@ -99,12 +103,29 @@ func (f *fakeRepo) Get(ctx context.Context, docID string) (*Document, error) {
 	}
 	return nil, nil
 }
-func (f *fakeRepo) List(ctx context.Context, limit int) ([]Document, error) {
+func (f *fakeRepo) List(ctx context.Context, userID string, limit int) ([]Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]Document, 0, len(f.docs))
 	for _, d := range f.docs {
+		if userID != "" && d.UserID != "" && d.UserID != userID {
+			continue
+		}
 		out = append(out, *d)
+	}
+	return out, nil
+}
+
+// ListDocIDs 该用户文档 ID 白名单（检索隔离用）
+func (f *fakeRepo) ListDocIDs(ctx context.Context, userID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.docs))
+	for _, d := range f.docs {
+		if userID != "" && d.UserID != "" && d.UserID != userID {
+			continue
+		}
+		out = append(out, d.DocID)
 	}
 	return out, nil
 }

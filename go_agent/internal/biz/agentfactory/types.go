@@ -592,6 +592,8 @@ type Task struct {
 	Depth int `json:"depth"`
 	// ConvID 来源会话（会话 Chat 编排调用 Agent 时写入；空 = 控制台/独立任务）
 	ConvID string `json:"conv_id"`
+	// UserID 归属用户（隔离键）：由提交时的请求身份写入，跨用户不可见/不可操作
+	UserID string `json:"user_id"`
 
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at"`
@@ -625,6 +627,8 @@ type TaskFilter struct {
 	RootOnly bool
 	// ConvID 按来源会话 ID 过滤（会话链路查询该会话编排产生的任务）
 	ConvID string
+	// UserID 归属用户过滤（空 = 不过滤，仅内部链路/运维查询使用）
+	UserID string
 	Limit  int
 }
 

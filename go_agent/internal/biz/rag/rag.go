@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag/graphrag"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/loader"
 
 	"github.com/go-kratos/kratos/v3/log"
@@ -181,14 +183,22 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	sum := sha256.Sum256([]byte(mode + "|" + text))
 	checksum := hex.EncodeToString(sum[:])
 
+	// 归属用户：入库时固化，检索时按此过滤（认证未启用时 = default）
+	owner := identity.UserID(ctx)
+
 	// 内容未变化则跳过重复向量化（MySQL 元数据判定）
-	if old, err := r.repo.Get(ctx, docID); err == nil && old != nil &&
-		old.Checksum == checksum && old.Status == "ready" && old.Mode == mode {
-		return &IngestResult{
-			DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text)),
-			Chunks: old.Chunks, Entities: old.Entities, Relations: old.Relations,
-			Deduped: true, Duration: time.Since(start),
-		}, nil
+	if old, err := r.repo.Get(ctx, docID); err == nil && old != nil {
+		// 隔离保护：doc_id 全局唯一，属于别人的同名文档不允许覆盖/复用
+		if old.UserID != "" && old.UserID != owner {
+			return nil, fmt.Errorf("文档标识 %q 已被其他用户占用，请换一个文件名或 doc_id", docID)
+		}
+		if old.Checksum == checksum && old.Status == "ready" && old.Mode == mode {
+			return &IngestResult{
+				DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text)),
+				Chunks: old.Chunks, Entities: old.Entities, Relations: old.Relations,
+				Deduped: true, Duration: time.Since(start),
+			}, nil
+		}
 	}
 
 	res := &IngestResult{DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text))}
@@ -210,7 +220,7 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	res.Duration = time.Since(start)
 
 	if err := r.repo.Upsert(ctx, &Document{
-		DocID: docID, Source: source, Mode: mode, Status: "ready",
+		DocID: docID, UserID: owner, Source: source, Mode: mode, Status: "ready",
 		Chars: res.Chars, Chunks: res.Chunks,
 		Entities: res.Entities, Relations: res.Relations,
 		Checksum: checksum,
@@ -301,7 +311,7 @@ func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode string
 // saveFailed 记录失败状态（便于前端与管理页面排查）
 func (r *Rag) saveFailed(ctx context.Context, docID, source, mode, text string, cause error) {
 	_ = r.repo.Upsert(ctx, &Document{
-		DocID: docID, Source: source, Mode: mode, Status: "failed",
+		DocID: docID, UserID: identity.UserID(ctx), Source: source, Mode: mode, Status: "failed",
 		Chars: len([]rune(text)),
 	})
 }
@@ -406,6 +416,69 @@ func (r *Rag) Retrieve(ctx context.Context, question, filter string) (hits []Hit
 	return r.rerankHits(ctx, question, hits), nil
 }
 
+// chunkDocIDField Milvus 分块集合里的文档 ID 字段名（与 milvusdb/models 保持一致）。
+// 放在 biz 层是为了让「按用户白名单过滤」的表达式构造不依赖存储实现。
+const chunkDocIDField = "doc_id"
+
+// RetrieveForUser 按用户隔离的检索：只召回归属该用户文档的分块。
+// 实现方式：MySQL 拿到该用户 doc_id 白名单 → 生成 Milvus 过滤表达式 doc_id in [...]。
+// 用户没有文档时直接返回空，省掉一次 embedding 与向量检索。
+func (r *Rag) RetrieveForUser(ctx context.Context, question, userID string) ([]Hit, error) {
+	filter, empty, err := r.userDocFilter(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if empty {
+		return nil, nil
+	}
+	return r.Retrieve(ctx, question, filter)
+}
+
+// userDocFilter 用户文档白名单过滤表达式；empty=true 表示该用户没有任何文档
+func (r *Rag) userDocFilter(ctx context.Context, userID string) (filter string, empty bool, err error) {
+	ids, err := r.repo.ListDocIDs(ctx, userID)
+	if err != nil {
+		return "", false, fmt.Errorf("查询用户文档: %w", err)
+	}
+	if len(ids) == 0 {
+		return "", true, nil
+	}
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = strconv.Quote(id)
+	}
+	return fmt.Sprintf("%s in [%s]", chunkDocIDField, strings.Join(quoted, ",")), false, nil
+}
+
+// GraphRecallForUser 按用户隔离的图谱召回：只保留引用了该用户文档的实体与关系。
+func (r *Rag) GraphRecallForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
+	ids, err := r.repo.ListDocIDs(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("查询用户文档: %w", err)
+	}
+	return r.graph.RecallScoped(ctx, question, ids)
+}
+
+// GraphQueryForUser 按用户隔离的图谱问答（生成式）。
+func (r *Rag) GraphQueryForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
+	ids, err := r.repo.ListDocIDs(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("查询用户文档: %w", err)
+	}
+	return r.graph.QueryScoped(ctx, question, ids)
+}
+
+// DocFilterForUser 用户文档白名单的 Milvus 过滤表达式；empty=true 表示该用户没有文档。
+// 供问答接口在调用 Query（带 filter 的生成式检索）前复用同一份隔离条件。
+func (r *Rag) DocFilterForUser(ctx context.Context, userID string) (string, bool, error) {
+	return r.userDocFilter(ctx, userID)
+}
+
+// GetDoc 文档元数据（归属校验用；不存在返回 nil）
+func (r *Rag) GetDoc(ctx context.Context, docID string) (*Document, error) {
+	return r.repo.Get(ctx, docID)
+}
+
 // rerankHits 召回精排：topK 条 → 交叉编码器重排 → 按相关度降序。
 // 任何失败静默降级为检索原序（精排是增强，不是依赖）。
 func (r *Rag) rerankHits(ctx context.Context, question string, hits []Hit) []Hit {
@@ -487,12 +560,12 @@ func (r *Rag) GraphRecall(ctx context.Context, question string) (*graphrag.Graph
 	return r.graph.Recall(ctx, question)
 }
 
-// ListDocs 文档列表（MySQL 权威数据源）
-func (r *Rag) ListDocs(ctx context.Context, limit int) ([]Document, error) {
+// ListDocs 文档列表（MySQL 权威数据源）；userID 非空时只返回该用户的文档
+func (r *Rag) ListDocs(ctx context.Context, userID string, limit int) ([]Document, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	return r.repo.List(ctx, limit)
+	return r.repo.List(ctx, userID, limit)
 }
 
 // DeleteDoc 删除文档：Milvus 分块 + 图谱孤儿节点 + MySQL 元数据 + 缓存

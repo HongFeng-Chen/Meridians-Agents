@@ -29,6 +29,8 @@ message Conversation {
   string updated_at = 7 [json_name = "updated_at"];
   // 该会话是否发生过辩论（目录「辩论历史」分组过滤用）
   bool has_debate = 8 [json_name = "has_debate"];
+  // 归属用户（隔离键）：列表与详情接口只返回当前用户的会话
+  string user_id = 9 [json_name = "user_id"];
 }
 
 // ConversationMessage 会话内一条消息。

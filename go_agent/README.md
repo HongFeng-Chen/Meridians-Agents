@@ -317,6 +317,30 @@ security:
 
 控制台侧：浏览器 `localStorage.meridians_token` 写入令牌后，前端所有请求自动带 `Authorization`（未启用认证时后端忽略该头）。
 
+### 数据隔离（多用户）
+
+认证只解决「你是谁」，隔离解决「你能看到谁的东西」。四类数据都带归属键，读写两端都校验：
+
+| 数据 | 归属列 | 写入 | 读取 / 操作 |
+| --- | --- | --- | --- |
+| 会话 `conversations` | `user_id`（默认 `'default'`，带索引） | `Create` 从请求上下文取 `identity.UserID` | `List` 按用户过滤；详情 / 改 / 删 / 发消息 / 辩论全部接口做归属校验，跨用户 `403` |
+| 任务 `agent_tasks` / `agent_task_history` | `user_id` | `SubmitTask` 取上下文；子任务与编排成员继承父任务归属；cron 走 `baseCtx` → 落 `default` | 列表按用户过滤；详情 / 事件流 / 取消 / 重试做归属校验 |
+| 知识库 `rag_documents` + Milvus 分块 | `user_id` | `Ingest` 固化归属，`doc_id` 被他人占用时直接拒绝覆盖 | 列表按用户过滤；检索用 MySQL 反查的 `doc_id` 白名单拼成 Milvus 表达式 `doc_id in [...]` 下推；图谱召回按 `chunk_refs` 前缀裁剪（无 refs 保守丢弃）；删除做归属校验 |
+| 长期记忆 `memories` / `recall_logs` | `user_id` | 召回命名空间 = 当前用户 | 记忆 API 在认证态强制用令牌身份，忽略请求体 `user_id`（防伪造） |
+
+两个要点：
+
+- **客户端传的 filter 一律不认**。`POST /api/query` 的 `filter` 字段由服务端按当前用户重新生成，既防越权检索，也顺带堵掉 Milvus 表达式注入。
+- **历史数据兼容**。列默认 `'default'`，未启用认证时 `devUser=default`，老库老数据照常可见；一旦开会话/任务/文档都由令牌身份写入，天然分到各自作用域。
+
+验证方式（起一个开了认证 + 双静态令牌的独立实例，22 条断言覆盖越权矩阵）：
+
+```bash
+python scripts/make_isolation_config.py          # 生成 configs-isolation/config.yaml（含明文测试令牌，已 gitignore）
+./bin/go_agent.exe -conf ./configs-isolation &   # 8011 端口，令牌 tok-alice→alice / tok-bob→bob
+python scripts/e2e_isolation.py                  # 会话 / 任务 / 知识库三层越权验证
+```
+
 **运维端点**
 
 | 端点 | 说明 |

@@ -144,6 +144,8 @@ message AgentTask {
   bool archived = 15 [json_name = "archived"];
   // 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
   string conv_id = 16 [json_name = "conv_id"];
+  // 归属用户（隔离键）：任务中心只返回当前用户的任务
+  string user_id = 17 [json_name = "user_id"];
 }
 
 // TaskEvent 任务事件（trace 链路检索单元）

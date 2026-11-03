@@ -39,6 +39,7 @@ func toConversation(c conversation.Conversation) *v1.Conversation {
 		CreatedAt:    formatTS(c.CreatedAt),
 		UpdatedAt:    formatTS(c.UpdatedAt),
 		HasDebate:    c.HasDebate,
+		UserId:       c.UserID,
 	}
 }
 
@@ -78,6 +79,17 @@ func fromAttachments(list []*v1.Attachment) []conversation.Attachment {
 	return out
 }
 
+// ensureConvOwned 会话归属校验：不属于当前用户时返回 403。
+// 所有按会话 ID 操作的接口（详情 / 消息 / 改名 / 删除 / 对话 / 辩论）都必须先过这一步，
+// 否则只要知道会话 ID 就能读别人的对话内容。
+func (s *ConversationService) ensureConvOwned(ctx context.Context, id string) error {
+	c, err := s.uc.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	return ensureOwned(ctx, c.UserID, "会话")
+}
+
 // CreateConversation 新建会话。
 func (s *ConversationService) CreateConversation(ctx context.Context, req *v1.CreateConversationRequest) (*v1.CreateConversationReply, error) {
 	c, err := s.uc.Create(ctx, req.GetId(), req.GetTitle(), req.GetAgentKey())
@@ -87,10 +99,11 @@ func (s *ConversationService) CreateConversation(ctx context.Context, req *v1.Cr
 	return &v1.CreateConversationReply{Conversation: toConversation(*c)}, nil
 }
 
-// ListConversations 会话目录。
+// ListConversations 会话目录（只返回当前用户的会话）。
 func (s *ConversationService) ListConversations(ctx context.Context, req *v1.ListConversationsRequest) (*v1.ListConversationsReply, error) {
 	list, total, err := s.uc.List(ctx, conversation.Filter{
 		Kw:     req.GetKw(),
+		UserID: scopeUser(ctx),
 		Limit:  int(req.GetLimit()),
 		Offset: int(req.GetOffset()),
 	})
@@ -106,6 +119,9 @@ func (s *ConversationService) ListConversations(ctx context.Context, req *v1.Lis
 
 // GetConversation 会话详情 + 全部消息。
 func (s *ConversationService) GetConversation(ctx context.Context, req *v1.GetConversationRequest) (*v1.GetConversationReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	c, msgs, err := s.uc.Detail(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -119,6 +135,9 @@ func (s *ConversationService) GetConversation(ctx context.Context, req *v1.GetCo
 
 // ListMessages 会话消息分页（微信式向上翻页：默认最新一页，before_id 向前翻）。
 func (s *ConversationService) ListMessages(ctx context.Context, req *v1.ListMessagesRequest) (*v1.ListMessagesReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	msgs, hasMore, err := s.uc.ListMessagesPage(ctx, req.GetId(), req.GetLimit(), req.GetBeforeId())
 	if err != nil {
 		return nil, err
@@ -132,6 +151,9 @@ func (s *ConversationService) ListMessages(ctx context.Context, req *v1.ListMess
 
 // UpdateConversation 重命名会话。
 func (s *ConversationService) UpdateConversation(ctx context.Context, req *v1.UpdateConversationRequest) (*v1.UpdateConversationReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	c, err := s.uc.Rename(ctx, req.GetId(), req.GetTitle())
 	if err != nil {
 		return nil, err
@@ -141,6 +163,9 @@ func (s *ConversationService) UpdateConversation(ctx context.Context, req *v1.Up
 
 // DeleteConversation 删除会话。
 func (s *ConversationService) DeleteConversation(ctx context.Context, req *v1.DeleteConversationRequest) (*v1.DeleteConversationReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	if err := s.uc.Delete(ctx, req.GetId()); err != nil {
 		return nil, err
 	}
@@ -149,6 +174,9 @@ func (s *ConversationService) DeleteConversation(ctx context.Context, req *v1.De
 
 // AppendMessage 追加消息。
 func (s *ConversationService) AppendMessage(ctx context.Context, req *v1.AppendMessageRequest) (*v1.AppendMessageReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	m, err := s.uc.Append(ctx, req.GetId(), req.GetRole(), req.GetContent(), req.GetMeta(), req.GetTaskId())
 	if err != nil {
 		return nil, err
@@ -159,6 +187,9 @@ func (s *ConversationService) AppendMessage(ctx context.Context, req *v1.AppendM
 // Chat 与 LLM 对话一轮（LLM 自主编排 Agent / MCP，自动召回 Memory / RAG / GraphRAG）。
 // attachments 为已上传附件（先经 UploadMedia 拿到 url）。
 func (s *ConversationService) Chat(ctx context.Context, req *v1.ChatRequest) (*v1.ChatReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	userMsg, assistantMsg, err := s.uc.Chat(ctx, req.GetId(), req.GetContent(), fromAttachments(req.GetAttachments()))
 	if err != nil {
 		return nil, err
@@ -221,6 +252,9 @@ func toProtoDebate(d *conversation.Debate) *v1.Debate {
 
 // CreateDebate 创建辩论（后台推演启动）。
 func (s *ConversationService) CreateDebate(ctx context.Context, req *v1.CreateDebateRequest) (*v1.CreateDebateReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	roles := make([]conversation.DebateRole, 0, len(req.GetRoles()))
 	for _, r := range req.GetRoles() {
 		roles = append(roles, toDebateRole(r))
@@ -234,6 +268,9 @@ func (s *ConversationService) CreateDebate(ctx context.Context, req *v1.CreateDe
 
 // GetCurrentDebate 会话当前 / 最近一场辩论。
 func (s *ConversationService) GetCurrentDebate(ctx context.Context, req *v1.GetConversationRequest) (*v1.GetDebateReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.CurrentDebate(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -243,6 +280,9 @@ func (s *ConversationService) GetCurrentDebate(ctx context.Context, req *v1.GetC
 
 // StopDebate 请求停止辩论。
 func (s *ConversationService) StopDebate(ctx context.Context, req *v1.GetConversationRequest) (*v1.StopDebateReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.StopDebate(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -252,6 +292,9 @@ func (s *ConversationService) StopDebate(ctx context.Context, req *v1.GetConvers
 
 // PauseDebate 暂停辩论。
 func (s *ConversationService) PauseDebate(ctx context.Context, req *v1.GetConversationRequest) (*v1.StopDebateReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.PauseDebate(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -261,6 +304,9 @@ func (s *ConversationService) PauseDebate(ctx context.Context, req *v1.GetConver
 
 // ResumeDebate 恢复已暂停的辩论。
 func (s *ConversationService) ResumeDebate(ctx context.Context, req *v1.GetConversationRequest) (*v1.StopDebateReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.ResumeDebate(ctx, req.GetId())
 	if err != nil {
 		return nil, err
@@ -270,6 +316,9 @@ func (s *ConversationService) ResumeDebate(ctx context.Context, req *v1.GetConve
 
 // AddDebateRole 辩论中追加角色。
 func (s *ConversationService) AddDebateRole(ctx context.Context, req *v1.AddDebateRoleRequest) (*v1.AddDebateRoleReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.AddDebateRole(ctx, req.GetId(), toDebateRole(req.GetRole()))
 	if err != nil {
 		return nil, err
@@ -279,6 +328,9 @@ func (s *ConversationService) AddDebateRole(ctx context.Context, req *v1.AddDeba
 
 // RemoveDebateRole 辩论中移除角色。
 func (s *ConversationService) RemoveDebateRole(ctx context.Context, req *v1.RemoveDebateRoleRequest) (*v1.RemoveDebateRoleReply, error) {
+	if err := s.ensureConvOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
 	d, err := s.uc.RemoveDebateRole(ctx, req.GetId(), req.GetName())
 	if err != nil {
 		return nil, err

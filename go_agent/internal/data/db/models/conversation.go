@@ -6,7 +6,10 @@ import "time"
 
 // ConversationPO 会话（conversations）
 type ConversationPO struct {
-	ID           string `gorm:"column:id;primaryKey;size:64"`
+	ID string `gorm:"column:id;primaryKey;size:64"`
+	// UserID 会话归属用户（多租户隔离键）：列表/详情只对归属人可见。
+	// 默认 'default' 兼容认证未启用时的单机开发态与历史数据。
+	UserID       string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_conversations_user"`
 	Title        string `gorm:"column:title;size:128;not null;default:'';index:idx_conversations_title"`
 	AgentKey     string `gorm:"column:agent_key;size:64;not null;default:''"`
 	MessageCount int64  `gorm:"column:message_count;not null;default:0"`

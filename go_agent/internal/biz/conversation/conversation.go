@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go_agent/internal/pkg/identity"
 )
 
 // Err 会话域错误
@@ -105,7 +107,16 @@ func (u *UseCase) Create(ctx context.Context, id, title, agentKey string) (*Conv
 		id = genID()
 	}
 	now := time.Now()
-	c := &Conversation{ID: id, Title: title, AgentKey: agentKey, CreatedAt: now, UpdatedAt: now}
+	// 归属用户来自请求身份（认证未启用时为 default）：
+	// 会话中心列表与详情都以该字段做隔离，避免跨用户读会话。
+	c := &Conversation{
+		ID:        id,
+		UserID:    identity.UserID(ctx),
+		Title:     title,
+		AgentKey:  agentKey,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
 	if err := u.repo.Create(ctx, c); err != nil {
 		return nil, err
 	}

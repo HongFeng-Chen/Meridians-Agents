@@ -45,7 +45,9 @@ type Conversation struct {
 	CreatedAt   string `protobuf:"bytes,6,opt,name=created_at,proto3" json:"created_at,omitempty"`
 	UpdatedAt   string `protobuf:"bytes,7,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
 	// 该会话是否发生过辩论（目录「辩论历史」分组过滤用）
-	HasDebate     bool `protobuf:"varint,8,opt,name=has_debate,proto3" json:"has_debate,omitempty"`
+	HasDebate bool `protobuf:"varint,8,opt,name=has_debate,proto3" json:"has_debate,omitempty"`
+	// 归属用户（隔离键）：列表与详情接口只返回当前用户的会话
+	UserId        string `protobuf:"bytes,9,opt,name=user_id,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -134,6 +136,13 @@ func (x *Conversation) GetHasDebate() bool {
 		return x.HasDebate
 	}
 	return false
+}
+
+func (x *Conversation) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
 }
 
 // ConversationMessage 会话内一条消息。
@@ -1875,7 +1884,7 @@ var File_conversation_v1_conversation_proto protoreflect.FileDescriptor
 
 const file_conversation_v1_conversation_proto_rawDesc = "" +
 	"\n" +
-	"\"conversation/v1/conversation.proto\x12\x0fconversation.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xfc\x01\n" +
+	"\"conversation/v1/conversation.proto\x12\x0fconversation.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\x96\x02\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1c\n" +
@@ -1890,7 +1899,8 @@ const file_conversation_v1_conversation_proto_rawDesc = "" +
 	"updated_at\x12\x1e\n" +
 	"\n" +
 	"has_debate\x18\b \x01(\bR\n" +
-	"has_debate\"\xa4\x02\n" +
+	"has_debate\x12\x18\n" +
+	"\auser_id\x18\t \x01(\tR\auser_id\"\xa4\x02\n" +
 	"\x13ConversationMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12(\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0fconversation_id\x12\x12\n" +

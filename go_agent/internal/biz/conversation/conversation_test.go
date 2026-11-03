@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go_agent/internal/pkg/identity"
 )
 
 type fakeRepo struct {
@@ -172,3 +174,29 @@ func (f *fakeRepo) GetLatestDebate(_ context.Context, _ string) (*Debate, error)
 func (f *fakeRepo) UpdateDebate(_ context.Context, _ *Debate) error { return nil }
 
 func (f *fakeRepo) StopOrphanDebates(_ context.Context) (int64, error) { return 0, nil }
+
+// TestCreateRecordsOwner 会话创建时固化归属用户（认证态取令牌身份，未认证取 default）
+func TestCreateRecordsOwner(t *testing.T) {
+	repo := newFakeRepo()
+	u := NewUseCase(repo, nil)
+
+	c, err := u.Create(identity.With(context.Background(), identity.Info{UserID: "alice", Auth: "jwt"}), "", "测试会话", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if c.UserID != "alice" {
+		t.Fatalf("归属用户应为 alice，实际 %q", c.UserID)
+	}
+	if repo.convs[c.ID].UserID != "alice" {
+		t.Fatalf("仓储落库归属不符: %+v", repo.convs[c.ID])
+	}
+
+	// 未注入身份（单机开发态）→ default
+	c2, err := u.Create(context.Background(), "", "匿名会话", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if c2.UserID != identity.DefaultUser {
+		t.Fatalf("未认证应落 default，实际 %q", c2.UserID)
+	}
+}

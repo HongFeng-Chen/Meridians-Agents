@@ -647,7 +647,9 @@ type AgentTask struct {
 	// 是否已归档到任务历史表（终态任务从任务池迁出）
 	Archived bool `protobuf:"varint,15,opt,name=archived,proto3" json:"archived,omitempty"`
 	// 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
-	ConvId        string `protobuf:"bytes,16,opt,name=conv_id,proto3" json:"conv_id,omitempty"`
+	ConvId string `protobuf:"bytes,16,opt,name=conv_id,proto3" json:"conv_id,omitempty"`
+	// 归属用户（隔离键）：任务中心只返回当前用户的任务
+	UserId        string `protobuf:"bytes,17,opt,name=user_id,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -790,6 +792,13 @@ func (x *AgentTask) GetArchived() bool {
 func (x *AgentTask) GetConvId() string {
 	if x != nil {
 		return x.ConvId
+	}
+	return ""
+}
+
+func (x *AgentTask) GetUserId() string {
+	if x != nil {
+		return x.UserId
 	}
 	return ""
 }
@@ -2476,7 +2485,7 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\"\n" +
 	"\fargs_example\x18\x04 \x01(\tR\fargs_example\x12\x1a\n" +
-	"\bdisabled\x18\x05 \x01(\bR\bdisabled\"\xc9\x03\n" +
+	"\bdisabled\x18\x05 \x01(\bR\bdisabled\"\xe3\x03\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\"\n" +
 	"\fagent_def_id\x18\x02 \x01(\x04R\fagent_def_id\x12\x1c\n" +
@@ -2498,7 +2507,8 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"started_at\x12 \n" +
 	"\vfinished_at\x18\x0e \x01(\tR\vfinished_at\x12\x1a\n" +
 	"\barchived\x18\x0f \x01(\bR\barchived\x12\x18\n" +
-	"\aconv_id\x18\x10 \x01(\tR\aconv_id\"\x97\x01\n" +
+	"\aconv_id\x18\x10 \x01(\tR\aconv_id\x12\x18\n" +
+	"\auser_id\x18\x11 \x01(\tR\auser_id\"\x97\x01\n" +
 	"\tTaskEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
 	"\atask_id\x18\x02 \x01(\x04R\atask_id\x12\x12\n" +

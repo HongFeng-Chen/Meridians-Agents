@@ -550,6 +550,7 @@ func (u *UseCase) runChildTask(ctx context.Context, parent *Task, agentKey, inpu
 		ParentTaskID: parent.ID,
 		Depth:        parent.Depth + 1,
 		ConvID:       parent.ConvID, // 会话编排链路：子任务继承来源会话，保证任务树整层可按会话追溯
+		UserID:       parent.UserID, // 子任务继承父任务归属，避免委派后链路被拆到不同用户
 	}
 	if err := u.repo.CreateTask(ctx, child); err != nil {
 		return nil, "", fmt.Errorf("创建子任务失败: %w", err)

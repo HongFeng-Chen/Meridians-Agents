@@ -99,7 +99,7 @@ func (s *MemoryService) Remember(ctx context.Context, req *v1.RememberRequest) (
 	}
 	in := memory.RememberInput{
 		ID:         req.GetId(),
-		UserID:     req.GetUserId(),
+		UserID:     scopedUserID(ctx, req.GetUserId()),
 		Kind:       req.GetKind(),
 		Content:    req.GetContent(),
 		Importance: int(req.GetImportance()),
@@ -126,7 +126,7 @@ func (s *MemoryService) Remember(ctx context.Context, req *v1.RememberRequest) (
 
 // ListLong 长期记忆列表。
 func (s *MemoryService) ListLong(ctx context.Context, req *v1.ListLongRequest) (*v1.ListLongReply, error) {
-	mems, err := s.uc.List(ctx, req.GetUserId(), req.GetIncludeExpired(), int(req.GetLimit()))
+	mems, err := s.uc.List(ctx, scopedUserID(ctx, req.GetUserId()), req.GetIncludeExpired(), int(req.GetLimit()))
 	if err != nil {
 		return nil, mapMemoryErr(err)
 	}
@@ -175,7 +175,7 @@ func (s *MemoryService) Recall(ctx context.Context, req *v1.RecallRequest) (*v1.
 	if req.WithGraph != nil {
 		withGraph = req.GetWithGraph()
 	}
-	res, err := s.uc.Recall(ctx, req.GetQuery(), req.GetUserId(), int(req.GetTopK()), withGraph, memory.RecallSourceAPI)
+	res, err := s.uc.Recall(ctx, req.GetQuery(), scopedUserID(ctx, req.GetUserId()), int(req.GetTopK()), withGraph, memory.RecallSourceAPI)
 	if err != nil {
 		return nil, mapMemoryErr(err)
 	}
@@ -434,7 +434,7 @@ func (s *MemoryService) ExtractMemories(ctx context.Context, req *v1.ExtractMemo
 
 // ListRecallLogs 记忆检索历史
 func (s *MemoryService) ListRecallLogs(ctx context.Context, req *v1.ListRecallLogsRequest) (*v1.ListRecallLogsReply, error) {
-	logs, err := s.uc.ListRecallLogs(ctx, req.GetUserId(), int(req.GetLimit()))
+	logs, err := s.uc.ListRecallLogs(ctx, scopedUserID(ctx, req.GetUserId()), int(req.GetLimit()))
 	if err != nil {
 		return nil, err
 	}
