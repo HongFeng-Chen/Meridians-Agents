@@ -19,19 +19,27 @@ package agentfactory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"go_agent/internal/pkg/budget"
+
 	"go_agent/internal/biz/history"
 	"go_agent/internal/biz/llm"
 )
+
+// defaultMaxParallel 执行图并行波次的默认并发上限
+const defaultMaxParallel = 4
 
 // RunResult 一次执行的结果
 type RunResult struct {
 	Answer string `json:"answer"`
 	Turns  int    `json:"turns"`
+	// BudgetExceeded 是否因 token 预算耗尽而提前收敛（有部分结论，未跑完全部步骤）
+	BudgetExceeded bool `json:"budget_exceeded,omitempty"`
 }
 
 // Recorder 任务 trace 记录器：事件落 MySQL，任务快照刷 Redis（实时状态轮询）
@@ -228,6 +236,9 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 		Purpose:  "agentfactory." + graphPurpose(def.GraphType),
 	})
 	ctx = history.WithTask(ctx, rec.task.ID, def.AgentKey)
+	// 运行预算：根任务按配置领取一份，子任务沿用父任务的（Ensure 幂等）——
+	// 于是一个任务树的全部 LLM 调用共享同一份额度，而不是每个子任务各领一份。
+	ctx = budget.Ensure(ctx, u.opt.BudgetTokens, u.opt.BudgetCalls)
 	// 任务来自会话编排时回填会话身份：worker ctx 派生自 Background 从头没有 conv，
 	// 若不回填，任务内的 MCP / 记忆 / RAG 落 op_histories 时 conv_id 为空，
 	// 会话链路时间线看不到这些调用。WithTask 已改为读改写，此处顺序不再敏感，但先 Task 后 Conv 最稳。
@@ -309,6 +320,10 @@ func (u *UseCase) chatWithOpts(ctx context.Context, def *AgentDef, system, user 
 	if u.chat == nil {
 		return "", ErrNoChatter
 	}
+	// 预算闸门：宁可提前收敛，也不要「明知超额还发一次请求」
+	if err := budget.From(ctx).Check(); err != nil {
+		return "", err
+	}
 	if def.LLMModel != "" {
 		system = "[期望模型: " + def.LLMModel + "]\n" + system
 	}
@@ -383,6 +398,17 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 
 		output, err := call(composeTranscript(seed, digest, recent))
 		if err != nil {
+			// 预算耗尽不是故障：把已有中间结论收敛成答案返回，任务算成功
+			// （否则用户拿到的是一条「失败」，而钱已经花掉了）
+			if errors.Is(err, budget.ErrExceeded) {
+				snap := budget.From(ctx).Snapshot()
+				rec.event(EventError, t, map[string]any{
+					"message":         "token 预算耗尽，提前收敛",
+					"budget_exceeded": true,
+					"budget":          snap,
+				})
+				return &RunResult{Answer: convergeAnswer(digest, recent), Turns: turn, BudgetExceeded: true}, nil
+			}
 			return nil, fmt.Errorf("第 %d 轮 LLM 调用失败: %w", turn, err)
 		}
 		act, perr := parseLLMJSON(output)
@@ -535,4 +561,38 @@ func (u *UseCase) runChildTask(ctx context.Context, parent *Task, agentKey, inpu
 		return child, "", err
 	}
 	return child, answer, nil
+}
+
+// convergeAnswer 预算耗尽时的收敛答案：取最近一条中间结论作为部分结果。
+// 优先用 digest（早期轮次的一句话摘要），没有再退到 recent（最近轮次全文）。
+func convergeAnswer(digest, recent []string) string {
+	tail := ""
+	for i := len(digest) - 1; i >= 0; i-- {
+		if v := strings.TrimSpace(digest[i]); v != "" {
+			tail = v
+			break
+		}
+	}
+	if tail == "" {
+		for i := len(recent) - 1; i >= 0; i-- {
+			if v := strings.TrimSpace(recent[i]); v != "" {
+				tail = v
+				break
+			}
+		}
+	}
+	head := "已用尽本轮执行预算（budget.maxTokens / maxCalls），以下是目前收集到的中间结论；" +
+		"任务未全部完成，可提高配额后重跑。"
+	if tail == "" {
+		return head + "\n（暂无可用的中间结论）"
+	}
+	return head + "\n\n" + truncateRunes(tail, 1200)
+}
+
+// parallelLimit 并行波次上限：未配置时用 defaultMaxParallel。
+func (u *UseCase) parallelLimit() int {
+	if u.opt.MaxParallel > 0 {
+		return u.opt.MaxParallel
+	}
+	return defaultMaxParallel
 }

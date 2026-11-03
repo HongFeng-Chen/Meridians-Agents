@@ -118,7 +118,7 @@ func main() {
 
 	logStartupInfo(bc)
 
-	app, cleanup, err := wireApp(bc.GetServer(), bc.GetData(), logger)
+	app, cleanup, err := wireApp(bc.GetServer(), bc.GetData(), bc.GetSecurity(), logger)
 	if err != nil {
 		fatal("初始化依赖", err)
 	}
@@ -155,6 +155,24 @@ func logStartupInfo(bc *conf.Bootstrap) {
 		"llm", d.GetLlm().GetModel(),
 		"llm_key", maskKey(d.GetLlm().GetApiKey()),
 	)
+	sec := bc.GetSecurity()
+	log.Info("security",
+		"auth_enabled", sec.GetAuth().GetEnabled(),
+		"public_paths", len(sec.GetAuth().GetPublicPaths()),
+		"static_tokens", len(sec.GetAuth().GetStaticTokens()),
+		"ratelimit_enabled", sec.GetRateLimit().GetEnabled(),
+		"ratelimit_qps", sec.GetRateLimit().GetQps(),
+		"budget_tokens", sec.GetBudget().GetMaxTokens(),
+		"budget_parallel", sec.GetBudget().GetMaxParallel(),
+	)
+	if !sec.GetAuth().GetEnabled() {
+		log.Warn("认证未启用：任何能访问本端口的人都可以读写全部会话/记忆/Agent 定义并消耗你的 token。" +
+			"对外暴露前请设置 AUTH_ENABLED=true AUTH_JWT_SECRET=<密钥>")
+	}
+	if sec.GetAuth().GetEnabled() && sec.GetAuth().GetJwtSecret() == "" && len(sec.GetAuth().GetStaticTokens()) == 0 {
+		log.Error("认证已启用但没有可用凭证：jwtSecret 与 staticTokens 都为空，所有请求都会被拒绝")
+	}
+
 	if d.GetLlm().GetApiKey() == "" {
 		log.Warn("LLM_API_KEY 未配置：问答与图谱抽取会失败（健康检查仍可用）")
 	}

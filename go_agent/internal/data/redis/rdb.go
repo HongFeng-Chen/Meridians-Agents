@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/health"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -50,6 +51,7 @@ func NewRDBData(c *conf.Data) (*RDBData, func(), error) {
 		_ = rdb.Close()
 		return nil, nil, fmt.Errorf("redis 连接失败 addr=%s%s: %w", rc.GetAddr(), redisHint(err), err)
 	}
+	health.Register("redis", func(ctx context.Context) error { return rdb.Ping(ctx).Err() })
 	return &RDBData{rdb: rdb}, func() {
 		_ = rdb.Close()
 	}, nil

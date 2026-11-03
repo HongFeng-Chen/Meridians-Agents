@@ -8,6 +8,62 @@ import "google/protobuf/duration.proto";
 message Bootstrap {
   Server server = 1;
   Data data = 2;
+  // 网关层的安全与配额策略（认证 / 限流 / 预算）
+  Security security = 3;
+}
+
+// Security 安全边界：三项策略互相独立，可分别开关。
+// 关闭认证时所有请求按 devUser/devTenant 身份处理，只适合本地开发或纯内网。
+message Security {
+  Auth auth = 1;
+  RateLimit rateLimit = 2;
+  Budget budget = 3;
+}
+
+// Auth 身份认证：校验 Authorization 头里的 JWT（HS256）或静态令牌。
+message Auth {
+  bool enabled = 1;
+  // HS256 密钥；留空则 JWT 一律拒绝（只能走静态令牌）
+  string jwtSecret = 2;
+  // 取令牌的请求头名，默认 Authorization（兼容 "Bearer xxx" 与裸 token）
+  string header = 3;
+  // 从 JWT payload 取用户 / 租户的 claim 名，默认 sub / tenant_id
+  string userClaim = 4;
+  string tenantClaim = 5;
+  // 未启用认证时使用的开发态身份
+  string devUser = 6;
+  string devTenant = 7;
+  // 白名单路径前缀（探活、指标、静态附件），命中即跳过认证
+  repeated string publicPaths = 8;
+  // 静态令牌 → "user:tenant"（内网脚本 / 巡检用，比签 JWT 省事）
+  map<string, string> staticTokens = 9;
+}
+
+// RateLimit 网关限流：按「租户 + 路由」做令牌桶，超限返回 429 + Retry-After。
+message RateLimit {
+  bool enabled = 1;
+  // 读接口（GET/HEAD）每个租户每路由的 QPS 与桶容量
+  double qps = 2;
+  int32 burst = 3;
+  // 写接口（POST/PUT/PATCH/DELETE）的 QPS 与桶容量；0 = 与读接口一致
+  double writeQps = 4;
+  int32 writeBurst = 5;
+  // 单请求最长执行时间（0 = 用 server.http.timeout）；用于向下游传递 deadline
+  google.protobuf.Duration timeout = 6;
+}
+
+// Budget 成本闸门：单次 Agent 执行（含派生任务）的 token / 调用次数上限，
+// 以及并行波次上限（防止一个宽 DAG 同时烧钱）。
+message Budget {
+  // 单任务 token 上限（0 = 不限）
+  int64 maxTokens = 1;
+  // 单任务 LLM 调用次数上限（0 = 不限）
+  int32 maxCalls = 2;
+  // 并行波次上限（默认 4）
+  int32 maxParallel = 3;
+  // 计价：输入 / 输出每百万 token 单价（元），用于 /metrics 的成本估算
+  double inputPricePerM = 4;
+  double outputPricePerM = 5;
 }
 
 message Server {

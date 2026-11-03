@@ -6,14 +6,61 @@ server:
   grpc:
     addr: 0.0.0.0:9000
     timeout: 300s
+
+# 网关安全边界：认证 / 限流 / 预算。三项都可独立开关。
+# 默认全关是为了本地开发开箱即跑——一旦要对外暴露端口，至少把 auth 打开：
+#   AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串> ./go_agent -conf configs
+security:
+  auth:
+    enabled: ${AUTH_ENABLED:false}
+    # HS256 密钥；为空则 JWT 一律拒绝（只能走 staticTokens）
+    jwtSecret: ${AUTH_JWT_SECRET:}
+    header: Authorization
+    # 从 JWT payload 取用户 / 租户的 claim 名
+    userClaim: sub
+    tenantClaim: tenant_id
+    # 关闭认证时使用的开发态身份（保留 "default" 以兼容历史数据）
+    devUser: ${AUTH_DEV_USER:default}
+    devTenant: ${AUTH_DEV_TENANT:public}
+    # 白名单：探活、指标、聊天附件、平台内置 MCP 不需要令牌
+    publicPaths:
+      - /api/health
+      - /healthz
+      - /metrics
+      - /api/files/
+      - /mcp/platform
+    # 静态令牌 → "user:tenant"，适合巡检脚本与内网调用
+    staticTokens: {}
+  rateLimit:
+    enabled: ${RATELIMIT_ENABLED:false}
+    # 每个「租户 × 路由」的令牌桶
+    qps: 20
+    burst: 40
+    # 写接口配额更紧（一次 POST 可能触发一次完整的 Agent 执行）
+    writeQps: 5
+    writeBurst: 10
+    # 单请求最长执行时间（向下游传递 deadline；0 = 用 server.http.timeout）
+    timeout: 300s
+  budget:
+    # 单任务（含派生子任务）的 token 上限与 LLM 调用次数上限，0 = 不限。
+    # 超限时执行图走「预算耗尽」收敛分支，产出已有中间结论而不是硬失败。
+    maxTokens: ${BUDGET_MAX_TOKENS:400000}
+    maxCalls: ${BUDGET_MAX_CALLS:80}
+    # 并行波次上限：一个宽 DAG 不会同时拉起几十个 Agent 烧钱
+    maxParallel: ${BUDGET_MAX_PARALLEL:4}
+    # 计价（元 / 百万 token），用于 /metrics 的成本估算；按实际采购价改
+    inputPricePerM: ${PRICE_INPUT_PER_M:1}
+    outputPricePerM: ${PRICE_OUTPUT_PER_M:2}
+
 data:
   database:
     driver: mysql
     source: ${DATABASE_SOURCE:root:root@tcp(127.0.0.1:3306)/go_agent?timeout=5s&parseTime=True&loc=Local&charset=utf8mb4}
-    # Development conveniences. Keep both false in production and apply schema
-    # changes as a separate reviewed step.
-    debug: true
-    auto_migrate: true
+    # Development conveniences. 生产环境用环境变量关掉：
+    #   DB_DEBUG=false DB_AUTO_MIGRATE=false ./go_agent -conf configs
+    # auto_migrate 关闭后，表结构变更要在发布前单独执行（见 DEPLOY 的迁移章节）
+    debug: ${DB_DEBUG:true}
+    auto_migrate: ${DB_AUTO_MIGRATE:true}
   redis:
     addr: ${REDIS_ADDR:127.0.0.1:6379}
     # 默认值与 docker-compose.yml 里的 --requirepass 保持一致，本地开箱可跑；

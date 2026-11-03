@@ -26,6 +26,7 @@ import (
 	"go_agent/internal/biz/memory"
 	"go_agent/internal/biz/rag"
 	"go_agent/internal/biz/rag/graphrag"
+	"go_agent/internal/pkg/identity"
 )
 
 const (
@@ -190,9 +191,11 @@ func (u *UseCase) recallContext(ctx context.Context, content string) (blocks []s
 		return nil, meta
 	}
 
-	// 长期记忆（含记忆图谱上下文）
+	// 长期记忆（含记忆图谱上下文）：
+	// 召回命名空间 = 当前请求用户（而不是写死的 "default"，否则所有用户的
+	// 长期记忆会串在同一个命名空间里 —— 数据串号级事故）。
 	if u.deps.Memory != nil {
-		if res, err := u.deps.Memory.Recall(ctx, content, "default", chatMemTopK, true, memory.RecallSourceChat); err == nil {
+		if res, err := u.deps.Memory.Recall(ctx, content, identity.UserID(ctx), chatMemTopK, true, memory.RecallSourceChat); err == nil {
 			if lines := memoryLines(res); len(lines) > 0 {
 				blocks = append(blocks, "### 长期记忆\n"+strings.Join(lines, "\n"))
 				meta["memories"] = len(lines)

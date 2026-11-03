@@ -266,6 +266,64 @@ docker compose up -d --build
 | `agentfactory.workerCount` | `2` | 任务 worker 并发数 |
 | `agentfactory.shutdownTimeout` | `20s` | 优雅停机等待上限，**要小于编排层 kill 期限**（k8s `terminationGracePeriodSeconds` 默认 30s） |
 
+### 安全与配额（`security` 段）
+
+网关层有三道闸门，都在 `configs/config.yaml` 的 `security` 段，可用环境变量覆盖：
+
+| 项 | 环境变量 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| 认证 | `AUTH_ENABLED` / `AUTH_JWT_SECRET` | `false` / 空 | 校验 `Authorization: Bearer <JWT HS256 或静态令牌>`，把用户/租户写进请求上下文；`/healthz`、`/metrics`、`/api/files/` 等白名单路径放行 |
+| 限流 | `RATELIMIT_ENABLED` | `false` | 按「租户 × 路由」令牌桶，读写分开配额；超限返回 `429` + `Retry-After` |
+| 预算 | `BUDGET_MAX_TOKENS` / `BUDGET_MAX_CALLS` / `BUDGET_MAX_PARALLEL` | `400000` / `80` / `4` | 单任务树（含派生子任务）的 token 与调用次数上限，超限走「预算耗尽」收敛分支；并行波次并发上限防止宽 DAG 同时烧钱 |
+| 计价 | `PRICE_INPUT_PER_M` / `PRICE_OUTPUT_PER_M` | `1` / `2` | 元 / 百万 token，用于 `/metrics` 的成本估算 |
+
+**默认关闭认证是为了本地开箱即跑**。启动日志会显式告警：
+
+```
+level=WARN msg="认证未启用：任何能访问本端口的人都可以读写全部会话/记忆/Agent 定义并消耗你的 token…"
+```
+
+对外暴露端口前至少做这一步：
+
+```bash
+export AUTH_ENABLED=true
+export AUTH_JWT_SECRET="$(openssl rand -hex 32)"
+./bin/go_agent -conf configs
+```
+
+签发 JWT（HS256，`sub` 为用户、`tenant_id` 为租户）：
+
+```bash
+python - <<'EOF'
+import base64, hashlib, hmac, json, time
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=")
+head = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+body = b64(json.dumps({"sub": "alice", "tenant_id": "acme", "exp": int(time.time()) + 86400}).encode())
+sig = b64(hmac.new(b"你的密钥", head + b"." + body, hashlib.sha256).digest())
+print((head + b"." + body + b"." + sig).decode())
+EOF
+
+curl -H "Authorization: Bearer <token>" http://localhost:8000/api/conversations
+```
+
+内网脚本不想签 JWT，可以配静态令牌（`security.auth.staticTokens`，值格式 `user:tenant`）：
+
+```yaml
+security:
+  auth:
+    staticTokens:
+      svc-token: "svc:ops"
+```
+
+控制台侧：浏览器 `localStorage.meridians_token` 写入令牌后，前端所有请求自动带 `Authorization`（未启用认证时后端忽略该头）。
+
+**运维端点**
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /healthz` | 并发探测 MySQL / Redis / Milvus，全通过 `200`，任一失败 `503`（可直接做 LB readiness） |
+| `GET /metrics` | Prometheus 文本格式：请求量/时延、`llm_tokens_total{model}`、`llm_cost_cny_total{model}`、`llm_provider_available`、限流拒绝数等 |
+
 ## API 一览
 
 | 前缀 | 说明 |

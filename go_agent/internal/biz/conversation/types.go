@@ -37,15 +37,15 @@ type Conversation struct {
 
 // Message 会话内一条消息
 type Message struct {
-	ID             int64     `json:"id"`
-	ConversationID string    `json:"conversation_id"`
-	Role           string    `json:"role"`
-	Speaker        string    `json:"speaker"` // 发言者：普通会话为空；辩论为角色名 / 主持人
-	Content        string    `json:"content"`
-	Meta           string    `json:"meta"`    // 能力调用链路 JSON
-	TaskID         uint64    `json:"task_id"` // 关联任务（0 = 无）
+	ID             int64        `json:"id"`
+	ConversationID string       `json:"conversation_id"`
+	Role           string       `json:"role"`
+	Speaker        string       `json:"speaker"` // 发言者：普通会话为空；辩论为角色名 / 主持人
+	Content        string       `json:"content"`
+	Meta           string       `json:"meta"`                  // 能力调用链路 JSON
+	TaskID         uint64       `json:"task_id"`               // 关联任务（0 = 无）
 	Attachments    []Attachment `json:"attachments,omitempty"` // 消息附件（图片 / 视频）
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      time.Time    `json:"created_at"`
 }
 
 // Attachment 消息附件（图片 / 视频等媒体文件）。

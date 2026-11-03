@@ -142,6 +142,9 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 
 		answers := make([]string, len(preps))
 		errs := make([]error, len(preps))
+		// 并发闸门：一个 20 节点的 DAG 不会同时拉起 20 个 Agent 烧 token，
+		// 超出上限的节点排队等信号量（串行化但不改变 DAG 语义）。
+		sem := make(chan struct{}, u.parallelLimit())
 		var wg sync.WaitGroup
 		for k := range preps {
 			if preps[k].create != nil {
@@ -150,6 +153,8 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			wg.Add(1)
 			go func(k int) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				answers[k], errs[k] = u.executeTaskNow(ctx, preps[k].task, preps[k].member)
 			}(k)
 		}

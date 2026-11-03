@@ -28,7 +28,7 @@ import (
 )
 
 // wireApp init kratos application.
-func wireApp(*conf.Server, *conf.Data, *slog.Logger) (*kratos.App, func(), error) {
+func wireApp(*conf.Server, *conf.Data, *conf.Security, *slog.Logger) (*kratos.App, func(), error) {
 	panic(wire.Build(
 		server.ProviderSet, data.ProviderSet, biz.ProviderSet, service.ProviderSet,
 		// 跨层接口绑定：实现由 data 层构造，接口声明在 biz，只能在合并后的图里绑定

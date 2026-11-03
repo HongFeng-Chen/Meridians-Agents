@@ -12,6 +12,7 @@ import (
 	ragv1 "go_agent/api/rag/v1"
 	skillv1 "go_agent/api/skill/v1"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/metrics"
 	"go_agent/internal/service"
 
 	"github.com/go-kratos/kratos/v3/middleware/recovery"
@@ -29,6 +30,7 @@ import (
 // 校验、错误码天然一致。
 func NewGRPCServer(
 	c *conf.Server,
+	sec *conf.Security,
 	ragSvc *service.RagService,
 	promptSvc *service.PromptService,
 	memorySvc *service.MemoryService,
@@ -44,6 +46,8 @@ func NewGRPCServer(
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),
+			metricsMiddleware(metrics.Default),
+			newGate(sec).middleware(),
 			validate.Validator(func(req any) error {
 				if msg, ok := req.(proto.Message); ok {
 					if err := fieldbehavior.ValidateRequiredFields(msg); err != nil {

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/metrics"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -23,17 +24,38 @@ type Manager struct {
 
 	ttl time.Duration
 
+	// 计价（元 / 百万 token）：用于 /metrics 的成本估算与告警
+	priceIn  float64
+	priceOut float64
+
+	// 熔断：按数据源统计连续失败次数，超过阈值后冷却一段时间不再尝试，
+	// 避免「上游已经挂了还每个请求都去撞一次 → 全量走 fallback」。
+	brkMu sync.Mutex
+	brk   map[string]*breaker
+
 	mu       sync.RWMutex
 	cache    []Provider
 	cachedAt time.Time
 	loaded   bool
 }
 
+// breaker 单个数据源的熔断状态
+type breaker struct {
+	fails     int
+	openUntil time.Time
+}
+
+// 熔断参数：连续失败 5 次 → 冷却 30s
+const (
+	breakerThreshold = 5
+	breakerCooldown  = 30 * time.Second
+)
+
 // NewManager 构建数据源管理器并在 MySQL 为空时用 conf 播种一个 default 数据源。
 //
 // 启动阶段任何存储异常都只告警：解析侧有 conf 兜底，业务不因管理面不可用而中断。
 // calls 为调用历史仓库（可为 nil：不记录历史）。
-func NewManager(c *conf.Data, repo ProviderRepo, calls CallRepo) *Manager {
+func NewManager(c *conf.Data, sec *conf.Security, repo ProviderRepo, calls CallRepo) *Manager {
 	lc := c.GetLlm()
 	ttl := lc.GetReloadTTL().AsDuration()
 	if ttl <= 0 {
@@ -43,11 +65,15 @@ func NewManager(c *conf.Data, repo ProviderRepo, calls CallRepo) *Manager {
 	if lc.GetHttpTimeout() != nil && lc.GetHttpTimeout().AsDuration() > 0 {
 		timeout = lc.GetHttpTimeout().AsDuration()
 	}
+	b := sec.GetBudget()
 	m := &Manager{
 		repo:     repo,
 		fallback: NewClient(lc),
 		calls:    calls,
 		ttl:      ttl,
+		priceIn:  b.GetInputPricePerM(),
+		priceOut: b.GetOutputPricePerM(),
+		brk:      make(map[string]*breaker, 4),
 	}
 	m.seed(context.Background(), lc, timeout)
 	return m
@@ -183,6 +209,10 @@ func (m *Manager) chatWithOpt(ctx context.Context, scene, system, user string, t
 func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user string, temperature float64, opt CallOptions) (string, error) {
 	var lastErr error
 	for _, p := range m.candidates(scene) {
+		// 熔断中的数据源直接跳过：上游已经挂了，再撞一次只会拖慢请求
+		if !m.available(p.Name) {
+			continue
+		}
 		temp := temperature
 		if temp < 0 {
 			temp = p.Temperature
@@ -190,6 +220,7 @@ func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user strin
 		start := time.Now()
 		out, usage, err := m.clientFor(p).ChatDetailedOpts(ctx, system, user, temp, opt)
 		m.record(ctx, p.Name, p.Model(), sceneOr(scene), temp, system, user, out, usage, time.Since(start), err)
+		m.mark(p.Name, err == nil)
 		if err == nil {
 			return out, nil
 		}
@@ -214,6 +245,53 @@ func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user strin
 		return "", lastErr
 	}
 	return "", ErrNoProvider
+}
+
+// available 该数据源当前是否可尝试（熔断打开期间直接跳过）。
+func (m *Manager) available(name string) bool {
+	m.brkMu.Lock()
+	defer m.brkMu.Unlock()
+	b, ok := m.brk[name]
+	if !ok || b.openUntil.IsZero() {
+		return true
+	}
+	if time.Now().After(b.openUntil) {
+		// 冷却结束：半开状态，允许一次试探
+		b.fails = 0
+		b.openUntil = time.Time{}
+		metrics.Default.Set("llm_provider_available", metrics.Labels{"provider": name}, 1)
+		return true
+	}
+	return false
+}
+
+// mark 记录一次调用结果，维护熔断状态。
+func (m *Manager) mark(name string, ok bool) {
+	m.brkMu.Lock()
+	if m.brk == nil { // 允许测试直接构造 Manager（不经 NewManager）
+		m.brk = make(map[string]*breaker, 4)
+	}
+	b, exists := m.brk[name]
+	if !exists {
+		b = &breaker{}
+		m.brk[name] = b
+	}
+	if ok {
+		b.fails = 0
+		b.openUntil = time.Time{}
+		metrics.Default.Set("llm_provider_available", metrics.Labels{"provider": name}, 1)
+		m.brkMu.Unlock()
+		return
+	}
+	b.fails++
+	if b.fails >= breakerThreshold {
+		b.openUntil = time.Now().Add(breakerCooldown)
+		b.fails = 0
+		metrics.Default.Inc("llm_provider_breaker_open_total", metrics.Labels{"provider": name})
+		metrics.Default.Set("llm_provider_available", metrics.Labels{"provider": name}, 0)
+		log.Warn("[llm] 数据源连续失败，熔断冷却", "provider", name, "cooldown", breakerCooldown.String())
+	}
+	m.brkMu.Unlock()
 }
 
 // looksUnsupportedOption 判断错误是否为「不支持 response_format / max_tokens」类参数错误。
@@ -242,6 +320,9 @@ func (m *Manager) Model() string {
 func (m *Manager) chat(ctx context.Context, scene, system, user string, temperature float64) (string, error) {
 	var lastErr error
 	for _, p := range m.candidates(scene) {
+		if !m.available(p.Name) {
+			continue
+		}
 		temp := temperature
 		if temp < 0 {
 			temp = p.Temperature
@@ -249,6 +330,7 @@ func (m *Manager) chat(ctx context.Context, scene, system, user string, temperat
 		start := time.Now()
 		out, usage, err := m.clientFor(p).ChatTempDetailed(ctx, system, user, temp)
 		m.record(ctx, p.Name, p.Model(), scene, temp, system, user, out, usage, time.Since(start), err)
+		m.mark(p.Name, err == nil)
 		if err == nil {
 			return out, nil
 		}
@@ -279,6 +361,9 @@ func (m *Manager) chat(ctx context.Context, scene, system, user string, temperat
 // record 异步落一条调用历史：写失败只告警，绝不拖慢/阻断 LLM 调用本身。
 // 输入/输出内容截断落库（详情弹层展示用），字符数记截断前的全量。
 func (m *Manager) record(ctx context.Context, provider, model, scene string, temp float64, system, user, out string, usage Usage, cost time.Duration, err error) {
+	// 指标先行：即使 calls 仓库没配置（单测/最小部署），用量与成本也要可观测
+	m.observe(provider, model, scene, usage, err)
+
 	if m.calls == nil {
 		return
 	}
@@ -834,3 +919,28 @@ func cleanScenes(list []string) []string {
 }
 
 func nonEmpty(list []string) []string { return cleanStrings(list) }
+
+// observe 上报 LLM 用量与成本指标（Prometheus 文本端点直接可查）：
+//
+//	llm_calls_total{provider,model,ok}
+//	llm_tokens_total{model,kind}
+//	llm_cost_cny_total{model}          —— 按配置单价估算
+//	llm_call_errors_total{provider}
+func (m *Manager) observe(provider, model, scene string, usage Usage, err error) {
+	ok := "true"
+	if err != nil {
+		ok = "false"
+		metrics.Default.Inc("llm_call_errors_total", metrics.Labels{"provider": provider, "model": model})
+	}
+	metrics.Default.Inc("llm_calls_total", metrics.Labels{"provider": provider, "model": model, "ok": ok, "scene": sceneOr(scene)})
+	if usage.TotalTokens > 0 {
+		metrics.Default.Add("llm_tokens_total", metrics.Labels{"model": model, "kind": "prompt"}, float64(usage.PromptTokens))
+		metrics.Default.Add("llm_tokens_total", metrics.Labels{"model": model, "kind": "completion"}, float64(usage.CompletionTokens))
+	}
+	if m.priceIn > 0 || m.priceOut > 0 {
+		cny := float64(usage.PromptTokens)/1e6*m.priceIn + float64(usage.CompletionTokens)/1e6*m.priceOut
+		if cny > 0 {
+			metrics.Default.Add("llm_cost_cny_total", metrics.Labels{"model": model}, cny)
+		}
+	}
+}

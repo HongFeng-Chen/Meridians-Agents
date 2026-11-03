@@ -19,6 +19,29 @@ function apiBase() {
   return String(fromEnv).replace(/\/+$/, '');
 }
 
+/**
+ * 访问令牌：网关注入 localStorage.meridians_token 后，所有请求自动带
+ * `Authorization: Bearer <token>`。后端未启用认证（AUTH_ENABLED=false）时会忽略该头，
+ * 因此本地开发无需配置也能正常使用。
+ */
+export function authToken() {
+  try {
+    return globalThis.localStorage?.getItem('meridians_token') || '';
+  } catch {
+    return '';
+  }
+}
+
+/** 设置 / 清除令牌（浏览器控制台或设置页调用） */
+export function setAuthToken(token) {
+  try {
+    if (token) globalThis.localStorage?.setItem('meridians_token', String(token));
+    else globalThis.localStorage?.removeItem('meridians_token');
+  } catch {
+    /* 隐私模式下 localStorage 不可写，忽略 */
+  }
+}
+
 /** 统一错误类型：保留 HTTP 状态码与响应体，便于页面区分 400/404/409 */
 export class ApiError extends Error {
   constructor(message, status, body) {
@@ -83,7 +106,14 @@ async function parseResponse(res) {
     data = { error: text };
   }
   if (!res.ok) {
-    throw new ApiError(data.error || data.message || `请求失败（HTTP ${res.status}）`, res.status, data);
+    // 401/429 给出可执行提示：认证怎么补、限流等多久
+    let msg = data.error || data.message || `请求失败（HTTP ${res.status}）`;
+    if (res.status === 401) {
+      msg = '未认证：请在浏览器控制台执行 setAuthToken("<你的令牌>")，或让管理员签发 JWT';
+    } else if (res.status === 429) {
+      msg = `请求过于频繁，请 ${res.headers.get('Retry-After') || 1} 秒后重试`;
+    }
+    throw new ApiError(msg, res.status, data);
   }
   return data;
 }
@@ -99,6 +129,8 @@ export async function call(opKey, input = {}, options = {}) {
   if (!meta) throw new ApiError(`未定义的接口：${opKey}`, 0, null);
 
   const headers = { Accept: 'application/json', ...(options.headers || {}) };
+  const token = authToken();
+  if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`;
   const init = { method: meta.method, ...(options.init || {}), headers };
   if (options.signal) init.signal = options.signal;
 

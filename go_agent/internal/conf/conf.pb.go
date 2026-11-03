@@ -23,9 +23,11 @@ const (
 )
 
 type Bootstrap struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Server        *Server                `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
-	Data          *Data                  `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Server *Server                `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
+	Data   *Data                  `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	// 网关层的安全与配额策略（认证 / 限流 / 预算）
+	Security      *Security `protobuf:"bytes,3,opt,name=security,proto3" json:"security,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -74,6 +76,360 @@ func (x *Bootstrap) GetData() *Data {
 	return nil
 }
 
+func (x *Bootstrap) GetSecurity() *Security {
+	if x != nil {
+		return x.Security
+	}
+	return nil
+}
+
+// Security 安全边界：三项策略互相独立，可分别开关。
+// 关闭认证时所有请求按 devUser/devTenant 身份处理，只适合本地开发或纯内网。
+type Security struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Auth          *Auth                  `protobuf:"bytes,1,opt,name=auth,proto3" json:"auth,omitempty"`
+	RateLimit     *RateLimit             `protobuf:"bytes,2,opt,name=rateLimit,proto3" json:"rateLimit,omitempty"`
+	Budget        *Budget                `protobuf:"bytes,3,opt,name=budget,proto3" json:"budget,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Security) Reset() {
+	*x = Security{}
+	mi := &file_conf_conf_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Security) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Security) ProtoMessage() {}
+
+func (x *Security) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Security.ProtoReflect.Descriptor instead.
+func (*Security) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Security) GetAuth() *Auth {
+	if x != nil {
+		return x.Auth
+	}
+	return nil
+}
+
+func (x *Security) GetRateLimit() *RateLimit {
+	if x != nil {
+		return x.RateLimit
+	}
+	return nil
+}
+
+func (x *Security) GetBudget() *Budget {
+	if x != nil {
+		return x.Budget
+	}
+	return nil
+}
+
+// Auth 身份认证：校验 Authorization 头里的 JWT（HS256）或静态令牌。
+type Auth struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// HS256 密钥；留空则 JWT 一律拒绝（只能走静态令牌）
+	JwtSecret string `protobuf:"bytes,2,opt,name=jwtSecret,proto3" json:"jwtSecret,omitempty"`
+	// 取令牌的请求头名，默认 Authorization（兼容 "Bearer xxx" 与裸 token）
+	Header string `protobuf:"bytes,3,opt,name=header,proto3" json:"header,omitempty"`
+	// 从 JWT payload 取用户 / 租户的 claim 名，默认 sub / tenant_id
+	UserClaim   string `protobuf:"bytes,4,opt,name=userClaim,proto3" json:"userClaim,omitempty"`
+	TenantClaim string `protobuf:"bytes,5,opt,name=tenantClaim,proto3" json:"tenantClaim,omitempty"`
+	// 未启用认证时使用的开发态身份
+	DevUser   string `protobuf:"bytes,6,opt,name=devUser,proto3" json:"devUser,omitempty"`
+	DevTenant string `protobuf:"bytes,7,opt,name=devTenant,proto3" json:"devTenant,omitempty"`
+	// 白名单路径前缀（探活、指标、静态附件），命中即跳过认证
+	PublicPaths []string `protobuf:"bytes,8,rep,name=publicPaths,proto3" json:"publicPaths,omitempty"`
+	// 静态令牌 → "user:tenant"（内网脚本 / 巡检用，比签 JWT 省事）
+	StaticTokens  map[string]string `protobuf:"bytes,9,rep,name=staticTokens,proto3" json:"staticTokens,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Auth) Reset() {
+	*x = Auth{}
+	mi := &file_conf_conf_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Auth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Auth) ProtoMessage() {}
+
+func (x *Auth) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Auth.ProtoReflect.Descriptor instead.
+func (*Auth) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Auth) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *Auth) GetJwtSecret() string {
+	if x != nil {
+		return x.JwtSecret
+	}
+	return ""
+}
+
+func (x *Auth) GetHeader() string {
+	if x != nil {
+		return x.Header
+	}
+	return ""
+}
+
+func (x *Auth) GetUserClaim() string {
+	if x != nil {
+		return x.UserClaim
+	}
+	return ""
+}
+
+func (x *Auth) GetTenantClaim() string {
+	if x != nil {
+		return x.TenantClaim
+	}
+	return ""
+}
+
+func (x *Auth) GetDevUser() string {
+	if x != nil {
+		return x.DevUser
+	}
+	return ""
+}
+
+func (x *Auth) GetDevTenant() string {
+	if x != nil {
+		return x.DevTenant
+	}
+	return ""
+}
+
+func (x *Auth) GetPublicPaths() []string {
+	if x != nil {
+		return x.PublicPaths
+	}
+	return nil
+}
+
+func (x *Auth) GetStaticTokens() map[string]string {
+	if x != nil {
+		return x.StaticTokens
+	}
+	return nil
+}
+
+// RateLimit 网关限流：按「租户 + 路由」做令牌桶，超限返回 429 + Retry-After。
+type RateLimit struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// 读接口（GET/HEAD）每个租户每路由的 QPS 与桶容量
+	Qps   float64 `protobuf:"fixed64,2,opt,name=qps,proto3" json:"qps,omitempty"`
+	Burst int32   `protobuf:"varint,3,opt,name=burst,proto3" json:"burst,omitempty"`
+	// 写接口（POST/PUT/PATCH/DELETE）的 QPS 与桶容量；0 = 与读接口一致
+	WriteQps   float64 `protobuf:"fixed64,4,opt,name=writeQps,proto3" json:"writeQps,omitempty"`
+	WriteBurst int32   `protobuf:"varint,5,opt,name=writeBurst,proto3" json:"writeBurst,omitempty"`
+	// 单请求最长执行时间（0 = 用 server.http.timeout）；用于向下游传递 deadline
+	Timeout       *durationpb.Duration `protobuf:"bytes,6,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RateLimit) Reset() {
+	*x = RateLimit{}
+	mi := &file_conf_conf_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RateLimit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RateLimit) ProtoMessage() {}
+
+func (x *RateLimit) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RateLimit.ProtoReflect.Descriptor instead.
+func (*RateLimit) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RateLimit) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *RateLimit) GetQps() float64 {
+	if x != nil {
+		return x.Qps
+	}
+	return 0
+}
+
+func (x *RateLimit) GetBurst() int32 {
+	if x != nil {
+		return x.Burst
+	}
+	return 0
+}
+
+func (x *RateLimit) GetWriteQps() float64 {
+	if x != nil {
+		return x.WriteQps
+	}
+	return 0
+}
+
+func (x *RateLimit) GetWriteBurst() int32 {
+	if x != nil {
+		return x.WriteBurst
+	}
+	return 0
+}
+
+func (x *RateLimit) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
+// Budget 成本闸门：单次 Agent 执行（含派生任务）的 token / 调用次数上限，
+// 以及并行波次上限（防止一个宽 DAG 同时烧钱）。
+type Budget struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 单任务 token 上限（0 = 不限）
+	MaxTokens int64 `protobuf:"varint,1,opt,name=maxTokens,proto3" json:"maxTokens,omitempty"`
+	// 单任务 LLM 调用次数上限（0 = 不限）
+	MaxCalls int32 `protobuf:"varint,2,opt,name=maxCalls,proto3" json:"maxCalls,omitempty"`
+	// 并行波次上限（默认 4）
+	MaxParallel int32 `protobuf:"varint,3,opt,name=maxParallel,proto3" json:"maxParallel,omitempty"`
+	// 计价：输入 / 输出每百万 token 单价（元），用于 /metrics 的成本估算
+	InputPricePerM  float64 `protobuf:"fixed64,4,opt,name=inputPricePerM,proto3" json:"inputPricePerM,omitempty"`
+	OutputPricePerM float64 `protobuf:"fixed64,5,opt,name=outputPricePerM,proto3" json:"outputPricePerM,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Budget) Reset() {
+	*x = Budget{}
+	mi := &file_conf_conf_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Budget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Budget) ProtoMessage() {}
+
+func (x *Budget) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_conf_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Budget.ProtoReflect.Descriptor instead.
+func (*Budget) Descriptor() ([]byte, []int) {
+	return file_conf_conf_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Budget) GetMaxTokens() int64 {
+	if x != nil {
+		return x.MaxTokens
+	}
+	return 0
+}
+
+func (x *Budget) GetMaxCalls() int32 {
+	if x != nil {
+		return x.MaxCalls
+	}
+	return 0
+}
+
+func (x *Budget) GetMaxParallel() int32 {
+	if x != nil {
+		return x.MaxParallel
+	}
+	return 0
+}
+
+func (x *Budget) GetInputPricePerM() float64 {
+	if x != nil {
+		return x.InputPricePerM
+	}
+	return 0
+}
+
+func (x *Budget) GetOutputPricePerM() float64 {
+	if x != nil {
+		return x.OutputPricePerM
+	}
+	return 0
+}
+
 type Server struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Http          *Server_HTTP           `protobuf:"bytes,1,opt,name=http,proto3" json:"http,omitempty"`
@@ -84,7 +440,7 @@ type Server struct {
 
 func (x *Server) Reset() {
 	*x = Server{}
-	mi := &file_conf_conf_proto_msgTypes[1]
+	mi := &file_conf_conf_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +452,7 @@ func (x *Server) String() string {
 func (*Server) ProtoMessage() {}
 
 func (x *Server) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[1]
+	mi := &file_conf_conf_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +465,7 @@ func (x *Server) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server.ProtoReflect.Descriptor instead.
 func (*Server) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Server) GetHttp() *Server_HTTP {
@@ -145,7 +501,7 @@ type Data struct {
 
 func (x *Data) Reset() {
 	*x = Data{}
-	mi := &file_conf_conf_proto_msgTypes[2]
+	mi := &file_conf_conf_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -157,7 +513,7 @@ func (x *Data) String() string {
 func (*Data) ProtoMessage() {}
 
 func (x *Data) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[2]
+	mi := &file_conf_conf_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -170,7 +526,7 @@ func (x *Data) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data.ProtoReflect.Descriptor instead.
 func (*Data) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Data) GetDatabase() *Data_Database {
@@ -261,7 +617,7 @@ type Server_HTTP struct {
 
 func (x *Server_HTTP) Reset() {
 	*x = Server_HTTP{}
-	mi := &file_conf_conf_proto_msgTypes[3]
+	mi := &file_conf_conf_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -273,7 +629,7 @@ func (x *Server_HTTP) String() string {
 func (*Server_HTTP) ProtoMessage() {}
 
 func (x *Server_HTTP) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[3]
+	mi := &file_conf_conf_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -286,7 +642,7 @@ func (x *Server_HTTP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server_HTTP.ProtoReflect.Descriptor instead.
 func (*Server_HTTP) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1, 0}
+	return file_conf_conf_proto_rawDescGZIP(), []int{5, 0}
 }
 
 func (x *Server_HTTP) GetNetwork() string {
@@ -321,7 +677,7 @@ type Server_GRPC struct {
 
 func (x *Server_GRPC) Reset() {
 	*x = Server_GRPC{}
-	mi := &file_conf_conf_proto_msgTypes[4]
+	mi := &file_conf_conf_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -333,7 +689,7 @@ func (x *Server_GRPC) String() string {
 func (*Server_GRPC) ProtoMessage() {}
 
 func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[4]
+	mi := &file_conf_conf_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -346,7 +702,7 @@ func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server_GRPC.ProtoReflect.Descriptor instead.
 func (*Server_GRPC) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{1, 1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{5, 1}
 }
 
 func (x *Server_GRPC) GetNetwork() string {
@@ -387,7 +743,7 @@ type Data_Database struct {
 
 func (x *Data_Database) Reset() {
 	*x = Data_Database{}
-	mi := &file_conf_conf_proto_msgTypes[5]
+	mi := &file_conf_conf_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -399,7 +755,7 @@ func (x *Data_Database) String() string {
 func (*Data_Database) ProtoMessage() {}
 
 func (x *Data_Database) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[5]
+	mi := &file_conf_conf_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -412,7 +768,7 @@ func (x *Data_Database) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Database.ProtoReflect.Descriptor instead.
 func (*Data_Database) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 0}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 0}
 }
 
 func (x *Data_Database) GetDriver() string {
@@ -460,7 +816,7 @@ type Data_Redis struct {
 
 func (x *Data_Redis) Reset() {
 	*x = Data_Redis{}
-	mi := &file_conf_conf_proto_msgTypes[6]
+	mi := &file_conf_conf_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -472,7 +828,7 @@ func (x *Data_Redis) String() string {
 func (*Data_Redis) ProtoMessage() {}
 
 func (x *Data_Redis) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[6]
+	mi := &file_conf_conf_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -485,7 +841,7 @@ func (x *Data_Redis) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Redis.ProtoReflect.Descriptor instead.
 func (*Data_Redis) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 1}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 1}
 }
 
 func (x *Data_Redis) GetNetwork() string {
@@ -550,7 +906,7 @@ type Data_Embedding struct {
 
 func (x *Data_Embedding) Reset() {
 	*x = Data_Embedding{}
-	mi := &file_conf_conf_proto_msgTypes[7]
+	mi := &file_conf_conf_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -562,7 +918,7 @@ func (x *Data_Embedding) String() string {
 func (*Data_Embedding) ProtoMessage() {}
 
 func (x *Data_Embedding) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[7]
+	mi := &file_conf_conf_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -575,7 +931,7 @@ func (x *Data_Embedding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Embedding.ProtoReflect.Descriptor instead.
 func (*Data_Embedding) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 2}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 2}
 }
 
 func (x *Data_Embedding) GetBaseURL() string {
@@ -633,7 +989,7 @@ type Data_LLM struct {
 
 func (x *Data_LLM) Reset() {
 	*x = Data_LLM{}
-	mi := &file_conf_conf_proto_msgTypes[8]
+	mi := &file_conf_conf_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -645,7 +1001,7 @@ func (x *Data_LLM) String() string {
 func (*Data_LLM) ProtoMessage() {}
 
 func (x *Data_LLM) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[8]
+	mi := &file_conf_conf_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -658,7 +1014,7 @@ func (x *Data_LLM) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_LLM.ProtoReflect.Descriptor instead.
 func (*Data_LLM) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 3}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 3}
 }
 
 func (x *Data_LLM) GetBaseURL() string {
@@ -719,7 +1075,7 @@ type Data_Milvus struct {
 
 func (x *Data_Milvus) Reset() {
 	*x = Data_Milvus{}
-	mi := &file_conf_conf_proto_msgTypes[9]
+	mi := &file_conf_conf_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -731,7 +1087,7 @@ func (x *Data_Milvus) String() string {
 func (*Data_Milvus) ProtoMessage() {}
 
 func (x *Data_Milvus) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[9]
+	mi := &file_conf_conf_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -744,7 +1100,7 @@ func (x *Data_Milvus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Milvus.ProtoReflect.Descriptor instead.
 func (*Data_Milvus) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 4}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 4}
 }
 
 func (x *Data_Milvus) GetUri() string {
@@ -804,7 +1160,7 @@ type Data_Rag struct {
 
 func (x *Data_Rag) Reset() {
 	*x = Data_Rag{}
-	mi := &file_conf_conf_proto_msgTypes[10]
+	mi := &file_conf_conf_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -816,7 +1172,7 @@ func (x *Data_Rag) String() string {
 func (*Data_Rag) ProtoMessage() {}
 
 func (x *Data_Rag) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[10]
+	mi := &file_conf_conf_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -829,7 +1185,7 @@ func (x *Data_Rag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Rag.ProtoReflect.Descriptor instead.
 func (*Data_Rag) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 5}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 5}
 }
 
 func (x *Data_Rag) GetTopK() int32 {
@@ -924,7 +1280,7 @@ type Data_Prompt struct {
 
 func (x *Data_Prompt) Reset() {
 	*x = Data_Prompt{}
-	mi := &file_conf_conf_proto_msgTypes[11]
+	mi := &file_conf_conf_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1292,7 @@ func (x *Data_Prompt) String() string {
 func (*Data_Prompt) ProtoMessage() {}
 
 func (x *Data_Prompt) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[11]
+	mi := &file_conf_conf_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1305,7 @@ func (x *Data_Prompt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Prompt.ProtoReflect.Descriptor instead.
 func (*Data_Prompt) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 6}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 6}
 }
 
 func (x *Data_Prompt) GetCacheTTL() *durationpb.Duration {
@@ -993,7 +1349,7 @@ type Data_Memory struct {
 
 func (x *Data_Memory) Reset() {
 	*x = Data_Memory{}
-	mi := &file_conf_conf_proto_msgTypes[12]
+	mi := &file_conf_conf_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1005,7 +1361,7 @@ func (x *Data_Memory) String() string {
 func (*Data_Memory) ProtoMessage() {}
 
 func (x *Data_Memory) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[12]
+	mi := &file_conf_conf_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1018,7 +1374,7 @@ func (x *Data_Memory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Memory.ProtoReflect.Descriptor instead.
 func (*Data_Memory) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 7}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 7}
 }
 
 func (x *Data_Memory) GetShortTTL() *durationpb.Duration {
@@ -1082,7 +1438,7 @@ type Data_Skill struct {
 
 func (x *Data_Skill) Reset() {
 	*x = Data_Skill{}
-	mi := &file_conf_conf_proto_msgTypes[13]
+	mi := &file_conf_conf_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1094,7 +1450,7 @@ func (x *Data_Skill) String() string {
 func (*Data_Skill) ProtoMessage() {}
 
 func (x *Data_Skill) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[13]
+	mi := &file_conf_conf_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1107,7 +1463,7 @@ func (x *Data_Skill) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Skill.ProtoReflect.Descriptor instead.
 func (*Data_Skill) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 8}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 8}
 }
 
 func (x *Data_Skill) GetSyncDir() string {
@@ -1163,7 +1519,7 @@ type Data_Agentfactory struct {
 
 func (x *Data_Agentfactory) Reset() {
 	*x = Data_Agentfactory{}
-	mi := &file_conf_conf_proto_msgTypes[14]
+	mi := &file_conf_conf_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1175,7 +1531,7 @@ func (x *Data_Agentfactory) String() string {
 func (*Data_Agentfactory) ProtoMessage() {}
 
 func (x *Data_Agentfactory) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[14]
+	mi := &file_conf_conf_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1188,7 +1544,7 @@ func (x *Data_Agentfactory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Agentfactory.ProtoReflect.Descriptor instead.
 func (*Data_Agentfactory) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 9}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 9}
 }
 
 func (x *Data_Agentfactory) GetWorkerCount() int32 {
@@ -1238,7 +1594,7 @@ type Data_Rerank struct {
 
 func (x *Data_Rerank) Reset() {
 	*x = Data_Rerank{}
-	mi := &file_conf_conf_proto_msgTypes[15]
+	mi := &file_conf_conf_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1250,7 +1606,7 @@ func (x *Data_Rerank) String() string {
 func (*Data_Rerank) ProtoMessage() {}
 
 func (x *Data_Rerank) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_conf_proto_msgTypes[15]
+	mi := &file_conf_conf_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1263,7 +1619,7 @@ func (x *Data_Rerank) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Rerank.ProtoReflect.Descriptor instead.
 func (*Data_Rerank) Descriptor() ([]byte, []int) {
-	return file_conf_conf_proto_rawDescGZIP(), []int{2, 10}
+	return file_conf_conf_proto_rawDescGZIP(), []int{6, 10}
 }
 
 func (x *Data_Rerank) GetEnabled() bool {
@@ -1320,10 +1676,43 @@ var File_conf_conf_proto protoreflect.FileDescriptor
 const file_conf_conf_proto_rawDesc = "" +
 	"\n" +
 	"\x0fconf/conf.proto\x12\n" +
-	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"]\n" +
+	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\x8f\x01\n" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
-	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\"\xb8\x02\n" +
+	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x120\n" +
+	"\bsecurity\x18\x03 \x01(\v2\x14.kratos.api.SecurityR\bsecurity\"\x91\x01\n" +
+	"\bSecurity\x12$\n" +
+	"\x04auth\x18\x01 \x01(\v2\x10.kratos.api.AuthR\x04auth\x123\n" +
+	"\trateLimit\x18\x02 \x01(\v2\x15.kratos.api.RateLimitR\trateLimit\x12*\n" +
+	"\x06budget\x18\x03 \x01(\v2\x12.kratos.api.BudgetR\x06budget\"\xf9\x02\n" +
+	"\x04Auth\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
+	"\tjwtSecret\x18\x02 \x01(\tR\tjwtSecret\x12\x16\n" +
+	"\x06header\x18\x03 \x01(\tR\x06header\x12\x1c\n" +
+	"\tuserClaim\x18\x04 \x01(\tR\tuserClaim\x12 \n" +
+	"\vtenantClaim\x18\x05 \x01(\tR\vtenantClaim\x12\x18\n" +
+	"\adevUser\x18\x06 \x01(\tR\adevUser\x12\x1c\n" +
+	"\tdevTenant\x18\a \x01(\tR\tdevTenant\x12 \n" +
+	"\vpublicPaths\x18\b \x03(\tR\vpublicPaths\x12F\n" +
+	"\fstaticTokens\x18\t \x03(\v2\".kratos.api.Auth.StaticTokensEntryR\fstaticTokens\x1a?\n" +
+	"\x11StaticTokensEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbe\x01\n" +
+	"\tRateLimit\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x10\n" +
+	"\x03qps\x18\x02 \x01(\x01R\x03qps\x12\x14\n" +
+	"\x05burst\x18\x03 \x01(\x05R\x05burst\x12\x1a\n" +
+	"\bwriteQps\x18\x04 \x01(\x01R\bwriteQps\x12\x1e\n" +
+	"\n" +
+	"writeBurst\x18\x05 \x01(\x05R\n" +
+	"writeBurst\x123\n" +
+	"\atimeout\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"\xb6\x01\n" +
+	"\x06Budget\x12\x1c\n" +
+	"\tmaxTokens\x18\x01 \x01(\x03R\tmaxTokens\x12\x1a\n" +
+	"\bmaxCalls\x18\x02 \x01(\x05R\bmaxCalls\x12 \n" +
+	"\vmaxParallel\x18\x03 \x01(\x05R\vmaxParallel\x12&\n" +
+	"\x0einputPricePerM\x18\x04 \x01(\x01R\x0einputPricePerM\x12(\n" +
+	"\x0foutputPricePerM\x18\x05 \x01(\x01R\x0foutputPricePerM\"\xb8\x02\n" +
 	"\x06Server\x12+\n" +
 	"\x04http\x18\x01 \x01(\v2\x17.kratos.api.Server.HTTPR\x04http\x12+\n" +
 	"\x04grpc\x18\x02 \x01(\v2\x17.kratos.api.Server.GRPCR\x04grpc\x1ai\n" +
@@ -1444,63 +1833,74 @@ func file_conf_conf_proto_rawDescGZIP() []byte {
 	return file_conf_conf_proto_rawDescData
 }
 
-var file_conf_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_conf_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_conf_conf_proto_goTypes = []any{
 	(*Bootstrap)(nil),           // 0: kratos.api.Bootstrap
-	(*Server)(nil),              // 1: kratos.api.Server
-	(*Data)(nil),                // 2: kratos.api.Data
-	(*Server_HTTP)(nil),         // 3: kratos.api.Server.HTTP
-	(*Server_GRPC)(nil),         // 4: kratos.api.Server.GRPC
-	(*Data_Database)(nil),       // 5: kratos.api.Data.Database
-	(*Data_Redis)(nil),          // 6: kratos.api.Data.Redis
-	(*Data_Embedding)(nil),      // 7: kratos.api.Data.Embedding
-	(*Data_LLM)(nil),            // 8: kratos.api.Data.LLM
-	(*Data_Milvus)(nil),         // 9: kratos.api.Data.Milvus
-	(*Data_Rag)(nil),            // 10: kratos.api.Data.Rag
-	(*Data_Prompt)(nil),         // 11: kratos.api.Data.Prompt
-	(*Data_Memory)(nil),         // 12: kratos.api.Data.Memory
-	(*Data_Skill)(nil),          // 13: kratos.api.Data.Skill
-	(*Data_Agentfactory)(nil),   // 14: kratos.api.Data.Agentfactory
-	(*Data_Rerank)(nil),         // 15: kratos.api.Data.Rerank
-	(*durationpb.Duration)(nil), // 16: google.protobuf.Duration
+	(*Security)(nil),            // 1: kratos.api.Security
+	(*Auth)(nil),                // 2: kratos.api.Auth
+	(*RateLimit)(nil),           // 3: kratos.api.RateLimit
+	(*Budget)(nil),              // 4: kratos.api.Budget
+	(*Server)(nil),              // 5: kratos.api.Server
+	(*Data)(nil),                // 6: kratos.api.Data
+	nil,                         // 7: kratos.api.Auth.StaticTokensEntry
+	(*Server_HTTP)(nil),         // 8: kratos.api.Server.HTTP
+	(*Server_GRPC)(nil),         // 9: kratos.api.Server.GRPC
+	(*Data_Database)(nil),       // 10: kratos.api.Data.Database
+	(*Data_Redis)(nil),          // 11: kratos.api.Data.Redis
+	(*Data_Embedding)(nil),      // 12: kratos.api.Data.Embedding
+	(*Data_LLM)(nil),            // 13: kratos.api.Data.LLM
+	(*Data_Milvus)(nil),         // 14: kratos.api.Data.Milvus
+	(*Data_Rag)(nil),            // 15: kratos.api.Data.Rag
+	(*Data_Prompt)(nil),         // 16: kratos.api.Data.Prompt
+	(*Data_Memory)(nil),         // 17: kratos.api.Data.Memory
+	(*Data_Skill)(nil),          // 18: kratos.api.Data.Skill
+	(*Data_Agentfactory)(nil),   // 19: kratos.api.Data.Agentfactory
+	(*Data_Rerank)(nil),         // 20: kratos.api.Data.Rerank
+	(*durationpb.Duration)(nil), // 21: google.protobuf.Duration
 }
 var file_conf_conf_proto_depIdxs = []int32{
-	1,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
-	2,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
-	3,  // 2: kratos.api.Server.http:type_name -> kratos.api.Server.HTTP
-	4,  // 3: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
-	5,  // 4: kratos.api.Data.database:type_name -> kratos.api.Data.Database
-	6,  // 5: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
-	7,  // 6: kratos.api.Data.embedding:type_name -> kratos.api.Data.Embedding
-	8,  // 7: kratos.api.Data.llm:type_name -> kratos.api.Data.LLM
-	9,  // 8: kratos.api.Data.milvus:type_name -> kratos.api.Data.Milvus
-	10, // 9: kratos.api.Data.rag:type_name -> kratos.api.Data.Rag
-	11, // 10: kratos.api.Data.prompt:type_name -> kratos.api.Data.Prompt
-	12, // 11: kratos.api.Data.memory:type_name -> kratos.api.Data.Memory
-	13, // 12: kratos.api.Data.skill:type_name -> kratos.api.Data.Skill
-	14, // 13: kratos.api.Data.agentfactory:type_name -> kratos.api.Data.Agentfactory
-	15, // 14: kratos.api.Data.rerank:type_name -> kratos.api.Data.Rerank
-	16, // 15: kratos.api.Server.HTTP.timeout:type_name -> google.protobuf.Duration
-	16, // 16: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
-	16, // 17: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
-	16, // 18: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
-	16, // 19: kratos.api.Data.Redis.dial_timeout:type_name -> google.protobuf.Duration
-	16, // 20: kratos.api.Data.Embedding.httpTimeout:type_name -> google.protobuf.Duration
-	16, // 21: kratos.api.Data.LLM.httpTimeout:type_name -> google.protobuf.Duration
-	16, // 22: kratos.api.Data.LLM.reloadTTL:type_name -> google.protobuf.Duration
-	16, // 23: kratos.api.Data.Milvus.timeout:type_name -> google.protobuf.Duration
-	16, // 24: kratos.api.Data.Milvus.loadTimeout:type_name -> google.protobuf.Duration
-	16, // 25: kratos.api.Data.Rag.cacheTTL:type_name -> google.protobuf.Duration
-	16, // 26: kratos.api.Data.Prompt.cacheTTL:type_name -> google.protobuf.Duration
-	16, // 27: kratos.api.Data.Memory.shortTTL:type_name -> google.protobuf.Duration
-	16, // 28: kratos.api.Data.Skill.httpTimeout:type_name -> google.protobuf.Duration
-	16, // 29: kratos.api.Data.Agentfactory.shutdownTimeout:type_name -> google.protobuf.Duration
-	16, // 30: kratos.api.Data.Rerank.httpTimeout:type_name -> google.protobuf.Duration
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	5,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
+	6,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
+	1,  // 2: kratos.api.Bootstrap.security:type_name -> kratos.api.Security
+	2,  // 3: kratos.api.Security.auth:type_name -> kratos.api.Auth
+	3,  // 4: kratos.api.Security.rateLimit:type_name -> kratos.api.RateLimit
+	4,  // 5: kratos.api.Security.budget:type_name -> kratos.api.Budget
+	7,  // 6: kratos.api.Auth.staticTokens:type_name -> kratos.api.Auth.StaticTokensEntry
+	21, // 7: kratos.api.RateLimit.timeout:type_name -> google.protobuf.Duration
+	8,  // 8: kratos.api.Server.http:type_name -> kratos.api.Server.HTTP
+	9,  // 9: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
+	10, // 10: kratos.api.Data.database:type_name -> kratos.api.Data.Database
+	11, // 11: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
+	12, // 12: kratos.api.Data.embedding:type_name -> kratos.api.Data.Embedding
+	13, // 13: kratos.api.Data.llm:type_name -> kratos.api.Data.LLM
+	14, // 14: kratos.api.Data.milvus:type_name -> kratos.api.Data.Milvus
+	15, // 15: kratos.api.Data.rag:type_name -> kratos.api.Data.Rag
+	16, // 16: kratos.api.Data.prompt:type_name -> kratos.api.Data.Prompt
+	17, // 17: kratos.api.Data.memory:type_name -> kratos.api.Data.Memory
+	18, // 18: kratos.api.Data.skill:type_name -> kratos.api.Data.Skill
+	19, // 19: kratos.api.Data.agentfactory:type_name -> kratos.api.Data.Agentfactory
+	20, // 20: kratos.api.Data.rerank:type_name -> kratos.api.Data.Rerank
+	21, // 21: kratos.api.Server.HTTP.timeout:type_name -> google.protobuf.Duration
+	21, // 22: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
+	21, // 23: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
+	21, // 24: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
+	21, // 25: kratos.api.Data.Redis.dial_timeout:type_name -> google.protobuf.Duration
+	21, // 26: kratos.api.Data.Embedding.httpTimeout:type_name -> google.protobuf.Duration
+	21, // 27: kratos.api.Data.LLM.httpTimeout:type_name -> google.protobuf.Duration
+	21, // 28: kratos.api.Data.LLM.reloadTTL:type_name -> google.protobuf.Duration
+	21, // 29: kratos.api.Data.Milvus.timeout:type_name -> google.protobuf.Duration
+	21, // 30: kratos.api.Data.Milvus.loadTimeout:type_name -> google.protobuf.Duration
+	21, // 31: kratos.api.Data.Rag.cacheTTL:type_name -> google.protobuf.Duration
+	21, // 32: kratos.api.Data.Prompt.cacheTTL:type_name -> google.protobuf.Duration
+	21, // 33: kratos.api.Data.Memory.shortTTL:type_name -> google.protobuf.Duration
+	21, // 34: kratos.api.Data.Skill.httpTimeout:type_name -> google.protobuf.Duration
+	21, // 35: kratos.api.Data.Agentfactory.shutdownTimeout:type_name -> google.protobuf.Duration
+	21, // 36: kratos.api.Data.Rerank.httpTimeout:type_name -> google.protobuf.Duration
+	37, // [37:37] is the sub-list for method output_type
+	37, // [37:37] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_conf_conf_proto_init() }
@@ -1514,7 +1914,7 @@ func file_conf_conf_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_conf_conf_proto_rawDesc), len(file_conf_conf_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

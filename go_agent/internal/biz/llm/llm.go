@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/budget"
 )
 
 // Target 一次调用的目标数据源快照
@@ -73,7 +74,7 @@ func NewTarget(t Target) *Client {
 func (c *Client) Model() string { return c.model }
 
 type message struct {
-	Role    string `json:"role"`
+	Role string `json:"role"`
 	// Content 纯文本对话为 string；带图片（CallOptions.Images）时为
 	// OpenAI 兼容的 content parts 数组（text + image_url）。
 	Content any `json:"content"`
@@ -167,10 +168,56 @@ func (c *Client) ChatDetailedOpts(ctx context.Context, system, user string, temp
 	if err != nil {
 		return "", Usage{}, err
 	}
+	return c.withRetry(ctx, body)
+}
+
+// maxAttempts 同一次调用最多尝试次数（含首次）。
+const maxAttempts = 3
+
+// withRetry 带指数退避的重试：只重试「重试有意义」的错误（429 / 5xx / 连接抖动）。
+//
+// 关键点：限流与瞬时故障重试同一个模型，比立刻切到备用模型便宜得多 ——
+// 改造前一次 429 就会触发 fallback，账单直接翻倍且掩盖了上游的真实状态。
+func (c *Client) withRetry(ctx context.Context, body []byte) (string, Usage, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, usage, retryable, err := c.roundTrip(ctx, body)
+		if err == nil {
+			chargeBudget(ctx, usage)
+			return out, usage, nil
+		}
+		lastErr = err
+		if !retryable || attempt == maxAttempts || ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", Usage{}, ctx.Err()
+		case <-time.After(backoffDelay(attempt)):
+		}
+	}
+	return "", Usage{}, lastErr
+}
+
+// backoffDelay 指数退避 200ms → 400ms，附加 ≤20% 抖动（多副本不同时重试）。
+func backoffDelay(attempt int) time.Duration {
+	base := 200 * time.Millisecond
+	for i := 1; i < attempt; i++ {
+		base *= 2
+	}
+	jitterCap := int64(base) / 5
+	if jitterCap <= 0 {
+		return base
+	}
+	return base + time.Duration(time.Now().UnixNano()%jitterCap)
+}
+
+// roundTrip 单次请求。第三个返回值表示「该错误是否值得重试」。
+func (c *Client) roundTrip(ctx context.Context, body []byte) (string, Usage, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", Usage{}, err
+		return "", Usage{}, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
@@ -179,34 +226,37 @@ func (c *Client) ChatDetailedOpts(ctx context.Context, system, user string, temp
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("llm request: %w", err)
+		// 连接被重置 / 超时：可重试；但「ctx 已取消」不重试（用户主动放弃）
+		return "", Usage{}, ctx.Err() == nil, fmt.Errorf("llm request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		// 429 与 5xx 是瞬时状态，值得退避重试；4xx 重试也不会变好
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
 		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.apiKey == "" {
-			return "", Usage{}, fmt.Errorf("llm api %d: 未配置 API Key: %s", resp.StatusCode, truncate(raw, 300))
+			return "", Usage{}, false, fmt.Errorf("llm api %d: 未配置 API Key: %s", resp.StatusCode, truncate(raw, 300))
 		}
 		// 带上真实请求地址 + 常见 4xx 的可执行排查提示（404 多是 base_url 路径错或模型名错）
-		return "", Usage{}, fmt.Errorf("llm api %d（POST %s）: %s%s",
+		return "", Usage{}, retryable, fmt.Errorf("llm api %d（POST %s）: %s%s",
 			resp.StatusCode, req.URL.String(), truncate(raw, 300), hintLLMStatus(resp.StatusCode, raw, c.baseURL))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return "", Usage{}, err
+		return "", Usage{}, false, err
 	}
 	if cr.Error != nil && cr.Error.Message != "" {
-		return "", Usage{}, fmt.Errorf("llm error: %s", cr.Error.Message)
+		return "", Usage{}, false, fmt.Errorf("llm error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return "", Usage{}, fmt.Errorf("llm returned no choices")
+		return "", Usage{}, false, fmt.Errorf("llm returned no choices")
 	}
 	// 正常回复是纯文本；个别网关会原样回显 content parts，取回 text 部分拼接
 	switch v := cr.Choices[0].Message.Content.(type) {
 	case string:
-		return v, cr.Usage, nil
+		return v, cr.Usage, false, nil
 	case []any:
 		var b strings.Builder
 		for _, p := range v {
@@ -216,10 +266,20 @@ func (c *Client) ChatDetailedOpts(ctx context.Context, system, user string, temp
 				}
 			}
 		}
-		return b.String(), cr.Usage, nil
+		return b.String(), cr.Usage, false, nil
 	default:
-		return "", Usage{}, fmt.Errorf("llm returned unexpected content type %T", cr.Choices[0].Message.Content)
+		return "", Usage{}, false, fmt.Errorf("llm returned unexpected content type %T", cr.Choices[0].Message.Content)
 	}
+}
+
+// chargeBudget 把本次调用的 token 用量记到运行预算上（未设置预算时是空操作）。
+// 超限只影响「下一次调用」——本次结果仍然返回，避免钱花了却拿不到东西。
+func chargeBudget(ctx context.Context, usage Usage) {
+	b := budget.From(ctx)
+	if b == nil {
+		return
+	}
+	_ = b.Charge(usage.TotalTokens)
 }
 
 // buildUserContent 组装 user 消息内容：无图片为纯字符串；有图片为 content parts。

@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_agent/internal/pkg/budget"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -24,6 +26,14 @@ type Options struct {
 	WorkerCount     int           // 任务 worker 数
 	LockTTL         time.Duration // 任务 Redlock 租期（到期自动续）
 	ShutdownTimeout time.Duration // 优雅停机时等待执行中任务的最长时间
+
+	// MaxParallel 并行波次并发上限（<=0 用 defaultMaxParallel）。
+	// 一个 20 节点的 DAG 不会再同时拉起 20 个 Agent。
+	MaxParallel int
+	// BudgetTokens / BudgetCalls 单任务树（含派生子任务）的 token 与调用次数上限，
+	// 0 表示不限制；超限时执行图走「预算耗尽」收敛分支。
+	BudgetTokens int64
+	BudgetCalls  int32
 }
 
 func (o *Options) fill() {
@@ -794,6 +804,24 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	answer := ""
 	if runRes != nil {
 		answer = runRes.Answer
+	}
+	// 预算耗尽：不是系统故障，统一按「成功但未跑完」处理，并把用量写进事件流，
+	// 前端任务详情能直接看到 budget_exceeded 与实际消耗。
+	if errors.Is(runErr, budget.ErrExceeded) {
+		runErr = nil
+		if strings.TrimSpace(answer) == "" {
+			answer = "已用尽本轮执行预算（budget.maxTokens / maxCalls），任务未产出结论。可提高配额后重跑。"
+		}
+		rec.event(EventError, rec.turn, map[string]any{
+			"message":         "token 预算耗尽，任务提前收敛",
+			"budget_exceeded": true,
+			"budget":          budget.From(runCtx).Snapshot(),
+		})
+	} else if runRes != nil && runRes.BudgetExceeded {
+		rec.event(EventThought, rec.turn, map[string]any{
+			"budget_exceeded": true,
+			"budget":          budget.From(runCtx).Snapshot(),
+		})
 	}
 
 	now := time.Now()

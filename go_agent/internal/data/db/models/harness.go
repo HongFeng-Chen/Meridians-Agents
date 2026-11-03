@@ -1,6 +1,7 @@
 // harness.go 评测 Harness 持久化模型。
 //
 // 四张表：
+//
 //	harness_sets      用例集（被测对象 + 元信息）
 //	harness_cases     用例（输入 + 期望 + 断言规则，JSON 列存数组）
 //	harness_runs      运行行（进度实时 UPDATE，前端轮询）

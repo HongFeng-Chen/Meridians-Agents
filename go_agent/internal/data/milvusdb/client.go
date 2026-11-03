@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/health"
 
 	"github.com/go-kratos/kratos/v3/log"
 	"github.com/milvus-io/milvus/client/v2/milvusclient"
@@ -57,6 +58,10 @@ func New(c *conf.Data) (*Client, func(), error) {
 		return nil, nil, fmt.Errorf("connect milvus %s (timeout %s): %w", addr, timeout, err)
 	}
 	log.Info("milvus connected", "addr", addr, "collection", cfg.GetCollection(), "dim", dim)
+
+	// /healthz 探活：Milvus 客户端无 CheckHealth API，这里做 TCP 可达性探测
+	// （与启动时同一套探测逻辑，能反映「端口挂了 / 网络不通」这类最常见故障）
+	health.Register("milvus", func(ctx context.Context) error { return probeTCP(addr, 2*time.Second) })
 
 	client := &Client{cli: cli, cfg: cfg, dim: dim}
 	cleanup := func() {

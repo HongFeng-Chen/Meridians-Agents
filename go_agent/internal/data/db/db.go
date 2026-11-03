@@ -1,10 +1,12 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/health"
 
 	"github.com/go-kratos/kratos/v3/log"
 	"gorm.io/driver/mysql"
@@ -66,5 +68,7 @@ func NewData(c *conf.Data) (*Data, func(), error) {
 			log.Error("failed closing the database", "err", err)
 		}
 	}
+	// /healthz 探活：SELECT 1（连接池空闲连接可能已断开，Ping 会重连）
+	health.Register("mysql", func(ctx context.Context) error { return sqlDB.PingContext(ctx) })
 	return &Data{db: db}, cleanup, nil
 }

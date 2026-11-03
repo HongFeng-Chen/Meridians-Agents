@@ -44,7 +44,7 @@ import (
 // Injectors from wire.go:
 
 // wireApp init kratos application.
-func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) (*kratos.App, func(), error) {
+func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Security, logger *slog.Logger) (*kratos.App, func(), error) {
 	client, cleanup, err := milvusdb.New(confData)
 	if err != nil {
 		return nil, nil, err
@@ -84,7 +84,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) 
 		cleanup()
 		return nil, nil, err
 	}
-	manager := llm.NewManager(confData, providerRepo, llmCallRepo)
+	manager := llm.NewManager(confData, security, providerRepo, llmCallRepo)
 	promptRepo, err := repo2.NewPromptRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -181,7 +181,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) 
 	agentfactoryVectorStore := repo.NewAgentStore(client)
 	agentFactoryCache := redis.NewAgentFactoryCache(rdbData)
 	taskLock := redis.NewTaskLock(rdbData, confData)
-	options := data.NewAgentFactoryOptions(confData)
+	options := data.NewAgentFactoryOptions(confData, security)
 	agentfactoryUseCase, err := agentfactory.New(agentfactoryRepo, agentfactoryVectorStore, agentFactoryCache, taskLock, manager, embeddingClient, mcpUseCase, skillUseCase, useCase, options)
 	if err != nil {
 		cleanup3()
@@ -212,7 +212,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) 
 	runner := harnessrunner.New(agentfactoryUseCase, manager)
 	harnessUseCase := harness.New(harnessRepo, runner, manager, useCase)
 	harnessService := service.NewHarnessService(harnessUseCase)
-	grpcServer := server.NewGRPCServer(confServer, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, aiPlatformService, harnessService)
+	grpcServer := server.NewGRPCServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, aiPlatformService, harnessService)
 	conversationRepo, err := repo2.NewConversationRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -231,7 +231,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger *slog.Logger) 
 	conversationService := service.NewConversationService(conversationUseCase)
 	platformmcpUseCase := platformmcp.New(agentfactoryUseCase, conversationUseCase, historyUseCase)
 	platformMCPService := service.NewPlatformMCPService(platformmcpUseCase, mcpUseCase, confServer)
-	httpServer := server.NewHTTPServer(confServer, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService)
+	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService)
 	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, platformMCPService)
 	return app, func() {
 		cleanup3()

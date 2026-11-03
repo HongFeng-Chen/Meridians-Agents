@@ -131,12 +131,16 @@ var ProviderSet = wire.NewSet(
 )
 
 // newAgentFactoryOptions 从配置读 worker 池与护栏参数
-func NewAgentFactoryOptions(c *conf.Data) agentfactory.Options {
+func NewAgentFactoryOptions(c *conf.Data, sec *conf.Security) agentfactory.Options {
 	af := c.GetAgentfactory()
+	b := sec.GetBudget()
 	return agentfactory.Options{
 		WorkerCount:     int(af.GetWorkerCount()),
 		MaxAgents:       int(af.GetMaxAgents()),
 		DefaultMaxTurns: int(af.GetDefaultMaxTurns()),
 		ShutdownTimeout: af.GetShutdownTimeout().AsDuration(),
+		MaxParallel:     int(b.GetMaxParallel()),
+		BudgetTokens:    b.GetMaxTokens(),
+		BudgetCalls:     b.GetMaxCalls(),
 	}
 }

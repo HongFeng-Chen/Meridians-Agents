@@ -19,7 +19,9 @@ import (
 	ragv1 "go_agent/api/rag/v1"
 	skillv1 "go_agent/api/skill/v1"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/health"
 	"go_agent/internal/pkg/httpx"
+	"go_agent/internal/pkg/metrics"
 	"go_agent/internal/service"
 
 	"github.com/go-kratos/kratos/v3/middleware/recovery"
@@ -37,6 +39,7 @@ import (
 // 协议即实现，新增接口只需改 proto 再重新生成。
 func NewHTTPServer(
 	c *conf.Server,
+	sec *conf.Security,
 	ragSvc *service.RagService,
 	promptSvc *service.PromptService,
 	memorySvc *service.MemoryService,
@@ -51,12 +54,20 @@ func NewHTTPServer(
 	aiPlatformSvc *service.AIPlatformService,
 	harnessSvc *service.HarnessService,
 ) *http.Server {
+	g := newGate(sec)
 	var opts = []http.ServerOption{
 		// multipart 解码器：/api/extract、/api/upload 走文件上传，
 		// Kratos 默认解码器不认 multipart/form-data（详见 internal/pkg/httpx）
 		http.RequestDecoder(httpx.RequestDecoder),
+		// 中间件顺序：越靠外越先执行。
+		// recovery 兜 panic → accessLog/metrics 观测全部请求 →
+		// auth 定身份 → ratelimit 按租户计量 → validate 校验必填字段。
 		http.Middleware(
 			recovery.Recovery(),
+			accessLog(),
+			metricsMiddleware(metrics.Default),
+			g.middleware(),
+			g.rateLimit(),
 			validate.Validator(func(req any) error {
 				if msg, ok := req.(proto.Message); ok {
 					if err := fieldbehavior.ValidateRequiredFields(msg); err != nil {
@@ -105,6 +116,9 @@ func NewHTTPServer(
 	registerPlatformMCP(srv, platformSvc)
 	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
 	srv.HandlePrefix("/api/files/", filesHandler())
+	// /healthz（MySQL / Redis / Milvus 探活，供 LB 摘流）、/metrics（Prometheus 抓取）
+	srv.Handle("/healthz", health.Handler())
+	srv.Handle("/metrics", metrics.Default.Handler())
 	return srv
 }
 
