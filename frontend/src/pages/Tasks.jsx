@@ -6,6 +6,7 @@ import {
   STATUS_TONES,
   STATUS_LABELS,
   formatTime,
+  formatDuration,
   openConversation,
 } from '../components/TaskDetailDrawer.jsx';
 import ConvTraceDrawer from '../components/ConvTraceDrawer.jsx';
@@ -40,6 +41,16 @@ export default function Tasks() {
   // 会话链路弹层（💬 会话行的「链路」）
   const [convTrace, setConvTrace] = useState(null);
   const pollRef = useRef(null);
+
+  // 秒级时钟：列表里有未终态任务时每秒走一次，
+  // 让「耗时」列对运行中任务实时跳动（终态任务用 finished_at 定格，不依赖时钟）。
+  const [now, setNow] = useState(() => Date.now());
+  const hasRunning = tasks.some((t) => ['pending', 'running'].includes(t.status));
+  useEffect(() => {
+    if (!hasRunning) return undefined;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasRunning]);
 
   // 合并视图：会话行（💬）与任务行按时间倒序混排。
   // 状态 / Agent 筛选只对任务有意义 → 选中时隐藏会话行；关键词同时匹配会话标题与最近消息。
@@ -220,6 +231,7 @@ export default function Tasks() {
                   <th>Agent</th>
                   <th>状态</th>
                   <th className="num">进度</th>
+                  <th className="num">耗时</th>
                   <th>时间</th>
                   <th className="num">操作</th>
                 </tr>
@@ -248,6 +260,7 @@ export default function Tasks() {
                         <Badge tone="default">{row.c.message_count ?? 0} 条消息</Badge>
                         {row.c.has_debate && <Badge tone="violet" style={{ marginLeft: 6 }}>辩论</Badge>}
                       </td>
+                      <td className="num muted">—</td>
                       <td className="num muted">—</td>
                       <td>
                         <div className="cell-sub">创建 {formatTime(row.c.created_at)}</div>
@@ -294,6 +307,9 @@ export default function Tasks() {
                           <div style={{ width: `${row.t.progress ?? 0}%`, background: 'var(--accent)', height: '100%', borderRadius: 4 }} />
                         </div>
                         <span className="mono">{row.t.progress ?? 0}%</span>
+                      </td>
+                      <td className="num mono" style={{ minWidth: 78, whiteSpace: 'nowrap' }}>
+                        {formatDuration(row.t.started_at, row.t.finished_at, now)}
                       </td>
                       <td>
                         <div className="cell-sub">创建 {formatTime(row.t.created_at)}</div>

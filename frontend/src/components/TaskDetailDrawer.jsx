@@ -70,6 +70,21 @@ export function formatTime(v) {
   return d.toLocaleString('zh-CN', { hour12: false });
 }
 
+// 任务耗时：开始 → 结束；未结束且传入 nowTs 时按当前时刻计算（调用方用定时器刷新 nowTs 实现跳动）。
+// 优雅降级：<1s 显示 ms，<1min 显示秒，更长显示分/小时。
+export function formatDuration(startedAt, finishedAt, nowTs) {
+  if (!startedAt) return '—';
+  const end = finishedAt ? new Date(finishedAt) : nowTs ? new Date(nowTs) : new Date();
+  const ms = end - new Date(startedAt);
+  if (Number.isNaN(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${Math.round(s % 60)}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
 // 事件 payload 美化成一行可读摘要
 function eventSummary(type, payload) {
   let p = {};
@@ -176,13 +191,7 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
   }, [onClose]);
 
   const running = ['pending', 'running'].includes(detail.status);
-  const fmtDuration = () => {
-    if (!detail.started_at) return '—';
-    const end = detail.finished_at ? new Date(detail.finished_at) : new Date();
-    const ms = end - new Date(detail.started_at);
-    if (Number.isNaN(ms) || ms < 0) return '—';
-    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-  };
+  const fmtDuration = () => formatDuration(detail.started_at, detail.finished_at);
 
   return (
     <div className="drawer-mask" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
