@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -39,6 +40,13 @@ const (
 	chatToolLimit     = 50   // 工具目录上限
 	agentWaitTimeout  = 5 * time.Minute
 	agentPollInterval = 2 * time.Second
+
+	// —— 召回质量与延迟 ——
+	recallTimeout   = 8 * time.Second // 单个召回源超时：慢源不拖垮整轮对话
+	chatMemMinScore = 0.15            // 记忆绝对分数线（相似度 0~1）：低于此值视为噪声，
+	//                                   注入只会稀释模型注意力、拉长 prompt（实测弱相关常在 0.03 量级）。
+	chatRagRelKeep = 0.5 // RAG 相对分数线：RRF 融合分跨次召回不可比（绝对阈值无意义），
+	//                        只保留 ≥ 同次最高分 × 0.5 的命中，砍掉长尾噪声。
 )
 
 // ChatDeps 聊天编排依赖（均为可选，nil 时跳过对应能力）
@@ -184,67 +192,158 @@ func (u *UseCase) orchestrate(ctx context.Context, convID, content string, atts 
 	return final, metaWithTurn(meta, toolsUsed, 0, false, "")
 }
 
-// recallContext 自动召回：长期记忆 + RAG 检索 + 图谱召回，全部 best-effort
+// recallContext 自动召回：长期记忆 + RAG 检索 + 图谱召回，全部 best-effort。
+// 三路**并发**执行（此前为串行，最慢源决定总耗时），每路独立 8s 超时；
+// 结果块按下标固定顺序拼接（记忆 → 知识库 → 图谱），保证 prompt 结构稳定。
 func (u *UseCase) recallContext(ctx context.Context, content string) (blocks []string, meta map[string]any) {
 	meta = map[string]any{}
 	if u.deps == nil {
 		return nil, meta
 	}
 
-	// 长期记忆（含记忆图谱上下文）：
-	// 召回命名空间 = 当前请求用户（而不是写死的 "default"，否则所有用户的
-	// 长期记忆会串在同一个命名空间里 —— 数据串号级事故）。
-	if u.deps.Memory != nil {
-		if res, err := u.deps.Memory.Recall(ctx, content, identity.UserID(ctx), chatMemTopK, true, memory.RecallSourceChat); err == nil {
-			if lines := memoryLines(res); len(lines) > 0 {
-				blocks = append(blocks, "### 长期记忆\n"+strings.Join(lines, "\n"))
-				meta["memories"] = len(lines)
-				// 明细展开：逐条记忆（已含得分/类别/内容截断）
-				meta["memories_list"] = lines
-			}
-			if res.Graph != nil {
-				meta["mem_graph_entities"] = len(res.Graph.Entities)
-				meta["mem_graph_relations"] = len(res.Graph.Relations)
-				meta["mem_graph_entities_list"] = entitySummaries(res.Graph.Entities)
-				meta["mem_graph_relations_list"] = relationSummaries(res.Graph.Relations)
-			}
-		} else {
-			meta["mem_error"] = err.Error()
-		}
+	parts := make([]string, 3) // 0 记忆 / 1 知识库 / 2 图谱
+	metas := make([]map[string]any, 3)
+	var wg sync.WaitGroup
+	run := func(i int, fn func(context.Context) (string, map[string]any)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, cancel := context.WithTimeout(ctx, recallTimeout)
+			defer cancel()
+			parts[i], metas[i] = fn(c)
+		}()
 	}
 
+	if u.deps.Memory != nil {
+		run(0, func(c context.Context) (string, map[string]any) { return u.recallMemory(c, content) })
+	}
 	if u.deps.Rag != nil {
-		// 知识库向量/混合检索
-		if hits, err := u.deps.Rag.Retrieve(ctx, content, ""); err == nil && len(hits) > 0 {
-			lines := make([]string, 0, len(hits))
-			for i, h := range hits {
-				if i >= chatRagTopK {
-					break
-				}
-				lines = append(lines, fmt.Sprintf("- [%.3f] %s（来源 %s）", h.Score, clipRunes(h.Text, 400), h.Source))
-			}
-			blocks = append(blocks, "### 知识库检索\n"+strings.Join(lines, "\n"))
-			meta["rag_hits"] = min(len(hits), chatRagTopK)
-			// 明细展开：逐条命中（得分 / 来源 / 片段正文截断）
-			meta["rag_hits_list"] = ragHitSummaries(hits, chatRagTopK)
-		} else if err != nil {
-			meta["rag_error"] = err.Error()
-		}
+		run(1, func(c context.Context) (string, map[string]any) { return u.recallRag(c, content) })
+		run(2, func(c context.Context) (string, map[string]any) { return u.recallGraph(c, content) })
+	}
+	wg.Wait()
 
-		// 图谱召回（只检索不生成）
-		if g, err := u.deps.Rag.GraphRecall(ctx, content); err == nil {
-			if lines := graphLines(g); len(lines) > 0 {
-				blocks = append(blocks, "### 图谱上下文\n"+strings.Join(lines, "\n"))
-				meta["graph_entities"] = len(g.Entities)
-				meta["graph_relations"] = len(g.Relations)
-				meta["graph_entities_list"] = entitySummaries(g.Entities)
-				meta["graph_relations_list"] = relationSummaries(g.Relations)
-			}
-		} else {
-			meta["graph_error"] = err.Error()
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		blocks = append(blocks, p)
+		for k, v := range metas[i] {
+			meta[k] = v
 		}
 	}
 	return blocks, meta
+}
+
+// recallMemory 长期记忆（含记忆图谱）：绝对分数线过滤弱相关噪声
+func (u *UseCase) recallMemory(ctx context.Context, content string) (string, map[string]any) {
+	meta := map[string]any{}
+	// 召回命名空间 = 当前请求用户（而不是写死的 "default"，否则所有用户的
+	// 长期记忆会串在同一个命名空间里 —— 数据串号级事故）。
+	res, err := u.deps.Memory.Recall(ctx, content, identity.UserID(ctx), chatMemTopK, true, memory.RecallSourceChat)
+	if err != nil {
+		meta["mem_error"] = err.Error()
+		return "", meta
+	}
+	kept := filterMemories(res.Memories, chatMemMinScore)
+	if filtered := len(res.Memories) - len(kept); filtered > 0 {
+		meta["memories_filtered"] = filtered
+	}
+	if lines := memoryLinesOf(kept); len(lines) > 0 {
+		meta["memories"] = len(lines)
+		meta["memories_list"] = lines
+	}
+	if res.Graph != nil {
+		meta["mem_graph_entities"] = len(res.Graph.Entities)
+		meta["mem_graph_relations"] = len(res.Graph.Relations)
+		meta["mem_graph_entities_list"] = entitySummaries(res.Graph.Entities)
+		meta["mem_graph_relations_list"] = relationSummaries(res.Graph.Relations)
+	}
+	// 图谱块与记忆块合并输出（都归属「长期记忆」来源）
+	var b strings.Builder
+	if lines := memoryLinesOf(kept); len(lines) > 0 {
+		b.WriteString("### 长期记忆\n" + strings.Join(lines, "\n"))
+	}
+	return b.String(), meta
+}
+
+// recallRag 知识库混合检索：RRF 相对分数线过滤长尾
+func (u *UseCase) recallRag(ctx context.Context, content string) (string, map[string]any) {
+	meta := map[string]any{}
+	hits, err := u.deps.Rag.Retrieve(ctx, content, "")
+	if err != nil {
+		meta["rag_error"] = err.Error()
+		return "", meta
+	}
+	kept := filterHits(hits, chatRagRelKeep)
+	if filtered := len(hits) - len(kept); filtered > 0 {
+		meta["rag_filtered"] = filtered
+	}
+	if len(kept) > chatRagTopK {
+		kept = kept[:chatRagTopK]
+	}
+	if len(kept) == 0 {
+		return "", meta
+	}
+	lines := make([]string, 0, len(kept))
+	for _, h := range kept {
+		lines = append(lines, fmt.Sprintf("- [%.3f] %s（来源 %s）", h.Score, clipRunes(h.Text, 400), h.Source))
+	}
+	meta["rag_hits"] = len(kept)
+	meta["rag_hits_list"] = ragHitSummaries(kept, chatRagTopK)
+	return "### 知识库检索\n" + strings.Join(lines, "\n"), meta
+}
+
+// recallGraph 图谱召回（只检索不生成）
+func (u *UseCase) recallGraph(ctx context.Context, content string) (string, map[string]any) {
+	meta := map[string]any{}
+	g, err := u.deps.Rag.GraphRecall(ctx, content)
+	if err != nil {
+		meta["graph_error"] = err.Error()
+		return "", meta
+	}
+	lines := graphLines(g)
+	if len(lines) == 0 {
+		return "", meta
+	}
+	meta["graph_entities"] = len(g.Entities)
+	meta["graph_relations"] = len(g.Relations)
+	meta["graph_entities_list"] = entitySummaries(g.Entities)
+	meta["graph_relations_list"] = relationSummaries(g.Relations)
+	return "### 图谱上下文\n" + strings.Join(lines, "\n"), meta
+}
+
+// filterMemories 记忆过滤：相似度 < minScore 的视为噪声丢弃（保持原有降序）。
+func filterMemories(mems []memory.RecalledMemory, minScore float64) []memory.RecalledMemory {
+	out := make([]memory.RecalledMemory, 0, len(mems))
+	for _, m := range mems {
+		if float64(m.Score) >= minScore {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// filterHits RRF 命中过滤：只保留 ≥ 同次最高分 × relKeep 的条目。
+// RRF 分数（≈Σ1/(k+rank)）只在同一次召回内可比，不能用固定绝对阈值。
+func filterHits(hits []rag.Hit, relKeep float64) []rag.Hit {
+	if len(hits) == 0 {
+		return nil
+	}
+	top := float32(0)
+	for _, h := range hits {
+		if h.Score > top {
+			top = h.Score
+		}
+	}
+	threshold := top * float32(relKeep)
+	out := make([]rag.Hit, 0, len(hits))
+	for _, h := range hits {
+		if h.Score >= threshold {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // —— 召回明细展开（会话链路时间线用，写入消息 meta）——
@@ -459,12 +558,9 @@ func (u *UseCase) historyBlock(ctx context.Context, convID, content string) stri
 
 // —— 小工具 ——
 
-func memoryLines(res *memory.RecallResult) []string {
-	if res == nil {
-		return nil
-	}
-	lines := make([]string, 0, len(res.Memories))
-	for _, m := range res.Memories {
+func memoryLinesOf(mems []memory.RecalledMemory) []string {
+	lines := make([]string, 0, len(mems))
+	for _, m := range mems {
 		if m.LongTermMemory == nil {
 			continue
 		}
