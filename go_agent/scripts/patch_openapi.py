@@ -21,6 +21,7 @@ import sys
 TARGET_OPS = {
     "RagService_ExtractText",
     "RagService_UploadAndIngest",
+    "ConversationService_UploadMedia",
 }
 
 # 生成器产出的空请求体（缩进与 kratos 输出一致：path 4 空格 → method 8 → 字段 12）
@@ -64,7 +65,9 @@ def patch_block(block: list[str]) -> tuple[list[str], bool]:
     text = "".join(block)
     if not any(f"operationId: {op}" in text for op in TARGET_OPS):
         return block, False
-    if "multipart/form-data" in text:
+    # 幂等判断不能用「multipart/form-data」——接口描述文字里也可能出现这个词，
+    # 用只在 MULTIPART_BODY 里出现的 format: binary 判断
+    if "format: binary" in text:
         return block, False  # 已经是目标形态，幂等返回
 
     out: list[str] = []

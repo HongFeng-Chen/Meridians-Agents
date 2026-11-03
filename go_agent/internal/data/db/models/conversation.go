@@ -28,9 +28,11 @@ type ConversationMessagePO struct {
 	Speaker string `gorm:"column:speaker;size:64;not null;default:''"`
 	Content string `gorm:"column:content;type:mediumtext;not null"`
 	// Meta 能力调用链路 JSON：{op:"agent",task_id} / {op:"rag",kind,hits} / {op:"mcp",tool,ok} …
-	Meta      string    `gorm:"column:meta;type:text"`
-	TaskID    uint64    `gorm:"column:task_id;not null;default:0"`
-	CreatedAt time.Time `gorm:"column:created_at;not null;index:idx_conv_messages_created"`
+	Meta string `gorm:"column:meta;type:text"`
+	// Attachments 消息附件 JSON：[{name,url,mime,size}]（空数组/空串 = 无附件）
+	Attachments string    `gorm:"column:attachments;type:text"`
+	TaskID      uint64    `gorm:"column:task_id;not null;default:0"`
+	CreatedAt   time.Time `gorm:"column:created_at;not null;index:idx_conv_messages_created"`
 }
 
 // TableName 表名

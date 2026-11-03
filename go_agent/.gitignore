@@ -36,7 +36,8 @@ bin/
 .vscode/
 .idea/
 *.swp
-/data/   # 仅忽略仓库根的运行数据目录，internal/data 是存储层代码，必须入库
+# 运行数据目录（聊天附件 data/uploads、临时文件）；internal/data 是存储层代码，必须入库
+/data/
 
 # 本地私有配置（含密钥），永不入库
 configs/config.local.yaml

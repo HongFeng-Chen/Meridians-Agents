@@ -675,6 +675,39 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/conversation.v1.CreateConversationReply'
+    /api/conversations/media:
+        post:
+            tags:
+                - ConversationService
+            description: |-
+                UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+                 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+            operationId: ConversationService_UploadMedia
+            parameters:
+                - name: name
+                  in: query
+                  description: 文件名，如 photo.png（HTTP 下取客户端原名）
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+                            required:
+                                - file
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/conversation.v1.UploadMediaReply'
     /api/conversations/{id}:
         get:
             tags:
@@ -743,6 +776,7 @@ paths:
             description: |-
                 Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
                  系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+                 附件需先经 UploadMedia 上传，再随本请求传入。
             operationId: ConversationService_Chat
             parameters:
                 - name: id
@@ -4327,6 +4361,22 @@ components:
                 task_id:
                     type: string
                     description: 关联任务 ID（0 = 无）
+        conversation.v1.Attachment:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: 展示名（原文件名）
+                url:
+                    type: string
+                    description: 访问地址（/api/files/... 相对路径）
+                mime:
+                    type: string
+                    description: MIME 类型，如 image/png、video/mp4
+                size:
+                    type: string
+                    description: 字节数
+            description: Attachment 聊天附件（图片 / 视频等媒体文件）。
         conversation.v1.ChatReply:
             type: object
             properties:
@@ -4345,6 +4395,11 @@ components:
                 content:
                     type: string
                     description: 用户本轮输入
+                attachments:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/conversation.v1.Attachment'
+                    description: 本轮附件（先经 UploadMedia 上传，再传返回的 attachment 列表）
         conversation.v1.Conversation:
             type: object
             properties:
@@ -4392,6 +4447,11 @@ components:
                 speaker:
                     type: string
                     description: 发言者：普通会话为空；辩论为角色名 / 主持人
+                attachments:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/conversation.v1.Attachment'
+                    description: 本条消息携带的附件（图片 / 视频等）
             description: ConversationMessage 会话内一条消息。
         conversation.v1.CreateConversationReply:
             type: object
@@ -4549,6 +4609,11 @@ components:
                     type: string
                 title:
                     type: string
+        conversation.v1.UploadMediaReply:
+            type: object
+            properties:
+                attachment:
+                    $ref: '#/components/schemas/conversation.v1.Attachment'
         harness.v1.CaseReply:
             type: object
             properties:

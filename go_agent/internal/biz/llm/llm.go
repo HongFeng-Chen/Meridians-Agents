@@ -74,7 +74,21 @@ func (c *Client) Model() string { return c.model }
 
 type message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	// Content 纯文本对话为 string；带图片（CallOptions.Images）时为
+	// OpenAI 兼容的 content parts 数组（text + image_url）。
+	Content any `json:"content"`
+}
+
+// contentPart 多模态消息的一个部分（OpenAI 兼容协议）
+type contentPart struct {
+	Type     string    `json:"type"` // "text" | "image_url"
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+// imageURL 图片地址：https:// 或 data:image/...;base64, 均可
+type imageURL struct {
+	URL string `json:"url"`
 }
 
 // CallOptions 单次调用的生成参数（区别于数据源级默认配置）。
@@ -86,6 +100,9 @@ type CallOptions struct {
 	JSONMode bool
 	// MaxTokens 限制补全长度（0 表示用数据源默认）。打分/评审类短输出可设上限防啰嗦。
 	MaxTokens int
+	// Images 附加到 user 消息的图片（data URI 或 https URL，OpenAI 兼容协议）。
+	// 数据源/模型不支持视觉时由 Manager 降级为纯文本重试（见 chatWithOpt）。
+	Images []string
 }
 
 type responseFormat struct {
@@ -128,13 +145,14 @@ func (c *Client) ChatTempDetailed(ctx context.Context, system, user string, temp
 	return c.ChatDetailedOpts(ctx, system, user, temperature, CallOptions{})
 }
 
-// ChatDetailedOpts 带生成参数（JSON 模式 / max_tokens 上限）的对话。
+// ChatDetailedOpts 带生成参数（JSON 模式 / max_tokens 上限 / 视觉图片）的对话。
 func (c *Client) ChatDetailedOpts(ctx context.Context, system, user string, temperature float64, opt CallOptions) (string, Usage, error) {
+	userContent := buildUserContent(user, opt.Images)
 	payload := chatRequest{
 		Model: c.model,
 		Messages: []message{
 			{Role: "system", Content: system},
-			{Role: "user", Content: user},
+			{Role: "user", Content: userContent},
 		},
 		Temperature: temperature,
 		MaxTokens:   c.maxTokens,
@@ -185,7 +203,40 @@ func (c *Client) ChatDetailedOpts(ctx context.Context, system, user string, temp
 	if len(cr.Choices) == 0 {
 		return "", Usage{}, fmt.Errorf("llm returned no choices")
 	}
-	return cr.Choices[0].Message.Content, cr.Usage, nil
+	// 正常回复是纯文本；个别网关会原样回显 content parts，取回 text 部分拼接
+	switch v := cr.Choices[0].Message.Content.(type) {
+	case string:
+		return v, cr.Usage, nil
+	case []any:
+		var b strings.Builder
+		for _, p := range v {
+			if m, ok := p.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String(), cr.Usage, nil
+	default:
+		return "", Usage{}, fmt.Errorf("llm returned unexpected content type %T", cr.Choices[0].Message.Content)
+	}
+}
+
+// buildUserContent 组装 user 消息内容：无图片为纯字符串；有图片为 content parts。
+func buildUserContent(user string, images []string) any {
+	if len(images) == 0 {
+		return user
+	}
+	parts := make([]contentPart, 0, len(images)+1)
+	parts = append(parts, contentPart{Type: "text", Text: user})
+	for _, img := range images {
+		img = strings.TrimSpace(img)
+		if img == "" {
+			continue
+		}
+		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{URL: img}})
+	}
+	return parts
 }
 
 // ListModels 拉取数据源可用模型（GET {base}/models，OpenAI 兼容）

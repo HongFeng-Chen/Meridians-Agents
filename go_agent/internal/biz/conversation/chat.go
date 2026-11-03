@@ -10,8 +10,11 @@ package conversation
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -58,10 +61,11 @@ type chatAction struct {
 }
 
 // Chat 一轮完整对话：user 消息入库 → LLM 编排 → assistant 回复入库。
+// atts 为本轮附件（先经 SaveMedia 上传；图片会以视觉方式交给 LLM，视频仅作文字说明）。
 // 返回两条消息；LLM/工具失败时不返回 error，而是落一条失败的 assistant 消息（meta.ok=false）。
-func (u *UseCase) Chat(ctx context.Context, id, content string) (*Message, *Message, error) {
+func (u *UseCase) Chat(ctx context.Context, id, content string, atts []Attachment) (*Message, *Message, error) {
 	content = strings.TrimSpace(content)
-	if content == "" {
+	if content == "" && len(atts) == 0 {
 		return nil, nil, fmt.Errorf("%w: 消息内容不能为空", ErrInvalidConv)
 	}
 	if utf8.RuneCountInString(content) > 20000 {
@@ -76,12 +80,12 @@ func (u *UseCase) Chat(ctx context.Context, id, content string) (*Message, *Mess
 	// 落 op_histories 时自动带上 conv_id（会话链路时间线数据源）。
 	ctx = history.WithConv(ctx, conv.ID)
 
-	userMsg, err := u.Append(ctx, conv.ID, RoleUser, content, "", 0)
+	userMsg, err := u.AppendWithAttachments(ctx, conv.ID, RoleUser, content, "", 0, atts)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	answer, meta := u.orchestrate(ctx, conv.ID, content)
+	answer, meta := u.orchestrate(ctx, conv.ID, content, atts)
 	metaJSON := ""
 	if len(meta) > 0 {
 		b, _ := json.Marshal(meta)
@@ -95,20 +99,26 @@ func (u *UseCase) Chat(ctx context.Context, id, content string) (*Message, *Mess
 }
 
 // orchestrate 上下文召回 + LLM 工具循环，返回最终回复与链路 meta
-func (u *UseCase) orchestrate(ctx context.Context, convID, content string) (string, map[string]any) {
+func (u *UseCase) orchestrate(ctx context.Context, convID, content string, atts []Attachment) (string, map[string]any) {
 	meta := map[string]any{"op": "chat"}
+	if n := attachmentMeta(atts); n != nil {
+		meta["attachments"] = n
+	}
 
 	// 1. 自动召回上下文（best-effort）
 	blocks, rmeta := u.recallContext(ctx, content)
 	for k, v := range rmeta {
 		meta[k] = v
 	}
+	if block := mediaBlock(atts); block != "" {
+		blocks = append(blocks, block)
+	}
 
 	// 2. 工具目录 + 最近对话记录
 	agents, mcps := u.toolCatalog(ctx)
 	if len(agents)+len(mcps) == 0 {
 		// 没有任何工具：单轮直答
-		out, err := u.deps.LLM.Chat(ctx, u.chatSystem("", blocks), u.historyBlock(ctx, convID, content))
+		out, err := u.chatLLM(ctx, u.chatSystem("", blocks), u.historyBlock(ctx, convID, content), atts)
 		if err != nil {
 			return u.failAnswer(err), map[string]any{"op": "chat", "ok": false, "error": err.Error()}
 		}
@@ -130,7 +140,7 @@ func (u *UseCase) orchestrate(ctx context.Context, convID, content string) (stri
 		}
 		userPayload += "\n请根据以上信息输出严格 JSON：需要更多信息就调用工具，已足够则输出 final。"
 
-		out, err := u.deps.LLM.Chat(ctx, system, userPayload)
+		out, err := u.chatLLM(ctx, system, userPayload, atts)
 		if err != nil {
 			return u.failAnswer(err), metaWithTurn(meta, toolsUsed, turn, true, err.Error())
 		}
@@ -160,7 +170,7 @@ func (u *UseCase) orchestrate(ctx context.Context, convID, content string) (stri
 			userPayload += "\n## 工具观察\n" + ob
 		}
 		userPayload += "\n已达最大轮数，请立即输出 final。"
-		out, err := u.deps.LLM.Chat(ctx, system, userPayload)
+		out, err := u.chatLLM(ctx, system, userPayload, atts)
 		if err != nil {
 			return u.failAnswer(err), metaWithTurn(meta, toolsUsed, chatMaxTurns, true, err.Error())
 		}
@@ -434,7 +444,11 @@ func (u *UseCase) historyBlock(ctx context.Context, convID, content string) stri
 			if m.Role == RoleAssistant {
 				role = "助手"
 			}
-			fmt.Fprintf(&b, "%s：%s\n", role, clipRunes(m.Content, chatHistoryClip))
+			line := clipRunes(m.Content, chatHistoryClip)
+			if tag := attachmentTag(m.Attachments); tag != "" {
+				line = strings.TrimSpace(line + " " + tag)
+			}
+			fmt.Fprintf(&b, "%s：%s\n", role, line)
 		}
 	}
 	return b.String()
@@ -513,6 +527,131 @@ func clipRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n]) + "…"
+}
+
+// —— 附件与多模态 ——
+
+const (
+	// chatMaxImages 单轮随消息送给 LLM 的图片上限（控制 token 成本）
+	chatMaxImages = 4
+)
+
+// chatLLM 带图/纯文本自适应调用：有图片附件走 ChatVision（模型不支持时
+// Manager 内部自动降级纯文本），否则走普通 Chat。
+func (u *UseCase) chatLLM(ctx context.Context, system, user string, atts []Attachment) (string, error) {
+	images, err := imageDataURIs(atts)
+	if err != nil {
+		// 图片读盘失败不阻塞对话：退化为纯文本，附件以文字说明参与
+		images = nil
+	}
+	if len(images) == 0 {
+		return u.deps.LLM.Chat(ctx, system, user)
+	}
+	return u.deps.LLM.ChatVision(ctx, system, user, images)
+}
+
+// imageDataURIs 把图片附件读成 data URI（OpenAI 兼容 image_url 格式）。
+// 最多取前 chatMaxImages 张；URL 必须是本服务签发的 /api/files/ 地址。
+func imageDataURIs(atts []Attachment) ([]string, error) {
+	var out []string
+	for _, a := range atts {
+		if len(out) >= chatMaxImages {
+			break
+		}
+		if !a.IsImage() || strings.TrimSpace(a.URL) == "" {
+			continue
+		}
+		rel, err := mediaDiskRel(a.URL)
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(mediaRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, err
+		}
+		mimeType := a.MIME
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		out = append(out, fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data)))
+	}
+	return out, nil
+}
+
+// mediaDiskRel /api/files/{bucket}/{name} → {bucket}/{name}（拒绝路径穿越）
+func mediaDiskRel(url string) (string, error) {
+	rel := strings.TrimPrefix(url, mediaURLPrefix)
+	if rel == url || strings.Contains(rel, "..") || strings.Contains(rel, "\\") {
+		return "", fmt.Errorf("非法附件地址 %q", url)
+	}
+	return rel, nil
+}
+
+// mediaBlock 本轮附件的提示词说明块（视频无法解析内容，靠文字说明兜底）
+func mediaBlock(atts []Attachment) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("### 本轮附件（用户随消息上传）")
+	for _, a := range atts {
+		size := fmt.Sprintf("%.1fMB", float64(a.Size)/(1<<20))
+		if a.IsImage() {
+			fmt.Fprintf(&b, "\n- 图片 %s（%s, %s）：已随消息提供，若你具备视觉能力请直接查看分析",
+				a.Name, a.MIME, size)
+		} else {
+			fmt.Fprintf(&b, "\n- 视频 %s（%s, %s）：内容无法直接解析，请基于用户文字说明回应，必要时提示上传关键帧",
+				a.Name, a.MIME, size)
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// attachmentMeta meta 里记录的附件摘要
+func attachmentMeta(atts []Attachment) map[string]any {
+	if len(atts) == 0 {
+		return nil
+	}
+	images, videos := 0, 0
+	for _, a := range atts {
+		switch {
+		case a.IsImage():
+			images++
+		case a.IsVideo():
+			videos++
+		}
+	}
+	return map[string]any{"total": len(atts), "images": images, "videos": videos}
+}
+
+// attachmentTag 历史消息里的附件标注（LLM 需知道此前轮次带过媒体）
+func attachmentTag(atts []Attachment) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	images, videos, other := 0, 0, 0
+	for _, a := range atts {
+		switch {
+		case a.IsImage():
+			images++
+		case a.IsVideo():
+			videos++
+		default:
+			other++
+		}
+	}
+	parts := make([]string, 0, 3)
+	if images > 0 {
+		parts = append(parts, fmt.Sprintf("图片×%d", images))
+	}
+	if videos > 0 {
+		parts = append(parts, fmt.Sprintf("视频×%d", videos))
+	}
+	if other > 0 {
+		parts = append(parts, fmt.Sprintf("文件×%d", other))
+	}
+	return "[附件：" + strings.Join(parts, "、") + "]"
 }
 
 // parseChatJSON 从模型输出中提取第一个平衡的 JSON 对象并解析

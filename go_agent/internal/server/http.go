@@ -1,6 +1,12 @@
 package server
 
 import (
+	nethttp "net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+
 	agentfactoryv1 "go_agent/api/agentfactory/v1"
 	aiplatformv1 "go_agent/api/aiplatform/v1"
 	conversationv1 "go_agent/api/conversation/v1"
@@ -97,5 +103,41 @@ func NewHTTPServer(
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, harnessSvc)
 	// /mcp/platform（平台内置 MCP 端点：任务中心 / 会话 / 链路数据，只读、仅本机）
 	registerPlatformMCP(srv, platformSvc)
+	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
+	srv.HandlePrefix("/api/files/", filesHandler())
 	return srv
+}
+
+// filesHandler 聊天附件静态文件服务。
+// 只暴露 data/uploads 目录；http.FileServer 自带路径穿越防护；
+// 目录请求一律 404（不提供目录列表），未知扩展名按二进制流返回。
+func filesHandler() nethttp.Handler {
+	fs := nethttp.FileServer(nethttp.Dir("data/uploads"))
+	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
+		if rel == "" || strings.HasSuffix(rel, "/") {
+			nethttp.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat(filepath.Join("data/uploads", filepath.FromSlash(path.Clean(rel)))); err != nil {
+			nethttp.NotFound(w, r)
+			return
+		}
+		// Content-Type 由扩展名推断（Windows 上 mime 注册可能缺失，这里兜底常见类型）
+		ext := strings.ToLower(path.Ext(rel))
+		if ct := mediaMimeTypes[ext]; ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		// 附件按会话轮次基本不变，允许浏览器缓存 1 天
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		nethttp.StripPrefix("/api/files/", fs).ServeHTTP(w, r)
+	})
+}
+
+// mediaMimeTypes 附件常见扩展名 → Content-Type（与 biz/conversation 白名单一致）
+var mediaMimeTypes = map[string]string{
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+	".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+	".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+	".m4v": "video/x-m4v",
 }

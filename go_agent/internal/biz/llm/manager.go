@@ -103,6 +103,12 @@ func (m *Manager) ChatTemp(ctx context.Context, system, user string, temperature
 	return m.chat(ctx, "", system, user, temperature)
 }
 
+// ChatVision 带图片对话（图片为 data URI 或 https URL）。
+// 走候选链路调用；模型不支持视觉时自动降级为纯文本重试（不报错，只是"看不见图"）。
+func (m *Manager) ChatVision(ctx context.Context, system, user string, images []string) (string, error) {
+	return m.chatWithOpt(ctx, "", system, user, -1, CallOptions{Images: images})
+}
+
 // ChatScene 按场景路由（rag / graph / extract / memory），失败自动切下一个数据源
 func (m *Manager) ChatScene(ctx context.Context, scene, system, user string) (string, error) {
 	return m.chat(ctx, scene, system, user, -1)
@@ -159,8 +165,22 @@ func (m *Manager) chatOpts(ctx context.Context, o ChatOptions, allowJSON bool) (
 	return m.chatWithOpt(ctx, o.Scene, o.System, o.User, o.Temperature, opt)
 }
 
-// chatWithOpt 候选数据源顺序调用 + conf 兜底（chat 的带参版本）
+// chatWithOpt 候选数据源顺序调用 + conf 兜底（chat 的带参版本）。
+// 带图片（opt.Images）且全部失败时，降级为纯文本再试一轮 ——
+// 兜底模型可能不支持视觉内容，文本回答好过整体失败。
 func (m *Manager) chatWithOpt(ctx context.Context, scene, system, user string, temperature float64, opt CallOptions) (string, error) {
+	out, err := m.chatWithOptOnce(ctx, scene, system, user, temperature, opt)
+	if err != nil && len(opt.Images) > 0 {
+		log.Warn("[llm] 带图调用失败，降级为纯文本重试（模型可能不支持视觉）",
+			"scene", sceneOr(scene), "images", len(opt.Images), "err", err)
+		noImg := opt
+		noImg.Images = nil
+		return m.chatWithOptOnce(ctx, scene, system, user, temperature, noImg)
+	}
+	return out, err
+}
+
+func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user string, temperature float64, opt CallOptions) (string, error) {
 	var lastErr error
 	for _, p := range m.candidates(scene) {
 		temp := temperature

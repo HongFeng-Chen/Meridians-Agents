@@ -45,6 +45,20 @@ message ConversationMessage {
   string created_at = 7 [json_name = "created_at"];
   // 发言者：普通会话为空；辩论为角色名 / 主持人
   string speaker = 8 [json_name = "speaker"];
+  // 本条消息携带的附件（图片 / 视频等）
+  repeated Attachment attachments = 9 [json_name = "attachments"];
+}
+
+// Attachment 聊天附件（图片 / 视频等媒体文件）。
+message Attachment {
+  // 展示名（原文件名）
+  string name = 1 [json_name = "name"];
+  // 访问地址（/api/files/... 相对路径）
+  string url = 2 [json_name = "url"];
+  // MIME 类型，如 image/png、video/mp4
+  string mime = 3 [json_name = "mime"];
+  // 字节数
+  int64 size = 4 [json_name = "size"];
 }
 
 message CreateConversationRequest {
@@ -131,11 +145,28 @@ message ChatRequest {
   string id = 1 [(google.api.field_behavior) = REQUIRED];
   // 用户本轮输入
   string content = 2 [json_name = "content"];
+  // 本轮附件（先经 UploadMedia 上传，再传返回的 attachment 列表）
+  repeated Attachment attachments = 3 [json_name = "attachments"];
 }
 
 message ChatReply {
   ConversationMessage user_message = 1 [json_name = "user_message"];
   ConversationMessage assistant_message = 2 [json_name = "assistant_message"];
+}
+
+// UploadMediaRequest 上传聊天附件。
+//
+// HTTP：multipart/form-data，文件放在 part 名 file 里（gRPC 直接填 bytes）。
+// 图片（image/*，≤10MB）与视频（video/*，≤50MB），保存到 data/uploads/{yyyymm}/。
+message UploadMediaRequest {
+  // 文件内容（HTTP 下由 multipart 的 file 部分提供，无需填写）
+  bytes file = 1 [json_name = "file"];
+  // 文件名，如 photo.png（HTTP 下取客户端原名）
+  string name = 2 [json_name = "name"];
+}
+
+message UploadMediaReply {
+  Attachment attachment = 1 [json_name = "attachment"];
 }
 
 // —— 辩论会话 ——
@@ -263,10 +294,20 @@ service ConversationService {
 
   // Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
   // 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+  // 附件需先经 UploadMedia 上传，再随本请求传入。
   rpc Chat(ChatRequest) returns (ChatReply) {
     option (google.api.http) = {
       post: "/api/conversations/{id}/chat"
       body: "*"
+    };
+  }
+
+  // UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+  // 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+  rpc UploadMedia(UploadMediaRequest) returns (UploadMediaReply) {
+    option (google.api.http) = {
+      post: "/api/conversations/media"
+      body: "file"
     };
   }
 

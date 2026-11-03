@@ -185,6 +185,16 @@ func (u *UseCase) Append(ctx context.Context, conversationID, role, content, met
 
 // AppendAs 追加消息（带发言者标识：辩论角色 / 主持人）
 func (u *UseCase) AppendAs(ctx context.Context, conversationID, role, speaker, content, meta string, taskID uint64) (*Message, error) {
+	return u.appendFull(ctx, conversationID, role, speaker, content, meta, taskID, nil)
+}
+
+// AppendWithAttachments 追加带附件的消息（图片 / 视频聊天）。
+// 附件需先经 SaveMedia 落盘拿到 URL；附件上限 9 个。
+func (u *UseCase) AppendWithAttachments(ctx context.Context, conversationID, role, content, meta string, taskID uint64, atts []Attachment) (*Message, error) {
+	return u.appendFull(ctx, conversationID, role, "", content, meta, taskID, atts)
+}
+
+func (u *UseCase) appendFull(ctx context.Context, conversationID, role, speaker, content, meta string, taskID uint64, atts []Attachment) (*Message, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	role = strings.TrimSpace(strings.ToLower(role))
 	speaker = strings.TrimSpace(speaker)
@@ -202,8 +212,11 @@ func (u *UseCase) AppendAs(ctx context.Context, conversationID, role, speaker, c
 	if !valid {
 		return nil, fmt.Errorf("%w: 消息角色 %q 不支持（可选 user / assistant）", ErrInvalidConv, role)
 	}
-	if content == "" {
+	if content == "" && len(atts) == 0 {
 		return nil, fmt.Errorf("%w: 消息内容不能为空", ErrInvalidConv)
+	}
+	if len(atts) > MaxAttachments {
+		return nil, fmt.Errorf("%w: 附件最多 %d 个", ErrInvalidConv, MaxAttachments)
 	}
 	if utf8.RuneCountInString(content) > 20000 {
 		return nil, fmt.Errorf("%w: 消息内容过长（≤20000 字）", ErrInvalidConv)
@@ -224,6 +237,7 @@ func (u *UseCase) AppendAs(ctx context.Context, conversationID, role, speaker, c
 		Content:        content,
 		Meta:           strings.TrimSpace(meta),
 		TaskID:         taskID,
+		Attachments:    atts,
 		CreatedAt:      time.Now(),
 	}
 	if err := u.repo.AppendMessage(ctx, m); err != nil {

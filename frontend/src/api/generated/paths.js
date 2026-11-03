@@ -374,6 +374,18 @@ export const OPERATIONS = {
     multipart: false,
     bodyProps: ["id","title","agent_key"],
   },
+  ConversationService_UploadMedia: {
+    service: 'ConversationService',
+    group: 'conversation',
+    method: 'POST',
+    path: '/api/conversations/media',
+    summary: "UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。",
+    pathParams: [],
+    queryParams: ["name"],
+    hasBody: false,
+    multipart: true,
+    bodyProps: [],
+  },
   ConversationService_GetConversation: {
     service: 'ConversationService',
     group: 'conversation',
@@ -420,7 +432,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["content"],
+    bodyProps: ["content","attachments"],
   },
   ConversationService_CreateDebate: {
     service: 'ConversationService',
@@ -1924,4 +1936,4 @@ export const OPERATIONS = {
   },
 };
 
-export const OPERATION_COUNT = 160;
+export const OPERATION_COUNT = 161;

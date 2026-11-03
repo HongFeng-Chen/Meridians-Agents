@@ -185,20 +185,36 @@ function MessageBubble({ msg, roles = [] }) {
           </div>
         )}
         {isUser && <div className="chat-speaker"><span className="chat-speaker-name">监督者</span></div>}
+        {/* 附件：图片网格 / 视频播放器（url 为 /api/files/ 静态地址） */}
+        {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+          <div className="chat-atts">
+            {msg.attachments.map((a, i) => (
+              a.mime?.startsWith('video/')
+                ? <video key={`${a.url}-${i}`} src={a.url} controls preload="metadata" className="chat-att-video" />
+                : (
+                  <a key={`${a.url}-${i}`} href={a.url} target="_blank" rel="noopener noreferrer" className="chat-att-img-link">
+                    <img src={a.url} alt={a.name || '附件'} loading="lazy" className="chat-att-img" />
+                  </a>
+                )
+            ))}
+          </div>
+        )}
         {rich && (
           <div className="chat-view-toggle io-view-toggle">
             <button className={rendered ? 'active' : ''} onClick={() => setView('render')}>渲染</button>
             <button className={!rendered ? 'active' : ''} onClick={() => setView('raw')}>原文</button>
           </div>
         )}
-        {rendered ? (
-          <Markdown text={msg.content} className="chat-md" />
-        ) : (
-          <div className="chat-content">{msg.content}</div>
-        )}
-        {chips && (
+        {msg.content ? (
+          rendered ? (
+            <Markdown text={msg.content} className="chat-md" />
+          ) : (
+            <div className="chat-content">{msg.content}</div>
+          )
+        ) : null}
+        {(chips || msg.attachments?.length > 0) && (
           <div className="chat-meta">
-            {chips.map((c, i) => (
+            {(chips || []).map((c, i) => (
               <Badge key={`${c.text}-${i}`} tone={c.tone}>{c.text}</Badge>
             ))}
             <span className="chat-time">{new Date(msg.created_at).toLocaleString('zh-CN', { hour12: false })}</span>
@@ -257,6 +273,10 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
   const [debate, setDebate] = useState(null); // 当前会话的辩论（有 = 辩论视图）
   const [setup, setSetup] = useState(false); // 是否在辩论创建面板
   const [input, setInput] = useState('');
+  // 待发送附件：{file, name, mime, size, url(objectURL 预览)}；发送时先上传再随消息提交
+  const [pendingFiles, setPendingFiles] = useState([]);
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
   const [pendingText, setPendingText] = useState('');
@@ -528,16 +548,26 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
     }
   };
 
-  /** 普通对话：无会话先建（标题取首条消息），随后交给后端 LLM 编排 */
+  /** 普通对话：无会话先建（标题取首条消息），随后交给后端 LLM 编排。
+   *  附件先逐一上传（/api/conversations/media），再把返回的 attachment 列表随消息提交；
+   *  图片会以视觉方式交给 LLM（模型不支持时后端自动降级纯文本），视频仅作文字说明。 */
   const send = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && pendingFiles.length === 0) || busy || uploading) return;
     setBusy(true);
     setError('');
     setPendingText('思考中…（LLM 决策是否调用 Agent / MCP 工具）');
     const tmpID = `tmp-${Date.now()}`;
-    setMessages((prev) => [...prev, { id: tmpID, role: 'user', content: text, created_at: new Date().toISOString(), meta: '' }]);
+    // 乐观插入：本地先用 objectURL 预览，发送成功后由后端消息替换
+    const optimisticAtts = pendingFiles.map((f) => ({ name: f.name, url: f.url, mime: f.mime, size: f.size }));
+    setMessages((prev) => [...prev, { id: tmpID, role: 'user', content: text, created_at: new Date().toISOString(), meta: '', attachments: optimisticAtts }]);
     try {
+      // 1) 上传附件
+      const atts = [];
+      for (const f of pendingFiles) {
+        const res = await conversation.uploadMedia({ file: f.file, name: f.name });
+        if (res?.attachment) atts.push(res.attachment);
+      }
       let convID = active?.id;
       if (!convID) {
         const res = await conversation.createConversation({ title: truncate(text, 24) || '新对话' });
@@ -546,8 +576,9 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
         notifyChanged();
         convID = c.id;
       }
-      const r = await conversation.conversationChat({ id: convID, content: text });
+      const r = await conversation.conversationChat({ id: convID, content: text, attachments: atts });
       setInput('');
+      clearPendingFiles();
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== tmpID),
         ...(r.user_message ? [r.user_message] : []),
@@ -562,6 +593,59 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
       setPendingText('');
     }
   };
+
+  /** 选择附件：只收图片 / 视频，客户端先做类型与数量校验（大小由后端二次校验） */
+  const addFiles = (fileList) => {
+    const files = [...(fileList || [])];
+    if (!files.length) return;
+    setError('');
+    setPendingFiles((prev) => {
+      const next = [...prev];
+      for (const f of files) {
+        if (next.length >= 9) {
+          setError('附件最多 9 个');
+          break;
+        }
+        const isImage = f.type.startsWith('image/');
+        const isVideo = f.type.startsWith('video/');
+        if (!isImage && !isVideo) {
+          setError(`不支持的附件类型：${f.name}（仅支持图片 / 视频）`);
+          continue;
+        }
+        const limit = isImage ? 10 * 1024 * 1024 : 50 * 1024 * 1024;
+        if (f.size > limit) {
+          setError(`附件过大：${f.name}（${isImage ? '图片' : '视频'}上限 ${limit / 1024 / 1024}MB）`);
+          continue;
+        }
+        next.push({ file: f, name: f.name, mime: f.type, size: f.size, url: URL.createObjectURL(f) });
+      }
+      return next;
+    });
+  };
+
+  const removePendingFile = (idx) => {
+    setPendingFiles((prev) => {
+      const dropped = prev[idx];
+      if (dropped) URL.revokeObjectURL(dropped.url);
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
+
+  const clearPendingFiles = () => {
+    setPendingFiles((prev) => {
+      for (const f of prev) URL.revokeObjectURL(f.url);
+      return [];
+    });
+  };
+
+  // 组件卸载时回收预览用的 objectURL（经 ref 读最新列表，避免卸载后 setState）
+  const pendingRef = useRef([]);
+  useEffect(() => {
+    pendingRef.current = pendingFiles;
+  }, [pendingFiles]);
+  useEffect(() => () => {
+    for (const f of pendingRef.current) URL.revokeObjectURL(f.url);
+  }, []);
 
   /** 辩论监督：把用户发言写进会话，角色下一轮会读到并回应 */
   const supervise = async () => {
@@ -932,14 +1016,59 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
             {error && <div style={{ padding: '0 16px' }}><Alert type="error">{error}</Alert></div>}
 
             <footer className="chat-composer">
+              {/* 附件预览条：objectURL 缩略图，可单个移除 */}
+              {pendingFiles.length > 0 && (
+                <div className="chat-attach-strip">
+                  {pendingFiles.map((f, i) => (
+                    <div className="chat-attach-item" key={`${f.name}-${i}`} title={`${f.name}（${(f.size / 1024 / 1024).toFixed(1)}MB）`}>
+                      {f.mime.startsWith('image/') ? (
+                        <img src={f.url} alt={f.name} className="chat-attach-thumb" />
+                      ) : (
+                        <video src={f.url} className="chat-attach-thumb" muted />
+                      )}
+                      <span className="chat-attach-name">{truncate(f.name, 14)}</span>
+                      <button
+                        className="chat-attach-remove"
+                        type="button"
+                        aria-label="移除附件"
+                        onClick={() => removePendingFile(i)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="chat-input-row">
+                {/* 附件入口：图片（≤10MB）与视频（≤50MB），单条消息最多 9 个 */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/mp4,video/webm,video/quicktime"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    addFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  className="btn ghost chat-attach-btn"
+                  type="button"
+                  title="添加图片 / 视频附件"
+                  aria-label="添加图片 / 视频附件"
+                  disabled={busy || uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  📎
+                </button>
                 <textarea
                   className="input"
                   rows={2}
                   placeholder={
                     inDebate
                       ? '监督引导：写下你的补充要求或追问，角色下一轮会读到（不会强迫它们改立场）'
-                      : '发消息…（Enter 发送，Shift+Enter 换行）LLM 会自动决定是否调用 Agent / MCP 工具'
+                      : '发消息…（可点 📎 附图片 / 视频；Enter 发送，Shift+Enter 换行）LLM 会自动决定是否调用 Agent / MCP 工具'
                   }
                   value={input}
                   disabled={busy}
@@ -955,7 +1084,7 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
                 <button
                   className="btn primary"
                   type="button"
-                  disabled={busy || !input.trim() || (inDebate && !active)}
+                  disabled={busy || uploading || (inDebate ? !input.trim() || !active : (!input.trim() && pendingFiles.length === 0))}
                   onClick={inDebate ? supervise : send}
                 >
                   {busy ? '执行中…' : inDebate ? '提交引导' : '发送'}

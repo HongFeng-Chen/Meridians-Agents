@@ -9,7 +9,10 @@ package conversation
 //     每轮交互落一条消息，meta JSON 记录本轮能力调用链路，
 //     各能力自身仍会写统一操作历史（op_histories）。
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // 消息角色
 const (
@@ -41,8 +44,22 @@ type Message struct {
 	Content        string    `json:"content"`
 	Meta           string    `json:"meta"`    // 能力调用链路 JSON
 	TaskID         uint64    `json:"task_id"` // 关联任务（0 = 无）
+	Attachments    []Attachment `json:"attachments,omitempty"` // 消息附件（图片 / 视频）
 	CreatedAt      time.Time `json:"created_at"`
 }
+
+// Attachment 消息附件（图片 / 视频等媒体文件）。
+// 文件本体存 data/uploads/{yyyymm}/，URL 走 /api/files/ 静态访问。
+type Attachment struct {
+	Name string `json:"name"` // 展示名（原文件名）
+	URL  string `json:"url"`  // 访问地址（/api/files/...）
+	MIME string `json:"mime"` // MIME 类型，如 image/png、video/mp4
+	Size int64  `json:"size"` // 字节数
+}
+
+// IsImage / IsVideo 附件类型判断（按 MIME 前缀）
+func (a Attachment) IsImage() bool { return strings.HasPrefix(a.MIME, "image/") }
+func (a Attachment) IsVideo() bool { return strings.HasPrefix(a.MIME, "video/") }
 
 // —— 辩论会话 ——
 

@@ -146,6 +146,7 @@ func (r *ConversationRepo) AppendMessage(ctx context.Context, m *conversation.Me
 			Speaker:        m.Speaker,
 			Content:        m.Content,
 			Meta:           m.Meta,
+			Attachments:    marshalAttachments(m.Attachments),
 			TaskID:         m.TaskID,
 			CreatedAt:      m.CreatedAt,
 		}
@@ -153,11 +154,15 @@ func (r *ConversationRepo) AppendMessage(ctx context.Context, m *conversation.Me
 			return err
 		}
 		m.ID = p.ID
-		// 刷新会话目录：计数 +1、最近消息预览、更新时间
+		// 刷新会话目录：计数 +1、最近消息预览、更新时间（纯附件消息预览为「[附件]」）
+		preview := clip(m.Content, 255)
+		if strings.TrimSpace(preview) == "" && len(m.Attachments) > 0 {
+			preview = "[附件]"
+		}
 		return tx.Model(&models.ConversationPO{}).Where("id = ?", m.ConversationID).
 			Updates(map[string]any{
 				"message_count": gorm.Expr("message_count + 1"),
-				"last_message":  clip(m.Content, 255),
+				"last_message":  preview,
 				"updated_at":    m.CreatedAt,
 			}).Error
 	})
@@ -178,6 +183,7 @@ func (r *ConversationRepo) ListMessages(ctx context.Context, conversationID stri
 			Speaker:        p.Speaker,
 			Content:        p.Content,
 			Meta:           p.Meta,
+			Attachments:    unmarshalAttachments(p.Attachments),
 			TaskID:         p.TaskID,
 			CreatedAt:      p.CreatedAt,
 		})
@@ -219,6 +225,7 @@ func (r *ConversationRepo) ListMessagesPaged(ctx context.Context, conversationID
 			Speaker:        p.Speaker,
 			Content:        p.Content,
 			Meta:           p.Meta,
+			Attachments:    unmarshalAttachments(p.Attachments),
 			TaskID:         p.TaskID,
 			CreatedAt:      p.CreatedAt,
 		})
@@ -349,4 +356,29 @@ func (r *ConversationRepo) StopOrphanDebates(ctx context.Context) (int64, error)
 		Where("status IN ?", []string{conversation.DebateRunning, conversation.DebatePaused, conversation.DebateStopping}).
 		Updates(map[string]any{"status": conversation.DebateStopped, "updated_at": time.Now()})
 	return res.RowsAffected, res.Error
+}
+
+// marshalAttachments 附件列表 → JSON 列（空列表存空串）
+func marshalAttachments(atts []conversation.Attachment) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(atts)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// unmarshalAttachments JSON 列 → 附件列表（空串/坏数据 = nil）
+func unmarshalAttachments(s string) []conversation.Attachment {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var atts []conversation.Attachment
+	if err := json.Unmarshal([]byte(s), &atts); err != nil {
+		return nil
+	}
+	return atts
 }

@@ -410,6 +410,17 @@ export const createConversation = (input = {}, options) =>
   call('ConversationService_CreateConversation', input, options);
 
 /**
+ * UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+ *
+ * POST /api/conversations/media
+ *   query 参数：name
+ *   multipart：file 走表单，其余字段走 query
+ * @returns {Promise<UploadMediaReply>}
+ */
+export const uploadMedia = (input = {}, options) =>
+  call('ConversationService_UploadMedia', input, options);
+
+/**
  * GetConversation 会话详情 + 全部消息（按时间正序）。
  *
  * GET /api/conversations/{id}
@@ -1692,6 +1703,7 @@ export const aiplatform = {
 export const conversation = {
   listConversations,
   createConversation,
+  uploadMedia,
   getConversation,
   updateConversation,
   deleteConversation,

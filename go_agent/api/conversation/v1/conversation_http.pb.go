@@ -32,6 +32,7 @@ const OperationConversationServiceRemoveDebateRole = "/conversation.v1.Conversat
 const OperationConversationServiceResumeDebate = "/conversation.v1.ConversationService/ResumeDebate"
 const OperationConversationServiceStopDebate = "/conversation.v1.ConversationService/StopDebate"
 const OperationConversationServiceUpdateConversation = "/conversation.v1.ConversationService/UpdateConversation"
+const OperationConversationServiceUploadMedia = "/conversation.v1.ConversationService/UploadMedia"
 
 type ConversationServiceHTTPServer interface {
 	// AddDebateRole AddDebateRole 辩论进行中追加角色（下一轮生效）。
@@ -40,6 +41,7 @@ type ConversationServiceHTTPServer interface {
 	AppendMessage(context.Context, *AppendMessageRequest) (*AppendMessageReply, error)
 	// Chat Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
 	// 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+	// 附件需先经 UploadMedia 上传，再随本请求传入。
 	Chat(context.Context, *ChatRequest) (*ChatReply, error)
 	// CreateConversation CreateConversation 新建会话（id 可传任务 ID）。
 	CreateConversation(context.Context, *CreateConversationRequest) (*CreateConversationReply, error)
@@ -66,6 +68,9 @@ type ConversationServiceHTTPServer interface {
 	StopDebate(context.Context, *GetConversationRequest) (*StopDebateReply, error)
 	// UpdateConversation UpdateConversation 重命名会话。
 	UpdateConversation(context.Context, *UpdateConversationRequest) (*UpdateConversationReply, error)
+	// UploadMedia UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+	// 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+	UploadMedia(context.Context, *UploadMediaRequest) (*UploadMediaReply, error)
 }
 
 func RegisterConversationServiceHTTPServer(s *http.Server, srv ConversationServiceHTTPServer) {
@@ -78,6 +83,7 @@ func RegisterConversationServiceHTTPServer(s *http.Server, srv ConversationServi
 	r.Handle("DELETE", "/api/conversations/{id}", _ConversationService_DeleteConversation0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/conversations/{id}/messages", _ConversationService_AppendMessage0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/conversations/{id}/chat", _ConversationService_Chat0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/conversations/media", _ConversationService_UploadMedia0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/conversations/{id}/debates", _ConversationService_CreateDebate0_HTTP_Handler(srv))
 	r.Handle("GET", "/api/conversations/{id}/debates/current", _ConversationService_GetCurrentDebate0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/conversations/{id}/debates/current/stop", _ConversationService_StopDebate0_HTTP_Handler(srv))
@@ -257,6 +263,28 @@ func _ConversationService_Chat0_HTTP_Handler(srv ConversationServiceHTTPServer) 
 	}
 }
 
+func _ConversationService_UploadMedia0_HTTP_Handler(srv ConversationServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in UploadMediaRequest
+		if err := ctx.Bind(&in.File); err != nil {
+			return err
+		}
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationConversationServiceUploadMedia)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.UploadMedia(ctx, req.(*UploadMediaRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*UploadMediaReply)
+		return ctx.Result(200, reply)
+	}
+}
+
 func _ConversationService_CreateDebate0_HTTP_Handler(srv ConversationServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in CreateDebateRequest
@@ -418,6 +446,7 @@ type ConversationServiceHTTPClient interface {
 	AppendMessage(ctx context.Context, req *AppendMessageRequest, opts ...http.CallOption) (rsp *AppendMessageReply, err error)
 	// Chat Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
 	// 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+	// 附件需先经 UploadMedia 上传，再随本请求传入。
 	Chat(ctx context.Context, req *ChatRequest, opts ...http.CallOption) (rsp *ChatReply, err error)
 	// CreateConversation CreateConversation 新建会话（id 可传任务 ID）。
 	CreateConversation(ctx context.Context, req *CreateConversationRequest, opts ...http.CallOption) (rsp *CreateConversationReply, err error)
@@ -444,6 +473,9 @@ type ConversationServiceHTTPClient interface {
 	StopDebate(ctx context.Context, req *GetConversationRequest, opts ...http.CallOption) (rsp *StopDebateReply, err error)
 	// UpdateConversation UpdateConversation 重命名会话。
 	UpdateConversation(ctx context.Context, req *UpdateConversationRequest, opts ...http.CallOption) (rsp *UpdateConversationReply, err error)
+	// UploadMedia UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+	// 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+	UploadMedia(ctx context.Context, req *UploadMediaRequest, opts ...http.CallOption) (rsp *UploadMediaReply, err error)
 }
 
 type ConversationServiceHTTPClientImpl struct {
@@ -492,6 +524,7 @@ func (c *ConversationServiceHTTPClientImpl) AppendMessage(ctx context.Context, i
 
 // Chat Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
 // 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+// 附件需先经 UploadMedia 上传，再随本请求传入。
 func (c *ConversationServiceHTTPClientImpl) Chat(ctx context.Context, in *ChatRequest, opts ...http.CallOption) (*ChatReply, error) {
 	var out ChatReply
 	pattern := "/api/conversations/{id}/chat"
@@ -712,6 +745,25 @@ func (c *ConversationServiceHTTPClientImpl) UpdateConversation(ctx context.Conte
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "PUT", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UploadMedia UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+// 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+func (c *ConversationServiceHTTPClientImpl) UploadMedia(ctx context.Context, in *UploadMediaRequest, opts ...http.CallOption) (*UploadMediaReply, error) {
+	var out UploadMediaReply
+	pattern := "/api/conversations/media"
+	path := http.BuildPath(pattern, in, http.WithQueryParams(), http.WithOmitFields("file"))
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationConversationServiceUploadMedia),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in.File, &out, opts...)
 	if err != nil {
 		return nil, err
 	}

@@ -36,6 +36,7 @@ const (
 	ConversationService_DeleteConversation_FullMethodName = "/conversation.v1.ConversationService/DeleteConversation"
 	ConversationService_AppendMessage_FullMethodName      = "/conversation.v1.ConversationService/AppendMessage"
 	ConversationService_Chat_FullMethodName               = "/conversation.v1.ConversationService/Chat"
+	ConversationService_UploadMedia_FullMethodName        = "/conversation.v1.ConversationService/UploadMedia"
 	ConversationService_CreateDebate_FullMethodName       = "/conversation.v1.ConversationService/CreateDebate"
 	ConversationService_GetCurrentDebate_FullMethodName   = "/conversation.v1.ConversationService/GetCurrentDebate"
 	ConversationService_StopDebate_FullMethodName         = "/conversation.v1.ConversationService/StopDebate"
@@ -66,7 +67,11 @@ type ConversationServiceClient interface {
 	AppendMessage(ctx context.Context, in *AppendMessageRequest, opts ...grpc.CallOption) (*AppendMessageReply, error)
 	// Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
 	// 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+	// 附件需先经 UploadMedia 上传，再随本请求传入。
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatReply, error)
+	// UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+	// 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+	UploadMedia(ctx context.Context, in *UploadMediaRequest, opts ...grpc.CallOption) (*UploadMediaReply, error)
 	// CreateDebate 在会话内创建辩论：多角色按人设自主辩论，用户仅监督。
 	CreateDebate(ctx context.Context, in *CreateDebateRequest, opts ...grpc.CallOption) (*CreateDebateReply, error)
 	// GetCurrentDebate 会话当前 / 最近一场辩论（前端轮询展示进度）。
@@ -171,6 +176,16 @@ func (c *conversationServiceClient) Chat(ctx context.Context, in *ChatRequest, o
 	return out, nil
 }
 
+func (c *conversationServiceClient) UploadMedia(ctx context.Context, in *UploadMediaRequest, opts ...grpc.CallOption) (*UploadMediaReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UploadMediaReply)
+	err := c.cc.Invoke(ctx, ConversationService_UploadMedia_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *conversationServiceClient) CreateDebate(ctx context.Context, in *CreateDebateRequest, opts ...grpc.CallOption) (*CreateDebateReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateDebateReply)
@@ -262,7 +277,11 @@ type ConversationServiceServer interface {
 	AppendMessage(context.Context, *AppendMessageRequest) (*AppendMessageReply, error)
 	// Chat 与 LLM 对话一轮：LLM 自主决定是否调用 Agent / MCP 工具，
 	// 系统自动召回 Memory / RAG / GraphRAG 上下文；user 与 assistant 消息均落库。
+	// 附件需先经 UploadMedia 上传，再随本请求传入。
 	Chat(context.Context, *ChatRequest) (*ChatReply, error)
+	// UploadMedia 上传聊天附件（图片 / 视频）：multipart/form-data，文件在 file part。
+	// 返回的 attachment.url 可直接放进 Chat / AppendMessage 的 attachments。
+	UploadMedia(context.Context, *UploadMediaRequest) (*UploadMediaReply, error)
 	// CreateDebate 在会话内创建辩论：多角色按人设自主辩论，用户仅监督。
 	CreateDebate(context.Context, *CreateDebateRequest) (*CreateDebateReply, error)
 	// GetCurrentDebate 会话当前 / 最近一场辩论（前端轮询展示进度）。
@@ -310,6 +329,9 @@ func (UnimplementedConversationServiceServer) AppendMessage(context.Context, *Ap
 }
 func (UnimplementedConversationServiceServer) Chat(context.Context, *ChatRequest) (*ChatReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
+}
+func (UnimplementedConversationServiceServer) UploadMedia(context.Context, *UploadMediaRequest) (*UploadMediaReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method UploadMedia not implemented")
 }
 func (UnimplementedConversationServiceServer) CreateDebate(context.Context, *CreateDebateRequest) (*CreateDebateReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateDebate not implemented")
@@ -497,6 +519,24 @@ func _ConversationService_Chat_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ConversationService_UploadMedia_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UploadMediaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConversationServiceServer).UploadMedia(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConversationService_UploadMedia_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConversationServiceServer).UploadMedia(ctx, req.(*UploadMediaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ConversationService_CreateDebate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateDebateRequest)
 	if err := dec(in); err != nil {
@@ -661,6 +701,10 @@ var ConversationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Chat",
 			Handler:    _ConversationService_Chat_Handler,
+		},
+		{
+			MethodName: "UploadMedia",
+			Handler:    _ConversationService_UploadMedia_Handler,
 		},
 		{
 			MethodName: "CreateDebate",

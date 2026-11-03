@@ -4,10 +4,12 @@ package service
 // 会话 id 优先复用任务 ID（会话 id = task id）；消息 meta 记录能力调用链路。
 
 import (
+	"bytes"
 	"context"
 
 	v1 "go_agent/api/conversation/v1"
 	"go_agent/internal/biz/conversation"
+	"go_agent/internal/pkg/httpx"
 )
 
 // ConversationService 会话服务。
@@ -41,7 +43,7 @@ func toConversation(c conversation.Conversation) *v1.Conversation {
 }
 
 func toMessage(m conversation.Message) *v1.ConversationMessage {
-	return &v1.ConversationMessage{
+	out := &v1.ConversationMessage{
 		Id:             m.ID,
 		ConversationId: m.ConversationID,
 		Role:           m.Role,
@@ -51,6 +53,29 @@ func toMessage(m conversation.Message) *v1.ConversationMessage {
 		CreatedAt:      formatTS(m.CreatedAt),
 		Speaker:        m.Speaker,
 	}
+	for _, a := range m.Attachments {
+		out.Attachments = append(out.Attachments, toAttachment(a))
+	}
+	return out
+}
+
+func toAttachment(a conversation.Attachment) *v1.Attachment {
+	return &v1.Attachment{Name: a.Name, Url: a.URL, Mime: a.MIME, Size: a.Size}
+}
+
+func fromAttachment(a *v1.Attachment) conversation.Attachment {
+	return conversation.Attachment{Name: a.GetName(), URL: a.GetUrl(), MIME: a.GetMime(), Size: a.GetSize()}
+}
+
+func fromAttachments(list []*v1.Attachment) []conversation.Attachment {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]conversation.Attachment, 0, len(list))
+	for _, a := range list {
+		out = append(out, fromAttachment(a))
+	}
+	return out
 }
 
 // CreateConversation 新建会话。
@@ -132,8 +157,9 @@ func (s *ConversationService) AppendMessage(ctx context.Context, req *v1.AppendM
 }
 
 // Chat 与 LLM 对话一轮（LLM 自主编排 Agent / MCP，自动召回 Memory / RAG / GraphRAG）。
+// attachments 为已上传附件（先经 UploadMedia 拿到 url）。
 func (s *ConversationService) Chat(ctx context.Context, req *v1.ChatRequest) (*v1.ChatReply, error) {
-	userMsg, assistantMsg, err := s.uc.Chat(ctx, req.GetId(), req.GetContent())
+	userMsg, assistantMsg, err := s.uc.Chat(ctx, req.GetId(), req.GetContent(), fromAttachments(req.GetAttachments()))
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +171,20 @@ func (s *ConversationService) Chat(ctx context.Context, req *v1.ChatRequest) (*v
 		out.AssistantMessage = toMessage(*assistantMsg)
 	}
 	return out, nil
+}
+
+// UploadMedia 上传聊天附件（图片 / 视频）。
+// HTTP 走 multipart（文件名与内容来自解码器），gRPC 直接填 file/name。
+func (s *ConversationService) UploadMedia(ctx context.Context, req *v1.UploadMediaRequest) (*v1.UploadMediaReply, error) {
+	file, err := httpx.ResolveFile(ctx, req.GetFile(), req.GetName())
+	if err != nil {
+		return nil, err
+	}
+	att, err := s.uc.SaveMedia(file.Filename, bytes.NewReader(file.Data))
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	return &v1.UploadMediaReply{Attachment: toAttachment(*att)}, nil
 }
 
 // —— 辩论会话 ——
