@@ -39,6 +39,23 @@ EmbedOne(query)
 
 短期历史（Redis）+ 长期召回（向量+图谱）组装上下文 → 提示词模板 `memory.answer.system` / `memory.answer.user`（走 /api/prompts 管理，回落内置）→ LLM 生成 → 本轮问答写回短期记忆（续期）。
 
+## 用户隔离（2026-11-03 起）
+
+- **召回命名空间 = 当前请求用户**：`identity.UserID(ctx)`（中间件从 JWT `sub` / 静态令牌 / 开发态注入）。不再有写死的 `"default"`——那会让所有用户的记忆串在一个命名空间里。
+- **写入键用 `scopedUserID`**（`internal/service/scope.go`）：认证态强制取令牌身份，请求体里的 `user_id` 一律不采信（防伪造他人身份写数据）；仅开发态（认证关闭）才允许请求体指定，方便本地造数据。
+- **表与索引**：`memories` / `recall_logs` 带 `user_id` 列（默认 `'default'` 兼容历史数据，索引 `idx_memories_user` / `idx_recall_logs_user`）。
+- 认证关闭时 `devUser=default`，与历史数据同作用域；打开认证后按令牌身份天然分流（历史数据仍在 `default`，需要迁移见 README「数据隔离」）。
+
+## 会话内的召回链路（chat.recallContext，2026-11-03 起）
+
+会话每轮对话自动召回长期记忆，两个要点：
+
+1. **三路并发**：记忆 / RAG / 图谱用 goroutine + WaitGroup 并行执行，每路独立 8s 超时；任一路慢或挂不拖累其他源，结果按「记忆 → 知识库 → 图谱」固定顺序拼进提示词。
+2. **分数线过滤**（防弱相关噪声稀释上下文）：
+   - 长期记忆：绝对线 `chatMemMinScore = 0.15`（相似度 0~1；实测 0.02~0.03 量级都是噪声）；
+   - RAG：相对线 `chatRagRelKeep = 0.5`（只留 ≥ 同次最高分 × 0.5；RRF 融合分跨次不可比，不适合绝对阈值）；
+   - 被过滤条数写进消息 meta（`memories_filtered` / `rag_filtered`），链路详情可观测。
+
 ## 接口一览
 
 ```
@@ -54,6 +71,7 @@ GET    /api/memory/long/{id}            详情
 DELETE /api/memory/long/{id}            删除（三处同时清理）
 
 POST   /api/memory/recall               {query, user_id, top_k, with_graph}
+                                         认证态忽略 body 的 user_id，强制用令牌身份
 POST   /api/memory/answer               {session_id, user_id, question}
 GET    /api/memory/info                 运行参数
 ```
