@@ -46,6 +46,14 @@ type Repo interface {
 	// （重置 pending），同一事务内完成「插任务池 + 删历史」
 	ReviveTask(ctx context.Context, t *Task) error
 
+	// —— checkpoint（步骤级快照，O2）——
+	// SaveCheckpoint 追加一条快照；排序以自增 ID 为准，Seq 仅作任务内逻辑序号
+	SaveCheckpoint(ctx context.Context, cp *TaskCheckpoint) error
+	// LatestCheckpoint 取该任务最新一条快照（无则返回 nil, nil）
+	LatestCheckpoint(ctx context.Context, taskID uint64) (*TaskCheckpoint, error)
+	// TrimCheckpoints 只保留最近 keep 条（keep=0 全删：重试/驳回时清空）
+	TrimCheckpoints(ctx context.Context, taskID uint64, keep int) error
+
 	// —— 事件（trace） ——
 	AddEvent(ctx context.Context, e *TaskEvent) error
 	ListEvents(ctx context.Context, taskID uint64, limit int) ([]TaskEvent, error)

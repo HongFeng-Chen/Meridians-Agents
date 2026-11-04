@@ -90,9 +90,15 @@ type AgentDef struct {
 	// 默认模型数据源（llm 数据源名，空 = 平台默认）；该源调用失败自动回退 default
 	LlmSource string `protobuf:"bytes,30,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
 	// 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
-	AutoCompose   bool `protobuf:"varint,31,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AutoCompose bool `protobuf:"varint,31,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
+	// 需人工审批的能力前缀（支持尾部 * 通配，如 mcp:payment_*）：命中即暂停等审批
+	RequireApproval []string `protobuf:"bytes,32,rep,name=require_approval,proto3" json:"require_approval,omitempty"`
+	// 审批超时（小时），超时自动驳回；0 = 默认 72h
+	ApprovalTimeoutHours int32 `protobuf:"varint,33,opt,name=approval_timeout_hours,proto3" json:"approval_timeout_hours,omitempty"`
+	// 风险评估转人工阈值：none（默认）| high（高危不拦截而转人工审批）
+	RiskPauseLevel string `protobuf:"bytes,34,opt,name=risk_pause_level,proto3" json:"risk_pause_level,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AgentDef) Reset() {
@@ -342,6 +348,27 @@ func (x *AgentDef) GetAutoCompose() bool {
 	return false
 }
 
+func (x *AgentDef) GetRequireApproval() []string {
+	if x != nil {
+		return x.RequireApproval
+	}
+	return nil
+}
+
+func (x *AgentDef) GetApprovalTimeoutHours() int32 {
+	if x != nil {
+		return x.ApprovalTimeoutHours
+	}
+	return 0
+}
+
+func (x *AgentDef) GetRiskPauseLevel() string {
+	if x != nil {
+		return x.RiskPauseLevel
+	}
+	return ""
+}
+
 // AgentInput 创建/更新定义的入参
 type AgentInput struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
@@ -371,9 +398,15 @@ type AgentInput struct {
 	// 默认模型数据源（空 = 平台默认），调用失败回退 default
 	LlmSource string `protobuf:"bytes,21,opt,name=llm_source,proto3" json:"llm_source,omitempty"`
 	// 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
-	AutoCompose   bool `protobuf:"varint,22,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AutoCompose bool `protobuf:"varint,22,opt,name=auto_compose,proto3" json:"auto_compose,omitempty"`
+	// 需人工审批的能力前缀（支持尾部 * 通配）
+	RequireApproval []string `protobuf:"bytes,23,rep,name=require_approval,proto3" json:"require_approval,omitempty"`
+	// 审批超时（小时），0 = 默认 72h
+	ApprovalTimeoutHours int32 `protobuf:"varint,24,opt,name=approval_timeout_hours,proto3" json:"approval_timeout_hours,omitempty"`
+	// 风险评估转人工阈值：none | high
+	RiskPauseLevel string `protobuf:"bytes,25,opt,name=risk_pause_level,proto3" json:"risk_pause_level,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AgentInput) Reset() {
@@ -560,6 +593,27 @@ func (x *AgentInput) GetAutoCompose() bool {
 	return false
 }
 
+func (x *AgentInput) GetRequireApproval() []string {
+	if x != nil {
+		return x.RequireApproval
+	}
+	return nil
+}
+
+func (x *AgentInput) GetApprovalTimeoutHours() int32 {
+	if x != nil {
+		return x.ApprovalTimeoutHours
+	}
+	return 0
+}
+
+func (x *AgentInput) GetRiskPauseLevel() string {
+	if x != nil {
+		return x.RiskPauseLevel
+	}
+	return ""
+}
+
 // CapabilitySchema 能力的自描述（白名单选择器 + LLM 提示词共用）
 type CapabilitySchema struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -649,7 +703,7 @@ type AgentTask struct {
 	// 输入摘要（列表展示）
 	Title string `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
 	Input string `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
-	// pending | running | succeeded | failed | canceled
+	// pending | running | paused（待审批）| succeeded | failed | canceled
 	Status string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
 	// 0~100
 	Progress int32  `protobuf:"varint,7,opt,name=progress,proto3" json:"progress,omitempty"`
@@ -828,7 +882,7 @@ type TaskEvent struct {
 	TaskId uint64                 `protobuf:"varint,2,opt,name=task_id,proto3" json:"task_id,omitempty"`
 	// 执行轮次（0 = 状态类事件）
 	Turn int32 `protobuf:"varint,3,opt,name=turn,proto3" json:"turn,omitempty"`
-	// status | thought | tool_call | tool_result | delegate | final | error
+	// status | thought | tool_call | tool_result | delegate | plan | node | orchestrate | paused | approval | resume | final | error
 	Type string `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
 	// JSON 字符串
 	Payload       string `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
@@ -2323,6 +2377,68 @@ func (x *RetryTaskRequest) GetId() uint64 {
 	return 0
 }
 
+type ApproveTaskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// approve（批准，续跑）| reject（驳回，终态失败）
+	Decision string `protobuf:"bytes,2,opt,name=decision,proto3" json:"decision,omitempty"`
+	// 审批备注（驳回原因 / 批准说明）
+	Note          string `protobuf:"bytes,3,opt,name=note,proto3" json:"note,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApproveTaskRequest) Reset() {
+	*x = ApproveTaskRequest{}
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApproveTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApproveTaskRequest) ProtoMessage() {}
+
+func (x *ApproveTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApproveTaskRequest.ProtoReflect.Descriptor instead.
+func (*ApproveTaskRequest) Descriptor() ([]byte, []int) {
+	return file_agentfactory_v1_agentfactory_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ApproveTaskRequest) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *ApproveTaskRequest) GetDecision() string {
+	if x != nil {
+		return x.Decision
+	}
+	return ""
+}
+
+func (x *ApproveTaskRequest) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
 type ListTaskEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -2333,7 +2449,7 @@ type ListTaskEventsRequest struct {
 
 func (x *ListTaskEventsRequest) Reset() {
 	*x = ListTaskEventsRequest{}
-	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[31]
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2345,7 +2461,7 @@ func (x *ListTaskEventsRequest) String() string {
 func (*ListTaskEventsRequest) ProtoMessage() {}
 
 func (x *ListTaskEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[31]
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2358,7 +2474,7 @@ func (x *ListTaskEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTaskEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListTaskEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentfactory_v1_agentfactory_proto_rawDescGZIP(), []int{31}
+	return file_agentfactory_v1_agentfactory_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListTaskEventsRequest) GetId() uint64 {
@@ -2384,7 +2500,7 @@ type ListTaskEventsReply struct {
 
 func (x *ListTaskEventsReply) Reset() {
 	*x = ListTaskEventsReply{}
-	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[32]
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2396,7 +2512,7 @@ func (x *ListTaskEventsReply) String() string {
 func (*ListTaskEventsReply) ProtoMessage() {}
 
 func (x *ListTaskEventsReply) ProtoReflect() protoreflect.Message {
-	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[32]
+	mi := &file_agentfactory_v1_agentfactory_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2409,7 +2525,7 @@ func (x *ListTaskEventsReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTaskEventsReply.ProtoReflect.Descriptor instead.
 func (*ListTaskEventsReply) Descriptor() ([]byte, []int) {
-	return file_agentfactory_v1_agentfactory_proto_rawDescGZIP(), []int{32}
+	return file_agentfactory_v1_agentfactory_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListTaskEventsReply) GetEvents() []*TaskEvent {
@@ -2423,7 +2539,7 @@ var File_agentfactory_v1_agentfactory_proto protoreflect.FileDescriptor
 
 const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\n" +
-	"\"agentfactory/v1/agentfactory.proto\x12\x0fagentfactory.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xb6\a\n" +
+	"\"agentfactory/v1/agentfactory.proto\x12\x0fagentfactory.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xc6\b\n" +
 	"\bAgentDef\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1c\n" +
 	"\tagent_key\x18\x02 \x01(\tR\tagent_key\x12\x12\n" +
@@ -2468,7 +2584,10 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\n" +
 	"llm_source\x18\x1e \x01(\tR\n" +
 	"llm_source\x12\"\n" +
-	"\fauto_compose\x18\x1f \x01(\bR\fauto_compose\"\xbd\x05\n" +
+	"\fauto_compose\x18\x1f \x01(\bR\fauto_compose\x12*\n" +
+	"\x10require_approval\x18  \x03(\tR\x10require_approval\x126\n" +
+	"\x16approval_timeout_hours\x18! \x01(\x05R\x16approval_timeout_hours\x12*\n" +
+	"\x10risk_pause_level\x18\" \x01(\tR\x10risk_pause_level\"\xcd\x06\n" +
 	"\n" +
 	"AgentInput\x12\x1c\n" +
 	"\tagent_key\x18\x01 \x01(\tR\tagent_key\x12\x17\n" +
@@ -2499,7 +2618,10 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\n" +
 	"llm_source\x18\x15 \x01(\tR\n" +
 	"llm_source\x12\"\n" +
-	"\fauto_compose\x18\x16 \x01(\bR\fauto_compose\"\x9c\x01\n" +
+	"\fauto_compose\x18\x16 \x01(\bR\fauto_compose\x12*\n" +
+	"\x10require_approval\x18\x17 \x03(\tR\x10require_approval\x126\n" +
+	"\x16approval_timeout_hours\x18\x18 \x01(\x05R\x16approval_timeout_hours\x12*\n" +
+	"\x10risk_pause_level\x18\x19 \x01(\tR\x10risk_pause_level\"\x9c\x01\n" +
 	"\x10CapabilitySchema\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +
@@ -2626,12 +2748,16 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\x11CancelTaskRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"'\n" +
 	"\x10RetryTaskRequest\x12\x13\n" +
-	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"B\n" +
+	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"^\n" +
+	"\x12ApproveTaskRequest\x12\x13\n" +
+	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\x12\x1f\n" +
+	"\bdecision\x18\x02 \x01(\tB\x03\xe0A\x02R\bdecision\x12\x12\n" +
+	"\x04note\x18\x03 \x01(\tR\x04note\"B\n" +
 	"\x15ListTaskEventsRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\"I\n" +
 	"\x13ListTaskEventsReply\x122\n" +
-	"\x06events\x18\x01 \x03(\v2\x1a.agentfactory.v1.TaskEventR\x06events2\xb4\x12\n" +
+	"\x06events\x18\x01 \x03(\v2\x1a.agentfactory.v1.TaskEventR\x06events2\xb7\x13\n" +
 	"\x13AgentFactoryService\x12\x89\x01\n" +
 	"\x14GetAgentFactoryStats\x12,.agentfactory.v1.GetAgentFactoryStatsRequest\x1a\".agentfactory.v1.AgentFactoryStats\"\x1f\x82\xd3\xe4\x93\x02\x19\x12\x17/api/agentfactory/stats\x12\x8c\x01\n" +
 	"\x10ListCapabilities\x12(.agentfactory.v1.ListCapabilitiesRequest\x1a&.agentfactory.v1.ListCapabilitiesReply\"&\x82\xd3\xe4\x93\x02 \x12\x1e/api/agentfactory/capabilities\x12}\n" +
@@ -2651,7 +2777,8 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\aGetTask\x12\x1f.agentfactory.v1.GetTaskRequest\x1a\x1a.agentfactory.v1.AgentTask\"$\x82\xd3\xe4\x93\x02\x1e\x12\x1c/api/agentfactory/tasks/{id}\x12|\n" +
 	"\n" +
 	"CancelTask\x12\".agentfactory.v1.CancelTaskRequest\x1a\x1a.agentfactory.v1.AgentTask\".\x82\xd3\xe4\x93\x02(:\x01*\"#/api/agentfactory/tasks/{id}/cancel\x12y\n" +
-	"\tRetryTask\x12!.agentfactory.v1.RetryTaskRequest\x1a\x1a.agentfactory.v1.AgentTask\"-\x82\xd3\xe4\x93\x02':\x01*\"\"/api/agentfactory/tasks/{id}/retry\x12\x8b\x01\n" +
+	"\tRetryTask\x12!.agentfactory.v1.RetryTaskRequest\x1a\x1a.agentfactory.v1.AgentTask\"-\x82\xd3\xe4\x93\x02':\x01*\"\"/api/agentfactory/tasks/{id}/retry\x12\x80\x01\n" +
+	"\vApproveTask\x12#.agentfactory.v1.ApproveTaskRequest\x1a\x1a.agentfactory.v1.AgentTask\"0\x82\xd3\xe4\x93\x02*:\x01*\"%/api/agentfactory/tasks/{id}/approval\x12\x8b\x01\n" +
 	"\x0eListTaskEvents\x12&.agentfactory.v1.ListTaskEventsRequest\x1a$.agentfactory.v1.ListTaskEventsReply\"+\x82\xd3\xe4\x93\x02%\x12#/api/agentfactory/tasks/{id}/eventsB!Z\x1fgo_agent/api/agentfactory/v1;v1b\x06proto3"
 
 var (
@@ -2666,7 +2793,7 @@ func file_agentfactory_v1_agentfactory_proto_rawDescGZIP() []byte {
 	return file_agentfactory_v1_agentfactory_proto_rawDescData
 }
 
-var file_agentfactory_v1_agentfactory_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_agentfactory_v1_agentfactory_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_agentfactory_v1_agentfactory_proto_goTypes = []any{
 	(*AgentDef)(nil),                    // 0: agentfactory.v1.AgentDef
 	(*AgentInput)(nil),                  // 1: agentfactory.v1.AgentInput
@@ -2699,8 +2826,9 @@ var file_agentfactory_v1_agentfactory_proto_goTypes = []any{
 	(*GetTaskRequest)(nil),              // 28: agentfactory.v1.GetTaskRequest
 	(*CancelTaskRequest)(nil),           // 29: agentfactory.v1.CancelTaskRequest
 	(*RetryTaskRequest)(nil),            // 30: agentfactory.v1.RetryTaskRequest
-	(*ListTaskEventsRequest)(nil),       // 31: agentfactory.v1.ListTaskEventsRequest
-	(*ListTaskEventsReply)(nil),         // 32: agentfactory.v1.ListTaskEventsReply
+	(*ApproveTaskRequest)(nil),          // 31: agentfactory.v1.ApproveTaskRequest
+	(*ListTaskEventsRequest)(nil),       // 32: agentfactory.v1.ListTaskEventsRequest
+	(*ListTaskEventsReply)(nil),         // 33: agentfactory.v1.ListTaskEventsReply
 }
 var file_agentfactory_v1_agentfactory_proto_depIdxs = []int32{
 	2,  // 0: agentfactory.v1.ListCapabilitiesReply.capabilities:type_name -> agentfactory.v1.CapabilitySchema
@@ -2728,27 +2856,29 @@ var file_agentfactory_v1_agentfactory_proto_depIdxs = []int32{
 	28, // 22: agentfactory.v1.AgentFactoryService.GetTask:input_type -> agentfactory.v1.GetTaskRequest
 	29, // 23: agentfactory.v1.AgentFactoryService.CancelTask:input_type -> agentfactory.v1.CancelTaskRequest
 	30, // 24: agentfactory.v1.AgentFactoryService.RetryTask:input_type -> agentfactory.v1.RetryTaskRequest
-	31, // 25: agentfactory.v1.AgentFactoryService.ListTaskEvents:input_type -> agentfactory.v1.ListTaskEventsRequest
-	6,  // 26: agentfactory.v1.AgentFactoryService.GetAgentFactoryStats:output_type -> agentfactory.v1.AgentFactoryStats
-	8,  // 27: agentfactory.v1.AgentFactoryService.ListCapabilities:output_type -> agentfactory.v1.ListCapabilitiesReply
-	10, // 28: agentfactory.v1.AgentFactoryService.ListAgentDefs:output_type -> agentfactory.v1.ListAgentDefsReply
-	0,  // 29: agentfactory.v1.AgentFactoryService.CreateAgentDef:output_type -> agentfactory.v1.AgentDef
-	12, // 30: agentfactory.v1.AgentFactoryService.CreateAgentByLLM:output_type -> agentfactory.v1.CreateAgentByLLMReply
-	14, // 31: agentfactory.v1.AgentFactoryService.SearchAgentDefs:output_type -> agentfactory.v1.SearchAgentDefsReply
-	17, // 32: agentfactory.v1.AgentFactoryService.SyncAgentVectors:output_type -> agentfactory.v1.SyncAgentVectorsReply
-	0,  // 33: agentfactory.v1.AgentFactoryService.GetAgentDef:output_type -> agentfactory.v1.AgentDef
-	0,  // 34: agentfactory.v1.AgentFactoryService.UpdateAgentDef:output_type -> agentfactory.v1.AgentDef
-	21, // 35: agentfactory.v1.AgentFactoryService.DeleteAgentDef:output_type -> agentfactory.v1.DeleteAgentDefReply
-	0,  // 36: agentfactory.v1.AgentFactoryService.ToggleAgentDef:output_type -> agentfactory.v1.AgentDef
-	3,  // 37: agentfactory.v1.AgentFactoryService.SubmitTask:output_type -> agentfactory.v1.AgentTask
-	25, // 38: agentfactory.v1.AgentFactoryService.GetTaskStats:output_type -> agentfactory.v1.TaskStats
-	27, // 39: agentfactory.v1.AgentFactoryService.ListTasks:output_type -> agentfactory.v1.ListTasksReply
-	3,  // 40: agentfactory.v1.AgentFactoryService.GetTask:output_type -> agentfactory.v1.AgentTask
-	3,  // 41: agentfactory.v1.AgentFactoryService.CancelTask:output_type -> agentfactory.v1.AgentTask
-	3,  // 42: agentfactory.v1.AgentFactoryService.RetryTask:output_type -> agentfactory.v1.AgentTask
-	32, // 43: agentfactory.v1.AgentFactoryService.ListTaskEvents:output_type -> agentfactory.v1.ListTaskEventsReply
-	26, // [26:44] is the sub-list for method output_type
-	8,  // [8:26] is the sub-list for method input_type
+	31, // 25: agentfactory.v1.AgentFactoryService.ApproveTask:input_type -> agentfactory.v1.ApproveTaskRequest
+	32, // 26: agentfactory.v1.AgentFactoryService.ListTaskEvents:input_type -> agentfactory.v1.ListTaskEventsRequest
+	6,  // 27: agentfactory.v1.AgentFactoryService.GetAgentFactoryStats:output_type -> agentfactory.v1.AgentFactoryStats
+	8,  // 28: agentfactory.v1.AgentFactoryService.ListCapabilities:output_type -> agentfactory.v1.ListCapabilitiesReply
+	10, // 29: agentfactory.v1.AgentFactoryService.ListAgentDefs:output_type -> agentfactory.v1.ListAgentDefsReply
+	0,  // 30: agentfactory.v1.AgentFactoryService.CreateAgentDef:output_type -> agentfactory.v1.AgentDef
+	12, // 31: agentfactory.v1.AgentFactoryService.CreateAgentByLLM:output_type -> agentfactory.v1.CreateAgentByLLMReply
+	14, // 32: agentfactory.v1.AgentFactoryService.SearchAgentDefs:output_type -> agentfactory.v1.SearchAgentDefsReply
+	17, // 33: agentfactory.v1.AgentFactoryService.SyncAgentVectors:output_type -> agentfactory.v1.SyncAgentVectorsReply
+	0,  // 34: agentfactory.v1.AgentFactoryService.GetAgentDef:output_type -> agentfactory.v1.AgentDef
+	0,  // 35: agentfactory.v1.AgentFactoryService.UpdateAgentDef:output_type -> agentfactory.v1.AgentDef
+	21, // 36: agentfactory.v1.AgentFactoryService.DeleteAgentDef:output_type -> agentfactory.v1.DeleteAgentDefReply
+	0,  // 37: agentfactory.v1.AgentFactoryService.ToggleAgentDef:output_type -> agentfactory.v1.AgentDef
+	3,  // 38: agentfactory.v1.AgentFactoryService.SubmitTask:output_type -> agentfactory.v1.AgentTask
+	25, // 39: agentfactory.v1.AgentFactoryService.GetTaskStats:output_type -> agentfactory.v1.TaskStats
+	27, // 40: agentfactory.v1.AgentFactoryService.ListTasks:output_type -> agentfactory.v1.ListTasksReply
+	3,  // 41: agentfactory.v1.AgentFactoryService.GetTask:output_type -> agentfactory.v1.AgentTask
+	3,  // 42: agentfactory.v1.AgentFactoryService.CancelTask:output_type -> agentfactory.v1.AgentTask
+	3,  // 43: agentfactory.v1.AgentFactoryService.RetryTask:output_type -> agentfactory.v1.AgentTask
+	3,  // 44: agentfactory.v1.AgentFactoryService.ApproveTask:output_type -> agentfactory.v1.AgentTask
+	33, // 45: agentfactory.v1.AgentFactoryService.ListTaskEvents:output_type -> agentfactory.v1.ListTaskEventsReply
+	27, // [27:46] is the sub-list for method output_type
+	8,  // [8:27] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -2765,7 +2895,7 @@ func file_agentfactory_v1_agentfactory_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agentfactory_v1_agentfactory_proto_rawDesc), len(file_agentfactory_v1_agentfactory_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

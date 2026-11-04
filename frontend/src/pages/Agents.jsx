@@ -36,6 +36,9 @@ function emptyForm() {
     supervisor_key: '',
     supervision_scope: [],
     risk_agent_key: '',
+    require_approval: '',
+    risk_pause_level: 'none',
+    approval_timeout_hours: '',
     auto_run: false,
     cron_expr: '',
     cron_input: '',
@@ -63,6 +66,9 @@ function formFrom(def) {
     supervisor_key: def.supervisor_key || '',
     supervision_scope: def.supervision_scope || [],
     risk_agent_key: def.risk_agent_key || '',
+    require_approval: (def.require_approval || []).join(', '),
+    risk_pause_level: def.risk_pause_level || 'none',
+    approval_timeout_hours: def.approval_timeout_hours ? String(def.approval_timeout_hours) : '',
     auto_run: !!def.auto_run,
     cron_expr: def.cron_expr || '',
     cron_input: def.cron_input || '',
@@ -361,6 +367,12 @@ export default function Agents() {
       supervisor_key: form.supervisor_key,
       supervision_scope: form.supervision_scope,
       risk_agent_key: form.risk_agent_key,
+      require_approval: form.require_approval
+        .split(/[,，\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+      risk_pause_level: form.risk_pause_level || 'none',
+      approval_timeout_hours: Number(form.approval_timeout_hours) || 0,
       auto_run: form.auto_run,
       cron_expr: form.cron_expr,
       cron_input: form.cron_input,
@@ -458,6 +470,13 @@ export default function Agents() {
           })()}
           {d.supervisor_key && <div className="cell-sub mono">监察 {d.supervisor_key}</div>}
           {d.risk_agent_key && <div className="cell-sub mono">风评 {d.risk_agent_key}</div>}
+          {((d.require_approval || []).length > 0 || d.risk_pause_level === 'high') && (
+            <div className="cell-sub">
+              <Badge tone="warn">审批</Badge>{' '}
+              {(d.require_approval || []).length > 0 && <span className="mono">{d.require_approval.length} 项前缀</span>}
+              {d.risk_pause_level === 'high' && <span>{(d.require_approval || []).length > 0 ? ' · ' : ''}高危转人工</span>}
+            </div>
+          )}
           {d.auto_run && (
             <div className="cell-sub">
               <Badge tone="teal">cron</Badge> <span className="mono">{d.cron_expr}</span>
@@ -726,6 +745,36 @@ export default function Agents() {
                       该 Agent 所有轮次（含 ReAct / 委派 / 监察路径）优先走此数据源；不可用或调用失败时自动回落 default 链路，任务不中断。
                     </span>
                   </label>
+                </section>
+
+                {/* 审批闸门（O3）：高危能力转人工，批准后从 checkpoint 续跑 */}
+                <section className="form-section">
+                  <div className="form-section-title">审批闸门（人工在环）</div>
+                  <label className="field inline" style={{ display: 'block' }}>
+                    <span className="field-label">需审批的能力前缀（逗号分隔，支持尾部 * 通配；留空 = 不启用）</span>
+                    <input
+                      className="input"
+                      value={form.require_approval}
+                      onChange={(e) => setForm({ ...form, require_approval: e.target.value })}
+                      placeholder="例：mcp:mail_send, mcp:payment_*"
+                    />
+                    <span className="cell-sub" style={{ marginTop: 4 }}>
+                      任务执行到这些能力时会挂起为「待审批」，在任务中心批准后从断点续跑；批准只对本任务生效一次。
+                    </span>
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+                    <label className="field inline">
+                      <span className="field-label">高危风险评估转人工</span>
+                      <select className="input" value={form.risk_pause_level} onChange={(e) => setForm({ ...form, risk_pause_level: e.target.value })}>
+                        <option value="none">不转人工（high 直接拦截）</option>
+                        <option value="high">high 转人工审批（挂起待批）</option>
+                      </select>
+                    </label>
+                    <label className="field inline">
+                      <span className="field-label">审批超时（小时，超时自动驳回；留空 = 72）</span>
+                      <input className="input" type="number" min="1" max="720" value={form.approval_timeout_hours} onChange={(e) => setForm({ ...form, approval_timeout_hours: e.target.value })} />
+                    </label>
+                  </div>
                 </section>
 
                 {form.role === 'root' && (

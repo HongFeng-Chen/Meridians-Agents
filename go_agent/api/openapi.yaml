@@ -381,6 +381,31 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/agentfactory.v1.AgentTask'
+    /api/agentfactory/tasks/{id}/approval:
+        post:
+            tags:
+                - AgentFactoryService
+            description: "ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，\r\n reject 直接终态失败。审批结论落任务事件流。"
+            operationId: AgentFactoryService_ApproveTask
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/agentfactory.v1.ApproveTaskRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/agentfactory.v1.AgentTask'
     /api/agentfactory/tasks/{id}/cancel:
         post:
             tags:
@@ -3742,6 +3767,18 @@ components:
                 auto_compose:
                     type: boolean
                     description: 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
+                require_approval:
+                    type: array
+                    items:
+                        type: string
+                    description: 需人工审批的能力前缀（支持尾部 * 通配，如 mcp:payment_*）：命中即暂停等审批
+                approval_timeout_hours:
+                    type: integer
+                    description: 审批超时（小时），超时自动驳回；0 = 默认 72h
+                    format: int32
+                risk_pause_level:
+                    type: string
+                    description: 风险评估转人工阈值：none（默认）| high（高危不拦截而转人工审批）
             description: AgentDef Agent 的可配置定义（数据，不是代码）
         agentfactory.v1.AgentDefHit:
             type: object
@@ -3847,6 +3884,18 @@ components:
                 auto_compose:
                     type: boolean
                     description: 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
+                require_approval:
+                    type: array
+                    items:
+                        type: string
+                    description: 需人工审批的能力前缀（支持尾部 * 通配）
+                approval_timeout_hours:
+                    type: integer
+                    description: 审批超时（小时），0 = 默认 72h
+                    format: int32
+                risk_pause_level:
+                    type: string
+                    description: 风险评估转人工阈值：none | high
             description: AgentInput 创建/更新定义的入参
         agentfactory.v1.AgentTask:
             type: object
@@ -3864,7 +3913,7 @@ components:
                     type: string
                 status:
                     type: string
-                    description: pending | running | succeeded | failed | canceled
+                    description: pending | running | paused（待审批）| succeeded | failed | canceled
                 progress:
                     type: integer
                     description: 0~100
@@ -3896,6 +3945,20 @@ components:
                     type: string
                     description: 归属用户（隔离键）：任务中心只返回当前用户的任务
             description: AgentTask 异步任务（parent_task_id 形成多 Agent 协作链路树）
+        agentfactory.v1.ApproveTaskRequest:
+            required:
+                - id
+                - decision
+            type: object
+            properties:
+                id:
+                    type: string
+                decision:
+                    type: string
+                    description: approve（批准，续跑）| reject（驳回，终态失败）
+                note:
+                    type: string
+                    description: 审批备注（驳回原因 / 批准说明）
         agentfactory.v1.CancelTaskRequest:
             required:
                 - id
@@ -4022,7 +4085,7 @@ components:
                     format: int32
                 type:
                     type: string
-                    description: status | thought | tool_call | tool_result | delegate | final | error
+                    description: status | thought | tool_call | tool_result | delegate | plan | node | orchestrate | paused | approval | resume | final | error
                 payload:
                     type: string
                     description: JSON 字符串

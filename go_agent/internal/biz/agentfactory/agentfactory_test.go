@@ -26,6 +26,8 @@ type fakeRepo struct {
 	nextTsk uint64
 	events  []TaskEvent
 	nextEvt uint64
+	// checkpoints 步骤级快照（O2/O3 测试断言用）
+	checkpoints []TaskCheckpoint
 }
 
 func newFakeRepo() *fakeRepo {
@@ -231,6 +233,68 @@ func (r *fakeRepo) CountTasksByStatus(_ context.Context) (map[string]int64, erro
 }
 
 func (r *fakeRepo) RequeueInterrupted(_ context.Context) ([]uint64, error) { return nil, nil }
+
+// —— checkpoint（O2/O3 测试用：内存保存全部快照，支持恢复与续跑断言）——
+
+func (r *fakeRepo) SaveCheckpoint(_ context.Context, cp *TaskCheckpoint) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp.ID = uint64(len(r.checkpoints) + 1)
+	r.checkpoints = append(r.checkpoints, *cp)
+	return nil
+}
+
+func (r *fakeRepo) LatestCheckpoint(_ context.Context, taskID uint64) (*TaskCheckpoint, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var latest *TaskCheckpoint
+	for i := range r.checkpoints {
+		if r.checkpoints[i].TaskID == taskID {
+			latest = &r.checkpoints[i]
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	cp := *latest
+	return &cp, nil
+}
+
+func (r *fakeRepo) TrimCheckpoints(_ context.Context, taskID uint64, keep int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if keep <= 0 {
+		kept := r.checkpoints[:0]
+		for _, c := range r.checkpoints {
+			if c.TaskID != taskID {
+				kept = append(kept, c)
+			}
+		}
+		r.checkpoints = kept
+		return nil
+	}
+	// 按 ID 保留最近 keep 条（测试数据量小，直接线性数）
+	counts := map[uint64]int{}
+	for _, c := range r.checkpoints {
+		if c.TaskID == taskID {
+			counts[taskID]++
+		}
+	}
+	drop := counts[taskID] - keep
+	if drop <= 0 {
+		return nil
+	}
+	kept := r.checkpoints[:0]
+	for _, c := range r.checkpoints {
+		if c.TaskID == taskID && drop > 0 {
+			drop--
+			continue
+		}
+		kept = append(kept, c)
+	}
+	r.checkpoints = kept
+	return nil
+}
 
 func (r *fakeRepo) FinishTask(_ context.Context, t *Task) error {
 	r.mu.Lock()

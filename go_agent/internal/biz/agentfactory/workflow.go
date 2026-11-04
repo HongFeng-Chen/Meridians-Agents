@@ -25,19 +25,24 @@ type memberResult struct {
 	Verdict  *supervisionVerdict
 }
 
-// runWorkflow 串行 / 并行编排
-func (u *UseCase) runWorkflow(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
+// runWorkflow 串行 / 并行编排（每个成员完成后落 checkpoint：
+// 续跑时已有产出的成员直接复用，只补跑缺失的，见 RunState.MemberOut）
+func (u *UseCase) runWorkflow(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
 	members := def.Members
 	if len(members) == 0 {
 		return nil, fmt.Errorf("%w: 编排方式为 %s 但没有配置协作成员", ErrInvalidDef, def.Orchestration)
 	}
+	if st == nil {
+		st = newState(input)
+	}
+	rec.st = st
 	sup := u.loadSupervisor(ctx, def.SupervisorKey)
 
 	var results []memberResult
 	if def.Orchestration == OrchestrationParallel {
-		results = u.runMembersParallel(ctx, def, input, rec)
+		results = u.runMembersParallel(ctx, def, input, rec, st)
 	} else {
-		results = u.runMembersSerial(ctx, def, input, rec)
+		results = u.runMembersSerial(ctx, def, input, rec, st)
 	}
 
 	// 监察：按监察范围逐个审查（LLM 调用串行，避免并发打爆配额）
@@ -59,17 +64,24 @@ func (u *UseCase) runWorkflow(ctx context.Context, def *AgentDef, input string, 
 	return &RunResult{Answer: answer, Turns: len(results) + 1}, nil
 }
 
-// runMembersSerial 串行执行：后一个成员可见前一个的结果
-func (u *UseCase) runMembersSerial(ctx context.Context, def *AgentDef, input string, rec *Recorder) []memberResult {
+// runMembersSerial 串行执行：后一个成员可见前一个的结果。
+// 续跑：MemberOut 里已有产出的成员直接复用（上游产出据此重建）。
+func (u *UseCase) runMembersSerial(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) []memberResult {
 	results := make([]memberResult, 0, len(def.Members))
 	var prev strings.Builder
-	for _, key := range def.Members {
+	for i, key := range def.Members {
+		ans, ok := st.MemberOut[key]
+		if ok {
+			results = append(results, memberResult{AgentKey: key, Answer: ans})
+			fmt.Fprintf(&prev, "\n### %s\n%s\n", key, truncateRunes(ans, 1500))
+			continue
+		}
 		memberInput := input
 		if prev.Len() > 0 {
 			memberInput = fmt.Sprintf("%s\n\n## 上游成员产出（供参考）\n%s", input, truncateRunes(prev.String(), 3000))
 		}
-		child, ans, err := u.runChildTask(ctx, rec.task, key, memberInput, rec)
-		r := memberResult{AgentKey: key, Answer: ans, Err: err}
+		child, ans2, err := u.runChildTask(ctx, rec.task, key, memberInput, rec)
+		r := memberResult{AgentKey: key, Answer: ans2, Err: err}
 		if child != nil {
 			r.TaskID = child.ID
 		}
@@ -77,13 +89,16 @@ func (u *UseCase) runMembersSerial(ctx context.Context, def *AgentDef, input str
 		if err != nil {
 			continue // 单个成员失败不阻断后续成员，最终汇总时会带上错误
 		}
-		fmt.Fprintf(&prev, "\n### %s\n%s\n", key, truncateRunes(ans, 1500))
+		st.MemberOut[key] = ans2
+		rec.checkpoint(fmt.Sprintf(`{"kind":"wave","index":%d}`, i))
+		fmt.Fprintf(&prev, "\n### %s\n%s\n", key, truncateRunes(ans2, 1500))
 	}
 	return results
 }
 
-// runMembersParallel 并发执行：先逐个建子任务（链路清晰），再并发跑
-func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input string, rec *Recorder) []memberResult {
+// runMembersParallel 并发执行：先逐个建子任务（链路清晰），再并发跑。
+// 续跑：MemberOut 里已有产出的成员直接复用，只建并补跑缺失的。
+func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) []memberResult {
 	type job struct {
 		key  string
 		task *Task
@@ -93,6 +108,10 @@ func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input s
 	results := make([]memberResult, len(def.Members))
 
 	for i, key := range def.Members {
+		if ans, ok := st.MemberOut[key]; ok {
+			results[i] = memberResult{AgentKey: key, Answer: ans}
+			continue
+		}
 		child, memberDef, err := u.createChildTask(ctx, rec.task, key, input, rec)
 		if err != nil {
 			results[i] = memberResult{AgentKey: key, Err: err}
@@ -118,6 +137,13 @@ func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input s
 		}(j)
 	}
 	wg.Wait()
+	// 产出回写状态（并发 goroutine 里不直接写 map，统一在 Wait 后串行落）
+	for i := range results {
+		if results[i].Err == nil && results[i].Answer != "" {
+			st.MemberOut[results[i].AgentKey] = results[i].Answer
+		}
+	}
+	rec.checkpoint(`{"kind":"wave"}`)
 	return results
 }
 

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -42,7 +43,8 @@ type RunResult struct {
 	BudgetExceeded bool `json:"budget_exceeded,omitempty"`
 }
 
-// Recorder 任务 trace 记录器：事件落 MySQL，任务快照刷 Redis（实时状态轮询）
+// Recorder 任务 trace 记录器：事件落 MySQL，任务快照刷 Redis（实时状态轮询）。
+// 同时持有当前 RunState：checkpoint（O2）在步骤边界序列化落库。
 type Recorder struct {
 	u    *UseCase
 	task *Task
@@ -51,6 +53,13 @@ type Recorder struct {
 	// silentFinal 为真时丢弃中间循环的 final 事件：
 	// reflexion 的草稿、plan_execute 的单步产出都不是任务的最终答案
 	silentFinal bool
+
+	// st 当前执行状态（O1）：由 runGraph / runToolLoop 装配，checkpoint 时序列化
+	st *RunState
+	// cpSeq checkpoint 序号（恢复时从已有序号继续递增；排序以表自增 ID 为准）
+	cpSeq int
+	// mu 保护 task.Progress 等共享字段（波次并发时多个派生 Recorder 写同一任务）
+	mu sync.Mutex
 }
 
 func (r *Recorder) event(typ string, turn int, payload any) {
@@ -66,6 +75,31 @@ func (r *Recorder) event(typ string, turn int, payload any) {
 	})
 }
 
+// derive 派生 Recorder（波次并发的每个分支一个）：共享任务与定义，
+// 轮次计数从当前位置延续，事件照常落同一任务；避免并发读写同一 turn 计数。
+func (r *Recorder) derive() *Recorder {
+	return &Recorder{u: r.u, task: r.task, def: r.def, turn: r.turn, silentFinal: r.silentFinal, st: r.st, cpSeq: r.cpSeq}
+}
+
+// checkpoint 在步骤边界落一份 RunState 快照（O2）。
+// 写失败只告警不阻断：checkpoint 是优化，不是正确性依赖（大不了从头重跑）。
+func (r *Recorder) checkpoint(cursor string) {
+	if r.st == nil {
+		return
+	}
+	r.st.Turn = r.turn
+	r.st.Cursor = cursor
+	r.cpSeq++
+	_ = r.u.repo.SaveCheckpoint(r.u.baseCtx, &TaskCheckpoint{
+		TaskID:    r.task.ID,
+		Seq:       r.cpSeq,
+		GraphType: r.def.GraphType,
+		Cursor:    cursor,
+		State:     encodeState(r.st),
+		CreatedAt: time.Now(),
+	})
+}
+
 func (r *Recorder) status(from, to string) {
 	r.event(EventStatus, r.turn, map[string]any{"from": from, "to": to})
 }
@@ -75,7 +109,7 @@ func (r *Recorder) snapshot() {
 	r.u.cache.SetTask(r.u.baseCtx, r.task)
 }
 
-// setProgress 更新进度并落快照
+// setProgress 更新进度并落快照（并发安全：波次分支会同时推进同一任务进度）
 func (r *Recorder) setProgress(pct int) {
 	if pct < 0 {
 		pct = 0
@@ -83,8 +117,10 @@ func (r *Recorder) setProgress(pct int) {
 	if pct > 99 {
 		pct = 99
 	}
+	r.mu.Lock()
 	r.task.Progress = pct
 	r.u.repo.SaveTask(r.u.baseCtx, r.task)
+	r.mu.Unlock()
 	r.snapshot()
 }
 
@@ -250,21 +286,25 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 	if composed := u.ensureOrchestration(ctx, def, input, rec); composed != nil && composed != def {
 		def = composed
 	}
+	// 恢复（O2）：读最新 checkpoint 反序列化 RunState。无 checkpoint → nil（全新执行）。
+	// 命中时轮次计数与 checkpoint 序号延续，落 resume 事件；审批批准过的能力保留放行。
+	st := u.loadRunState(ctx, rec, input)
 	// 编排图优先：flow 里有节点时按 DAG 执行（串并行可混排 + 条件分支）
+	// 注：DAG 图暂不续跑（节点子任务各自有 checkpoint，子 Agent 级恢复已生效）
 	if g := ParseFlowGraph(def.Flow); g != nil && len(g.Nodes) > 1 {
 		return u.runFlowGraph(ctx, def, g, input, rec)
 	}
 	// 显式编排（串行/并行）：成员任务 + 汇总 + 监察
 	if (def.Orchestration == OrchestrationSerial || def.Orchestration == OrchestrationParallel) && len(def.Members) > 0 {
-		return u.runWorkflow(ctx, def, input, rec)
+		return u.runWorkflow(ctx, def, input, rec, st)
 	}
 	switch def.GraphType {
 	case GraphSimple:
 		return u.runSimple(ctx, def, input, rec)
 	case GraphReact, "", GraphAuto: // auto 已在 ensureOrchestration 里解析成具体图，这里只是兜底
-		return u.runReact(ctx, def, input, rec)
+		return u.runReact(ctx, def, input, rec, st)
 	case GraphPlanExecute:
-		return u.runPlanExecute(ctx, def, input, rec)
+		return u.runPlanExecute(ctx, def, input, rec, st)
 	case GraphReflexion:
 		return u.runReflexion(ctx, def, input, rec)
 	case GraphRouter:
@@ -276,16 +316,37 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 	case GraphStateMachine:
 		return u.runStateMachine(ctx, def, input, rec)
 	case GraphOrchestrator:
-		return u.runOrchestrator(ctx, def, input, rec, false)
+		return u.runOrchestrator(ctx, def, input, rec, false, st)
 	case GraphHierarchical:
-		return u.runOrchestrator(ctx, def, input, rec, true)
+		return u.runOrchestrator(ctx, def, input, rec, true, st)
 	case GraphDebate:
-		return u.runDebate(ctx, def, input, rec)
+		return u.runDebate(ctx, def, input, rec, st)
 	case GraphBlackboard:
-		return u.runBlackboard(ctx, def, input, rec)
+		return u.runBlackboard(ctx, def, input, rec, st)
 	default:
 		return nil, fmt.Errorf("%w: 未知执行图 %q", ErrInvalidDef, def.GraphType)
 	}
+}
+
+// loadRunState 读最新 checkpoint 还原执行状态；无 checkpoint / 状态损坏返回 nil。
+// 输入不一致（防御：重试不应改输入，但万一）也按无状态处理——从头执行。
+func (u *UseCase) loadRunState(ctx context.Context, rec *Recorder, input string) *RunState {
+	cp, err := u.repo.LatestCheckpoint(ctx, rec.task.ID)
+	if err != nil || cp == nil || cp.State == "" {
+		return nil
+	}
+	st := decodeState(cp.State)
+	if st == nil {
+		return nil
+	}
+	if st.Goal != "" && st.Goal != input {
+		return nil
+	}
+	rec.turn = st.Turn
+	rec.cpSeq = cp.Seq
+	rec.st = st
+	rec.event(EventResume, rec.turn, map[string]any{"seq": cp.Seq, "cursor": cp.Cursor})
+	return st
 }
 
 // graphPurpose LLM 调用记录的用途标记（等于执行图名，便于按架构统计模型开销）
@@ -342,12 +403,12 @@ func (u *UseCase) chatWithOpts(ctx context.Context, def *AgentDef, system, user 
 }
 
 // runReact ReAct 循环
-func (u *UseCase) runReact(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
+func (u *UseCase) runReact(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
 	system, err := u.buildSystemPrompt(ctx, def)
 	if err != nil {
 		return nil, err
 	}
-	return u.runToolLoop(ctx, def, system, "## 任务\n"+input+"\n\n## 执行记录\n", u.turnBudget(def, 12), rec)
+	return u.runToolLoop(ctx, def, system, "## 任务\n"+input+"\n\n## 执行记录\n", u.turnBudget(def, 12), rec, st)
 }
 
 // turnBudget 轮数预算：未配置时用兜底值
@@ -371,37 +432,49 @@ const (
 	transcriptBudget = 120_000
 )
 
-func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed string, maxTurns int, rec *Recorder) (*RunResult, error) {
+func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed string, maxTurns int, rec *Recorder, st *RunState) (*RunResult, error) {
 	if maxTurns <= 0 {
 		maxTurns = 8
 	}
-	var digest []string // 早期轮次的一句话摘要
-	var recent []string // 最近 keepRecentTurns 轮的全文段
-	seen := map[string]string{}
-	promptChars := utf8.RuneCountInString(system) + utf8.RuneCountInString(seed)
+	if st == nil {
+		st = &RunState{Seen: map[string]string{}, Approved: map[string]bool{}}
+	}
+	rec.st = st
+	// promptChars 每轮现算：与逐轮累加等价（累加的就是 system+seed+各段），
+	// 且恢复（checkpoint 续跑）时无需重建累计值
+	promptChars := func() int {
+		n := utf8.RuneCountInString(system) + utf8.RuneCountInString(seed)
+		for _, s := range st.Digest {
+			n += utf8.RuneCountInString(s)
+		}
+		for _, s := range st.Recent {
+			n += utf8.RuneCountInString(s)
+		}
+		return n
+	}
 
 	progressStep := 90 / maxTurns
-	invalidCount := 0 // 模型输出不合规的连续次数，超过 2 次直接失败
+	gated := gatedDef(def) // 开了人工审批的 Agent：每轮落 checkpoint，支持挂起后续跑
 
 	call := func(user string) (string, error) {
-		promptChars += utf8.RuneCountInString(user)
 		return u.chatWithOpts(ctx, def, system, user, 0.3, true)
 	}
 
-	for turn := 1; turn <= maxTurns; turn++ {
+	for turn := st.LoopTurn + 1; turn <= maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("执行被取消: %w", err)
 		}
 		// 字符预算熔断：transcript 过长说明任务发散，强制收敛而不是继续烧 token
-		if promptChars > transcriptBudget {
+		if pc := promptChars(); pc > transcriptBudget {
 			rec.event(EventError, rec.turn+1, map[string]any{"message": "上下文长度超预算，强制收敛"})
 			break
 		}
 		rec.turn++
+		st.LoopTurn = turn
 		t := rec.turn
 		rec.setProgress(5 + turn*progressStep)
 
-		output, err := call(composeTranscript(seed, digest, recent))
+		output, err := call(composeTranscript(seed, st.Digest, st.Recent))
 		if err != nil {
 			// 预算耗尽不是故障：把已有中间结论收敛成答案返回，任务算成功
 			// （否则用户拿到的是一条「失败」，而钱已经花掉了）
@@ -412,7 +485,7 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 					"budget_exceeded": true,
 					"budget":          snap,
 				})
-				return &RunResult{Answer: convergeAnswer(digest, recent), Turns: turn, BudgetExceeded: true}, nil
+				return &RunResult{Answer: convergeAnswer(st.Digest, st.Recent), Turns: turn, BudgetExceeded: true}, nil
 			}
 			return nil, fmt.Errorf("第 %d 轮 LLM 调用失败: %w", turn, err)
 		}
@@ -421,14 +494,14 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 			// 模型输出不合规：喂回错误让它自纠，连续三次直接失败
 			// （已开 JSON 模式，正常情况下极少触发；仅兜底老网关降级后的场景）
 			rec.event(EventThought, t, map[string]any{"thought": truncateRunes(output, 500), "parse_error": perr.Error()})
-			recent = append(recent, fmt.Sprintf("\n[第 %d 轮] 输出不合规：%v。请严格按输出协议重新输出 JSON。\n", turn, perr))
-			invalidCount++
-			if invalidCount >= 3 {
-				return nil, fmt.Errorf("模型连续 %d 轮输出不合规，终止执行", invalidCount)
+			st.Recent = append(st.Recent, fmt.Sprintf("\n[第 %d 轮] 输出不合规：%v。请严格按输出协议重新输出 JSON。\n", turn, perr))
+			st.InvalidCount++
+			if st.InvalidCount >= 3 {
+				return nil, fmt.Errorf("模型连续 %d 轮输出不合规，终止执行", st.InvalidCount)
 			}
 			continue
 		}
-		invalidCount = 0
+		st.InvalidCount = 0
 		if act.Thought != "" {
 			rec.event(EventThought, t, map[string]any{"thought": act.Thought})
 		}
@@ -442,7 +515,7 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 		// 行动
 		name := strings.TrimSpace(act.Action.Name)
 		if name == "" {
-			recent = append(recent, "\n[本轮] 未指定 action.name，请输出 final 或合法 action。\n")
+			st.Recent = append(st.Recent, "\n[本轮] 未指定 action.name，请输出 final 或合法 action。\n")
 			continue
 		}
 		args := act.Action.Args
@@ -451,34 +524,51 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 		}
 		rec.event(EventToolCall, t, map[string]any{"name": name, "args": args})
 
+		// 人工审批闸门（O3）：命中 require_approval 且未批准 → 落 checkpoint + paused 事件，
+		// 以哨兵错误上抛（executeTaskNow 置 paused，批准后续跑）
+		if needApproval(def, st, name) {
+			st.Cursor = approvalCursor(name)
+			rec.checkpoint(st.Cursor)
+			rec.event(EventPaused, t, map[string]any{"ability": name, "args": args, "reason": "require_approval"})
+			return nil, ErrApprovalNeeded
+		}
+
 		// 同任务内去重：完全相同的能力 + 参数直接复用结果，提示模型别重复调用
 		var section string
 		key := name + "|" + argsKey(args)
-		if prevTurn, ok := seen[key]; ok {
+		if prevTurn, ok := st.Seen[key]; ok {
 			rec.event(EventToolResult, t, map[string]any{"name": name, "result": "(与先前轮次相同调用，已复用)", "is_error": false})
 			section = fmt.Sprintf("\n[第 %d 轮] 调用 %s\n观察: 与第 %s 轮的调用参数完全相同，结果不变。不要重复相同调用，请基于已有信息输出 final 或换参数。\n", turn, name, prevTurn)
 		} else {
 			observation, callErr := u.InvokeDispatch(ctx, name, args, rec)
 			if callErr != nil {
+				if errors.Is(callErr, ErrApprovalNeeded) {
+					// 审批挂起是硬状态：不能当观察结果喂回模型，原样上抛
+					return nil, callErr
+				}
 				observation = "[能力调用失败] " + callErr.Error()
 			}
 			rec.event(EventToolResult, t, map[string]any{"name": name, "result": truncateRunes(observation, 4000), "is_error": callErr != nil})
-			seen[key] = fmt.Sprintf("第 %d 轮", turn)
+			st.Seen[key] = fmt.Sprintf("第 %d 轮", turn)
 			// 结构化标记包裹观察：模型定位信息更快，跨轮引用更准确
 			section = fmt.Sprintf("\n[第 %d 轮] 调用 %s\n<observation tool=%q turn=%d>\n%s\n</observation>\n", turn, name, name, turn, truncateRunes(observation, 4000))
 		}
-		recent = append(recent, section)
+		st.Recent = append(st.Recent, section)
 		// 滚动摘要：只保留最近 keepRecentTurns 轮全文
-		if len(recent) > keepRecentTurns {
-			digest = append(digest, summarizeSection(recent[0]))
-			recent = recent[1:]
+		if len(st.Recent) > keepRecentTurns {
+			st.Digest = append(st.Digest, summarizeSection(st.Recent[0]))
+			st.Recent = st.Recent[1:]
+		}
+		// 开了审批闸门的 Agent：每轮边界落 checkpoint（挂起/崩溃都可从本轮之后恢复）
+		if gated {
+			rec.checkpoint(fmt.Sprintf(`{"kind":"loop","turn":%d}`, turn))
 		}
 	}
 
 	// 轮数耗尽（或预算熔断）：强制让模型收敛一次
 	rec.turn++
 	t := rec.turn
-	transcript := composeTranscript(seed, digest, recent) + "\n已达最大轮数，请立即基于以上信息输出 final。\n"
+	transcript := composeTranscript(seed, st.Digest, st.Recent) + "\n已达最大轮数，请立即基于以上信息输出 final。\n"
 	output, err := call(transcript)
 	if err != nil {
 		return nil, fmt.Errorf("收敛轮 LLM 调用失败: %w", err)

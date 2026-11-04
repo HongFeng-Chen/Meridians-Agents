@@ -272,6 +272,17 @@ export const getTask = (input = {}, options) =>
   call('AgentFactoryService_GetTask', input, options);
 
 /**
+ * ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+ *
+ * POST /api/agentfactory/tasks/{id}/approval
+ * @param {ApproveTaskRequest} input 路径参数：id
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<AgentTask>}
+ */
+export const approveTask = (input = {}, options) =>
+  call('AgentFactoryService_ApproveTask', input, options);
+
+/**
  * CancelTask 取消任务（pending 直接置 canceled；running 中断执行）。
  *
  * POST /api/agentfactory/tasks/{id}/cancel
@@ -1684,6 +1695,7 @@ export const agentfactory = {
   submitTask,
   getTaskStats,
   getTask,
+  approveTask,
   cancelTask,
   listTaskEvents,
   retryTask,

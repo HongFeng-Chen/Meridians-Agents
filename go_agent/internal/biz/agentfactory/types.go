@@ -148,6 +148,10 @@ const ScopeAll = "*"
 const (
 	TaskPending   = "pending"
 	TaskRunning   = "running"
+	// TaskPaused 挂起：命中 require_approval / 高危风险转人工，等待审批。
+	// 审批通过（approve）→ 置回 pending 从 checkpoint 续跑；驳回（reject）→ failed。
+	// 挂起任务留在任务池（不归档），RequeueInterrupted 不会误捞（只捞 running）。
+	TaskPaused    = "paused"
 	TaskSucceeded = "succeeded"
 	TaskFailed    = "failed"
 	TaskCanceled  = "canceled"
@@ -156,7 +160,7 @@ const (
 // ValidTaskStatus 判断任务状态是否合法
 func ValidTaskStatus(s string) bool {
 	switch s {
-	case TaskPending, TaskRunning, TaskSucceeded, TaskFailed, TaskCanceled:
+	case TaskPending, TaskRunning, TaskPaused, TaskSucceeded, TaskFailed, TaskCanceled:
 		return true
 	}
 	return false
@@ -189,6 +193,12 @@ const (
 	EventOrchestrate = "orchestrate" // 自动编排：LLM 选定架构与成员，payload: {"graph_type":"","reason":"","members":[...],"created":[...],"reused":[...]}
 	EventFinal      = "final"       // 最终答案，payload: {"answer":""}
 	EventError      = "error"       // 错误，payload: {"message":""}
+	// EventPaused 人工审批挂起：payload: {"ability":"","args":{},"reason":""}
+	EventPaused = "paused"
+	// EventResume 从 checkpoint 续跑：payload: {"seq":n,"cursor":""}
+	EventResume = "resume"
+	// EventApproval 审批结论：payload: {"decision":"approve|reject","by":"","note":""}
+	EventApproval = "approval"
 )
 
 // —— 领域错误 ——
@@ -208,6 +218,9 @@ var (
 	ErrNoChatter       = fmt.Errorf("没有可用的 LLM 数据源")
 	ErrCapabilityUnset = fmt.Errorf("能力不存在或已停用")
 	ErrSandboxDeny     = fmt.Errorf("沙箱 Agent 不允许委派其他 Agent")
+	// ErrApprovalNeeded 哨兵错误：能力调用命中人工审批闸门，任务转入 paused。
+	// 上层（worker / 父任务）必须用 errors.Is 识别，不得当作普通失败处理。
+	ErrApprovalNeeded = fmt.Errorf("等待人工审批")
 )
 
 // —— Agent 定义（DO） ——
@@ -249,6 +262,13 @@ type AgentDef struct {
 	// RiskAgentKey 风险评估 Agent（role=risk 的 agent_key）：
 	// 仅在该 Agent 调用 MCP 工具前触发，空 = 不做风险评估
 	RiskAgentKey string `json:"risk_agent_key"`
+	// RequireApproval 需人工审批的能力前缀（如 "mcp:mail_send"、"mcp:payment_*"）：
+	// 命中的能力调用前任务暂停（paused），批准后从 checkpoint 续跑；空 = 不需要审批
+	RequireApproval []string `json:"require_approval"`
+	// ApprovalTimeoutHours 审批超时（小时），超时自动驳回；0 = 用默认 72h
+	ApprovalTimeoutHours int `json:"approval_timeout_hours"`
+	// RiskPauseLevel 风险评估转人工阈值：none（默认，沿用拦截/放行）| high（高危转人工审批）
+	RiskPauseLevel string `json:"risk_pause_level"`
 	// AutoRun 是否后台自动运行（仅 root 生效，需配合 CronExpr）
 	AutoRun bool `json:"auto_run"`
 	// CronExpr 5 段 cron 表达式（分 时 日 月 周）
@@ -334,6 +354,12 @@ type AgentInput struct {
 	SupervisorKey    string   `json:"supervisor_key"`
 	SupervisionScope []string `json:"supervision_scope"`
 	RiskAgentKey     string   `json:"risk_agent_key"`
+	// RequireApproval 需人工审批的能力前缀（支持尾部 * 通配）
+	RequireApproval []string `json:"require_approval"`
+	// ApprovalTimeoutHours 审批超时（小时），0 = 默认 72h
+	ApprovalTimeoutHours int `json:"approval_timeout_hours"`
+	// RiskPauseLevel 风险转人工阈值：none | high
+	RiskPauseLevel string `json:"risk_pause_level"`
 
 	// 后台自动运行
 	AutoRun   bool   `json:"auto_run"`
@@ -449,6 +475,21 @@ func (in *AgentInput) Normalize(defaultMaxTurns int) error {
 	}
 	if in.RiskAgentKey != "" && in.RiskAgentKey == in.AgentKey {
 		return fmt.Errorf("%w: 风险评估 Agent 不能是自己", ErrInvalidDef)
+	}
+
+	// —— 人工审批（O3）——
+	in.RequireApproval = cleanStrings(in.RequireApproval)
+	if in.ApprovalTimeoutHours < 0 {
+		in.ApprovalTimeoutHours = 0
+	}
+	if in.ApprovalTimeoutHours > 24*30 {
+		return fmt.Errorf("%w: 审批超时不能超过 720 小时", ErrInvalidDef)
+	}
+	in.RiskPauseLevel = strings.ToLower(strings.TrimSpace(in.RiskPauseLevel))
+	switch in.RiskPauseLevel {
+	case "", "none", "high":
+	default:
+		return fmt.Errorf("%w: risk_pause_level 仅支持 none / high", ErrInvalidDef)
 	}
 
 	// —— 后台自动运行（cron）——
@@ -626,6 +667,25 @@ type TaskEvent struct {
 	Type   string `json:"type"`
 	// Payload JSON 字符串
 	Payload   string    `json:"payload"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskCheckpoint 步骤级快照：每个"步骤边界"（计划步骤 / 波次 / 辩论轮次 / 工具循环轮 /
+// 审批挂起点）写一条，任务恢复时取 seq 最大的一条回放 RunState。
+// 只有多步图（plan_execute / orchestrator / workflow / debate / blackboard）与
+// 开了人工审批的 Agent 才写，react 等单循环图不写（重放代价低于落盘代价）。
+type TaskCheckpoint struct {
+	ID     uint64 `json:"id"`
+	TaskID uint64 `json:"task_id"`
+	// Seq 任务内递增序号（恢复时取最大）
+	Seq       int    `json:"seq"`
+	GraphType string `json:"graph_type"`
+	// Cursor 恢复点描述（JSON）：{"kind":"plan_step|wave|round|loop|approval","index":n,"ability":""}
+	Cursor string `json:"cursor"`
+	// State RunState JSON（执行状态即真相）
+	State string `json:"state"`
+	// Tokens 落盘时已消耗 token（记账观测用）
+	Tokens    int64     `json:"tokens"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

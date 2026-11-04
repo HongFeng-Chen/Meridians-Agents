@@ -36,6 +36,7 @@ func NewAgentFactoryRepo(c *conf.Data, d *db.Data) (agentfactory.Repo, error) {
 			&models.AgentTaskPO{},
 			&models.AgentTaskHistoryPO{},
 			&models.AgentTaskEventPO{},
+			&models.AgentTaskCheckpointPO{},
 		); err != nil {
 			return nil, fmt.Errorf("迁移 agentfactory 表: %w", err)
 		}
@@ -147,6 +148,9 @@ func (r *AgentFactoryRepo) UpdateDef(ctx context.Context, def *agentfactory.Agen
 			"supervisor_key":    row.SupervisorKey,
 			"supervision_scope": row.SupervisionScope,
 			"risk_agent_key":    row.RiskAgentKey,
+			"require_approval":  row.RequireApproval,
+			"approval_timeout_hours": row.ApprovalTimeoutHours,
+			"risk_pause_level":  row.RiskPauseLevel,
 			"auto_run":          row.AutoRun,
 			"cron_expr":         row.CronExpr,
 			"cron_input":        row.CronInput,
@@ -618,6 +622,9 @@ func defToBiz(row models.AgentDefPO) agentfactory.AgentDef {
 		SupervisorKey:    row.SupervisorKey,
 		SupervisionScope: decodeStrings(row.SupervisionScope),
 		RiskAgentKey:     row.RiskAgentKey,
+		RequireApproval:  decodeStrings(row.RequireApproval),
+		ApprovalTimeoutHours: row.ApprovalTimeoutHours,
+		RiskPauseLevel:   row.RiskPauseLevel,
 		AutoRun:          row.AutoRun,
 		CronExpr:         row.CronExpr,
 		CronInput:        row.CronInput,
@@ -654,6 +661,9 @@ func defFromBiz(d agentfactory.AgentDef) models.AgentDefPO {
 		SupervisorKey:    d.SupervisorKey,
 		SupervisionScope: encodeStrings(d.SupervisionScope),
 		RiskAgentKey:     d.RiskAgentKey,
+		RequireApproval:  encodeStrings(d.RequireApproval),
+		ApprovalTimeoutHours: d.ApprovalTimeoutHours,
+		RiskPauseLevel:   orDefault(d.RiskPauseLevel, "none"),
 		AutoRun:          d.AutoRun,
 		CronExpr:         d.CronExpr,
 		CronInput:        d.CronInput,
@@ -772,4 +782,75 @@ func nilIfZero(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// orDefault 空串兜底（domain → PO 的枚举字段默认值）
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+// ———— checkpoint（步骤级快照，O2） ————
+
+func (r *AgentFactoryRepo) SaveCheckpoint(ctx context.Context, cp *agentfactory.TaskCheckpoint) error {
+	row := models.AgentTaskCheckpointPO{
+		TaskID:    cp.TaskID,
+		Seq:       cp.Seq,
+		GraphType: cp.GraphType,
+		Cursor:    cp.Cursor,
+		State:     cp.State,
+		Tokens:    cp.Tokens,
+		CreatedAt: time.Now(),
+	}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return err
+	}
+	cp.ID = row.ID
+	return nil
+}
+
+func (r *AgentFactoryRepo) LatestCheckpoint(ctx context.Context, taskID uint64) (*agentfactory.TaskCheckpoint, error) {
+	var row models.AgentTaskCheckpointPO
+	err := r.db.WithContext(ctx).
+		Where("task_id = ?", taskID).
+		Order("id DESC").First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &agentfactory.TaskCheckpoint{
+		ID:        row.ID,
+		TaskID:    row.TaskID,
+		Seq:       row.Seq,
+		GraphType: row.GraphType,
+		Cursor:    row.Cursor,
+		State:     row.State,
+		Tokens:    row.Tokens,
+		CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+func (r *AgentFactoryRepo) TrimCheckpoints(ctx context.Context, taskID uint64, keep int) error {
+	// 只保留最近 keep 条（按自增 ID）；keep=0 全删（重试/驳回清空）
+	var keepIDs []uint64
+	if keep > 0 {
+		if err := r.db.WithContext(ctx).Model(&models.AgentTaskCheckpointPO{}).
+			Where("task_id = ?", taskID).
+			Order("id DESC").Limit(keep).
+			Pluck("id", &keepIDs).Error; err != nil {
+			return err
+		}
+	}
+	del := r.db.WithContext(ctx).Where("task_id = ?", taskID)
+	if len(keepIDs) > 0 {
+		del = del.Where("id NOT IN ?", keepIDs)
+	}
+	if err := del.Delete(&models.AgentTaskCheckpointPO{}).Error; err != nil {
+		return err
+	}
+	return nil
 }

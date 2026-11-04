@@ -76,6 +76,12 @@ message AgentDef {
   string llm_source = 30 [json_name = "llm_source"];
   // 自动装配：任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent（graph_type=auto 时恒生效）
   bool auto_compose = 31 [json_name = "auto_compose"];
+  // 需人工审批的能力前缀（支持尾部 * 通配，如 mcp:payment_*）：命中即暂停等审批
+  repeated string require_approval = 32 [json_name = "require_approval"];
+  // 审批超时（小时），超时自动驳回；0 = 默认 72h
+  int32 approval_timeout_hours = 33 [json_name = "approval_timeout_hours"];
+  // 风险评估转人工阈值：none（默认）| high（高危不拦截而转人工审批）
+  string risk_pause_level = 34 [json_name = "risk_pause_level"];
 }
 
 // AgentInput 创建/更新定义的入参
@@ -107,6 +113,12 @@ message AgentInput {
   string llm_source = 21 [json_name = "llm_source"];
   // 自动装配：每次任务前由 LLM 判定架构与成员，缺成员时自动创建子 Agent
   bool auto_compose = 22 [json_name = "auto_compose"];
+  // 需人工审批的能力前缀（支持尾部 * 通配）
+  repeated string require_approval = 23 [json_name = "require_approval"];
+  // 审批超时（小时），0 = 默认 72h
+  int32 approval_timeout_hours = 24 [json_name = "approval_timeout_hours"];
+  // 风险评估转人工阈值：none | high
+  string risk_pause_level = 25 [json_name = "risk_pause_level"];
 }
 
 // CapabilitySchema 能力的自描述（白名单选择器 + LLM 提示词共用）
@@ -131,7 +143,7 @@ message AgentTask {
   // 输入摘要（列表展示）
   string title = 4 [json_name = "title"];
   string input = 5 [json_name = "input"];
-  // pending | running | succeeded | failed | canceled
+  // pending | running | paused（待审批）| succeeded | failed | canceled
   string status = 6 [json_name = "status"];
   // 0~100
   int32 progress = 7 [json_name = "progress"];
@@ -158,7 +170,7 @@ message TaskEvent {
   uint64 task_id = 2 [json_name = "task_id"];
   // 执行轮次（0 = 状态类事件）
   int32 turn = 3 [json_name = "turn"];
-  // status | thought | tool_call | tool_result | delegate | final | error
+  // status | thought | tool_call | tool_result | delegate | plan | node | orchestrate | paused | approval | resume | final | error
   string type = 4 [json_name = "type"];
   // JSON 字符串
   string payload = 5 [json_name = "payload"];
@@ -290,6 +302,15 @@ service AgentFactoryService {
   rpc RetryTask(RetryTaskRequest) returns (AgentTask) {
     option (google.api.http) = {
       post: "/api/agentfactory/tasks/{id}/retry"
+      body: "*"
+    };
+  }
+
+  // ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+  // reject 直接终态失败。审批结论落任务事件流。
+  rpc ApproveTask(ApproveTaskRequest) returns (AgentTask) {
+    option (google.api.http) = {
+      post: "/api/agentfactory/tasks/{id}/approval"
       body: "*"
     };
   }
@@ -448,6 +469,14 @@ message CancelTaskRequest {
 
 message RetryTaskRequest {
   uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message ApproveTaskRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  // approve（批准，续跑）| reject（驳回，终态失败）
+  string decision = 2 [(google.api.field_behavior) = REQUIRED, json_name = "decision"];
+  // 审批备注（驳回原因 / 批准说明）
+  string note = 3 [json_name = "note"];
 }
 
 message ListTaskEventsRequest {

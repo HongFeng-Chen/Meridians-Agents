@@ -47,6 +47,7 @@ const (
 	AgentFactoryService_GetTask_FullMethodName              = "/agentfactory.v1.AgentFactoryService/GetTask"
 	AgentFactoryService_CancelTask_FullMethodName           = "/agentfactory.v1.AgentFactoryService/CancelTask"
 	AgentFactoryService_RetryTask_FullMethodName            = "/agentfactory.v1.AgentFactoryService/RetryTask"
+	AgentFactoryService_ApproveTask_FullMethodName          = "/agentfactory.v1.AgentFactoryService/ApproveTask"
 	AgentFactoryService_ListTaskEvents_FullMethodName       = "/agentfactory.v1.AgentFactoryService/ListTaskEvents"
 )
 
@@ -90,6 +91,9 @@ type AgentFactoryServiceClient interface {
 	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*AgentTask, error)
 	// RetryTask 重试终态任务（重置为 pending 重新入队，trace 保留）。
 	RetryTask(ctx context.Context, in *RetryTaskRequest, opts ...grpc.CallOption) (*AgentTask, error)
+	// ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+	// reject 直接终态失败。审批结论落任务事件流。
+	ApproveTask(ctx context.Context, in *ApproveTaskRequest, opts ...grpc.CallOption) (*AgentTask, error)
 	// ListTaskEvents 任务事件流（trace 链路检索）。
 	ListTaskEvents(ctx context.Context, in *ListTaskEventsRequest, opts ...grpc.CallOption) (*ListTaskEventsReply, error)
 }
@@ -272,6 +276,16 @@ func (c *agentFactoryServiceClient) RetryTask(ctx context.Context, in *RetryTask
 	return out, nil
 }
 
+func (c *agentFactoryServiceClient) ApproveTask(ctx context.Context, in *ApproveTaskRequest, opts ...grpc.CallOption) (*AgentTask, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentTask)
+	err := c.cc.Invoke(ctx, AgentFactoryService_ApproveTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentFactoryServiceClient) ListTaskEvents(ctx context.Context, in *ListTaskEventsRequest, opts ...grpc.CallOption) (*ListTaskEventsReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListTaskEventsReply)
@@ -322,6 +336,9 @@ type AgentFactoryServiceServer interface {
 	CancelTask(context.Context, *CancelTaskRequest) (*AgentTask, error)
 	// RetryTask 重试终态任务（重置为 pending 重新入队，trace 保留）。
 	RetryTask(context.Context, *RetryTaskRequest) (*AgentTask, error)
+	// ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+	// reject 直接终态失败。审批结论落任务事件流。
+	ApproveTask(context.Context, *ApproveTaskRequest) (*AgentTask, error)
 	// ListTaskEvents 任务事件流（trace 链路检索）。
 	ListTaskEvents(context.Context, *ListTaskEventsRequest) (*ListTaskEventsReply, error)
 	mustEmbedUnimplementedAgentFactoryServiceServer()
@@ -384,6 +401,9 @@ func (UnimplementedAgentFactoryServiceServer) CancelTask(context.Context, *Cance
 }
 func (UnimplementedAgentFactoryServiceServer) RetryTask(context.Context, *RetryTaskRequest) (*AgentTask, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetryTask not implemented")
+}
+func (UnimplementedAgentFactoryServiceServer) ApproveTask(context.Context, *ApproveTaskRequest) (*AgentTask, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveTask not implemented")
 }
 func (UnimplementedAgentFactoryServiceServer) ListTaskEvents(context.Context, *ListTaskEventsRequest) (*ListTaskEventsReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTaskEvents not implemented")
@@ -715,6 +735,24 @@ func _AgentFactoryService_RetryTask_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentFactoryService_ApproveTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentFactoryServiceServer).ApproveTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentFactoryService_ApproveTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentFactoryServiceServer).ApproveTask(ctx, req.(*ApproveTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentFactoryService_ListTaskEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListTaskEventsRequest)
 	if err := dec(in); err != nil {
@@ -807,6 +845,10 @@ var AgentFactoryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetryTask",
 			Handler:    _AgentFactoryService_RetryTask_Handler,
+		},
+		{
+			MethodName: "ApproveTask",
+			Handler:    _AgentFactoryService_ApproveTask_Handler,
 		},
 		{
 			MethodName: "ListTaskEvents",

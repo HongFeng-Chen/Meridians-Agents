@@ -213,6 +213,9 @@ func (u *UseCase) UpdateDef(ctx context.Context, id uint64, in AgentInput) (*Age
 	def.SupervisorKey = in.SupervisorKey
 	def.SupervisionScope = in.SupervisionScope
 	def.RiskAgentKey = in.RiskAgentKey
+	def.RequireApproval = in.RequireApproval
+	def.ApprovalTimeoutHours = in.ApprovalTimeoutHours
+	def.RiskPauseLevel = in.RiskPauseLevel
 	def.AutoRun = in.AutoRun
 	def.CronExpr = in.CronExpr
 	def.CronInput = in.CronInput
@@ -484,10 +487,133 @@ func (u *UseCase) CancelTask(ctx context.Context, id uint64) (*Task, error) {
 			cancel()
 		}
 		return t, nil
+	case TaskPaused:
+		// 挂起任务取消 = 直接驳回终态（清 checkpoint，不再等审批）
+		t.Status = TaskCanceled
+		t.ErrorMsg = "任务在审批挂起期间被取消"
+		t.FinishedAt = time.Now()
+		if err := u.repo.FinishTask(ctx, t); err != nil {
+			return nil, err
+		}
+		u.repo.TrimCheckpoints(ctx, id, 0)
+		u.emitSystemEvent(ctx, id, EventApproval, map[string]any{"decision": "cancel", "by": identity.UserID(ctx)})
+		return t, nil
 	case TaskSucceeded, TaskFailed, TaskCanceled:
 		return nil, fmt.Errorf("%w: 任务已是终态 %s", ErrTaskStateDeny, t.Status)
 	default:
 		return nil, ErrTaskStateDeny
+	}
+}
+
+// ApproveTask 审批挂起中的任务（O3）：approve 置回 pending 从 checkpoint 续跑
+// （把能力记入 Approved，续跑时跳过闸门）；reject 直接终态失败。
+func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note string) (*Task, error) {
+	t, err := u.repo.GetTask(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != TaskPaused {
+		return nil, fmt.Errorf("%w: 仅挂起（paused）任务可审批，当前 %s", ErrTaskStateDeny, t.Status)
+	}
+	decision = strings.ToLower(strings.TrimSpace(decision))
+	if decision != "approve" && decision != "reject" {
+		return nil, fmt.Errorf("%w: decision 仅支持 approve / reject", ErrInvalidTask)
+	}
+
+	by := identity.UserID(ctx)
+	payload := map[string]any{"decision": decision, "by": by, "note": truncateRunes(note, 500)}
+
+	if decision == "reject" {
+		t.Status = TaskFailed
+		t.ErrorMsg = "人工驳回：" + truncateRunes(note, 300)
+		t.FinishedAt = time.Now()
+		if err := u.repo.FinishTask(ctx, t); err != nil {
+			return nil, err
+		}
+		u.repo.TrimCheckpoints(ctx, id, 0)
+		u.emitSystemEvent(ctx, id, EventApproval, payload)
+		return t, nil
+	}
+
+	// approve：把挂起点的能力记入 Approved，任务置回 pending 重新入队
+	cp, _ := u.repo.LatestCheckpoint(ctx, id)
+	var st *RunState
+	if cp != nil {
+		st = decodeState(cp.State)
+	}
+	if st == nil {
+		st = newState(t.Input)
+	}
+	if cp != nil {
+		if ability := cursorAbility(cp.Cursor); ability != "" {
+			st.markApproved(ability)
+		}
+		st.Cursor = ""
+		_ = u.repo.SaveCheckpoint(ctx, &TaskCheckpoint{
+			TaskID:    id,
+			Seq:       cp.Seq + 1,
+			GraphType: cp.GraphType,
+			Cursor:    `{"kind":"resume"}`,
+			State:     encodeState(st),
+			CreatedAt: time.Now(),
+		})
+	}
+	t.Status = TaskPending
+	t.ErrorMsg = ""
+	u.runMu.Lock()
+	if cancel, ok := u.cancels[id]; ok {
+		cancel() // 理论上 paused 任务没有运行句柄，防御性清理
+	}
+	u.runMu.Unlock()
+	if err := u.repo.SaveTask(ctx, t); err != nil {
+		return nil, err
+	}
+	if err := u.cache.EnqueueTask(ctx, t.ID); err != nil {
+		return t, fmt.Errorf("重新入队失败（恢复扫描会自动拾起）: %w", err)
+	}
+	u.emitSystemEvent(ctx, id, EventApproval, payload)
+	return t, nil
+}
+
+// emitSystemEvent 无 Recorder 场景下直接落一条任务事件（审批结论等系统事件）
+func (u *UseCase) emitSystemEvent(ctx context.Context, taskID uint64, typ string, payload any) {
+	_ = u.repo.AddEvent(u.baseCtx, &TaskEvent{
+		TaskID:    taskID,
+		Type:      typ,
+		Payload:   marshalPayload(payload),
+		CreatedAt: time.Now(),
+	})
+}
+
+// approvalTimeoutScan 审批超时扫描（随调度器每 30s 跑一次）：挂起超过
+// Agent 配置的超时（默认 72h）自动驳回，避免任务永久悬挂。
+func (u *UseCase) approvalTimeoutScan(ctx context.Context) {
+	tasks, err := u.repo.ListTasks(ctx, TaskFilter{Status: TaskPaused, Limit: 200})
+	if err != nil {
+		u.warn("审批超时扫描失败", "err", err)
+		return
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		cp, err := u.repo.LatestCheckpoint(ctx, t.ID)
+		if err != nil || cp == nil {
+			continue
+		}
+		timeout := 72 * time.Hour
+		if def, derr := u.repo.GetDef(ctx, t.AgentDefID); derr == nil && def != nil && def.ApprovalTimeoutHours > 0 {
+			timeout = time.Duration(def.ApprovalTimeoutHours) * time.Hour
+		}
+		if time.Since(cp.CreatedAt) <= timeout {
+			continue
+		}
+		t.Status = TaskFailed
+		t.ErrorMsg = "审批超时自动驳回"
+		t.FinishedAt = time.Now()
+		_ = u.repo.FinishTask(ctx, t)
+		u.repo.TrimCheckpoints(ctx, t.ID, 0)
+		u.emitSystemEvent(ctx, t.ID, EventApproval, map[string]any{
+			"decision": "reject", "by": "system", "note": "审批超时自动驳回",
+		})
 	}
 }
 
@@ -501,6 +627,8 @@ func (u *UseCase) RetryTask(ctx context.Context, id uint64) (*Task, error) {
 	if !IsTerminalStatus(t.Status) {
 		return nil, fmt.Errorf("%w: 仅终态任务可重试，当前 %s", ErrTaskStateDeny, t.Status)
 	}
+	// 重试 = 完整重跑：清掉旧 checkpoint（审批续跑走 ApproveTask，两条路径不混用）
+	u.repo.TrimCheckpoints(ctx, id, 0)
 	t.Status = TaskPending
 	t.Progress = 0
 	t.Result = ""
@@ -785,7 +913,9 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 		}
 	}
 	t.Status = TaskRunning
-	t.StartedAt = time.Now()
+	if t.StartedAt.IsZero() {
+		t.StartedAt = time.Now() // checkpoint 续跑时保留原始开始时间，耗时统计不被重置
+	}
 	if t.Progress < 5 {
 		t.Progress = 5
 	}
@@ -834,6 +964,17 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	now := time.Now()
 	t.FinishedAt = now
 	if runErr != nil {
+		// 人工审批闸门（O3）：命中 require_approval / 高危转人工 → 任务挂起。
+		// 不写终态、不归档：任务留在任务池，批准后置回 pending 从 checkpoint 续跑。
+		if errors.Is(runErr, ErrApprovalNeeded) {
+			t.Status = TaskPaused
+			t.ErrorMsg = "等待人工审批"
+			t.FinishedAt = time.Time{}
+			rec.status(TaskRunning, TaskPaused)
+			_ = u.repo.SaveTask(u.baseCtx, t)
+			rec.snapshot()
+			return "", runErr
+		}
 		// 停机导致的中断：不写终态。任务保持 running，下次启动由
 		// RequeueInterrupted 重新入队，避免被误标成「已取消」而丢失。
 		if u.draining.Load() && errors.Is(runErr, context.Canceled) {
@@ -856,6 +997,7 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 		rec.status(TaskRunning, t.Status)
 		t.Progress = 100
 		_ = u.repo.FinishTask(u.baseCtx, t) // 终态：任务池 → 任务历史表
+		u.repo.TrimCheckpoints(u.baseCtx, t.ID, 5)
 		rec.snapshot()
 		return "", runErr
 	}
@@ -864,6 +1006,7 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	t.Progress = 100
 	rec.status(TaskRunning, TaskSucceeded)
 	_ = u.repo.FinishTask(u.baseCtx, t) // 终态：任务池 → 任务历史表
+	u.repo.TrimCheckpoints(u.baseCtx, t.ID, 5)
 	rec.snapshot()
 	return answer, nil
 }

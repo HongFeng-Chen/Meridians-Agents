@@ -11,12 +11,14 @@ export const STATUS_TONES = {
   succeeded: 'ok',
   running: 'indigo',
   pending: 'warn',
+  paused: 'warn',
   failed: 'error',
   canceled: 'default',
 };
 export const STATUS_LABELS = {
   pending: '排队中',
   running: '执行中',
+  paused: '待审批',
   succeeded: '成功',
   failed: '失败',
   canceled: '已取消',
@@ -36,6 +38,9 @@ export const EVENT_LABELS = {
   node: '节点',
   supervise: '监察',
   risk_assess: '风评',
+  paused: '暂停',
+  approval: '审批',
+  resume: '续跑',
   final: '答案',
   error: '错误',
 };
@@ -52,6 +57,9 @@ export const EVENT_TONES = {
   node: 'default',
   supervise: 'violet',
   risk_assess: 'warn',
+  paused: 'warn',
+  approval: 'violet',
+  resume: 'teal',
   final: 'ok',
   error: 'error',
   status: 'warn',
@@ -136,6 +144,12 @@ function eventSummary(type, payload) {
       return `${p.supervisor || '监察'} 审查 ${p.agent || ''}：${p.passed ? '通过' : `未通过 ${p.issues || ''}`}`;
     case 'risk_assess':
       return `${p.tool || '工具'} 风险 ${p.level || '—'} · ${p.allow ? '放行' : '拦截'}${p.reason ? `：${p.reason}` : ''}`;
+    case 'paused':
+      return `${p.name || p.ability || '能力'} ${JSON.stringify(p.args ?? {})}${p.reason ? `（${p.reason === 'risk_assess_high' ? `高危转人工：${p.risk_reason || ''}` : p.reason}）` : ''}，等待人工审批`;
+    case 'approval':
+      return `${p.decision === 'approve' ? '批准' : p.decision === 'reject' ? '驳回' : p.decision || '—'}${p.by ? ` · ${p.by}` : ''}${p.note ? `：${p.note}` : ''}`;
+    case 'resume':
+      return `从 checkpoint #${p.seq ?? '—'} 续跑（游标 ${p.cursor || '—'}）`;
     case 'final':
       return p.answer ?? '';
     case 'error':
@@ -187,7 +201,7 @@ export function openConversation(convId) {
   setTimeout(() => window.dispatchEvent(new CustomEvent('wb:open-conv', { detail: convId })), 60);
 }
 
-export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, onClose, onOpenTask, onCancel, onRetry, width }) {
+export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, onClose, onOpenTask, onCancel, onRetry, onApprove, width }) {
   // ESC 关闭 + 打开期间锁定背景滚动
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -201,7 +215,31 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
   }, [onClose]);
 
   const running = ['pending', 'running'].includes(detail.status);
+  const paused = detail.status === 'paused';
   const fmtDuration = () => formatDuration(detail.started_at, detail.finished_at);
+
+  // 最近一次 paused 事件：展示挂起的能力与参数（审批卡片内容）
+  const pausedEvt = paused
+    ? [...(events || [])].reverse().find((e) => e.type === 'paused')
+    : null;
+  let pausedInfo = {};
+  if (pausedEvt) {
+    try {
+      pausedInfo = JSON.parse(pausedEvt.payload || '{}');
+    } catch {
+      pausedInfo = {};
+    }
+  }
+
+  const decide = async (decision) => {
+    if (!onApprove) return;
+    let note = '';
+    if (decision === 'reject') {
+      note = window.prompt('驳回说明（将写回任务错误信息）', '人工驳回') ?? '';
+      if (!note) return;
+    }
+    await onApprove(detail, decision, note);
+  };
 
   return (
     <div className="drawer-mask" role="dialog" aria-modal="true" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -221,7 +259,7 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
               {' · '}耗时 {fmtDuration()}
             </div>
           </div>
-          {running && onCancel && (
+          {(running || paused) && onCancel && (
             <button className="btn ghost sm" type="button" disabled={busy === `cancel-${detail.id}`} onClick={() => onCancel(detail)}>
               取消任务
             </button>
@@ -235,6 +273,36 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
         </div>
 
         <div className="drawer-body">
+          {/* 审批闸门（O3）：任务挂起等待人工审批 */}
+          {paused && (
+            <div className="block" style={{ marginBottom: 14, borderColor: 'var(--warn, #d97706)', background: 'var(--warn-bg, #fffbeb)' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>⏸ 待人工审批</div>
+              <div className="muted" style={{ marginBottom: 8, fontSize: 13 }}>
+                任务在执行 <span className="mono">{pausedInfo.name || pausedInfo.ability || '—'}</span> 时触发审批闸门
+                {pausedInfo.reason === 'risk_assess_high' ? '（风险评估为高危，转人工）' : '（该能力被 Agent 配置为需审批）'}
+                ，批准后从 checkpoint 续跑，驳回则任务置为失败。
+              </div>
+              {(pausedInfo.args !== undefined) && (
+                <pre className="mono" style={{ fontSize: 12, background: 'rgba(0,0,0,0.04)', padding: 8, borderRadius: 6, overflow: 'auto', maxHeight: 160, margin: '0 0 10px' }}>
+                  {JSON.stringify(pausedInfo.args, null, 2)}
+                </pre>
+              )}
+              {pausedInfo.risk_reason && (
+                <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>风险评估：{pausedInfo.risk_reason}</div>
+              )}
+              {onApprove && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn sm" type="button" disabled={busy === `approve-${detail.id}`} onClick={() => decide('approve')}>
+                    批准继续
+                  </button>
+                  <button className="btn ghost sm" type="button" disabled={busy === `approve-${detail.id}`} onClick={() => decide('reject')}>
+                    驳回
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 概要 */}
           <div className="kv" style={{ marginBottom: 14 }}>
             <div><span className="muted">进度</span> <span className="mono">{detail.progress}%</span></div>

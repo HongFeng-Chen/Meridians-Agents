@@ -135,13 +135,13 @@ export default function Tasks() {
     const tick = async () => {
       const t = await loadDetail(detail.id);
       loadList();
-      if (!t || ['succeeded', 'failed', 'canceled'].includes(t.status)) {
+      if (!t || ['succeeded', 'failed', 'canceled', 'paused'].includes(t.status)) {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
     };
     if (pollRef.current) clearInterval(pollRef.current);
-    if (['succeeded', 'failed', 'canceled'].includes(detail.status)) return undefined;
+    if (['succeeded', 'failed', 'canceled', 'paused'].includes(detail.status)) return undefined;
     pollRef.current = setInterval(tick, 2000);
     return () => {
       if (pollRef.current) {
@@ -167,6 +167,15 @@ export default function Tasks() {
     const res = await act(`retry-${t.id}`, () => agentfactory.retryTask({ id: t.id }));
     if (!res) return;
     setNotice(`任务 #${t.id} 已重新入队`);
+    loadList();
+    if (detail?.id === t.id) loadDetail(t.id);
+  };
+
+  // 审批闸门（O3）：批准 → 从 checkpoint 续跑；驳回 → 任务置为失败
+  const approveTask = async (t, decision, note = '') => {
+    const res = await act(`approve-${t.id}`, () => agentfactory.approveTask({ id: t.id, decision, note }));
+    if (!res) return;
+    setNotice(decision === 'approve' ? `任务 #${t.id} 已批准，从断点续跑` : `任务 #${t.id} 已驳回`);
     loadList();
     if (detail?.id === t.id) loadDetail(t.id);
   };
@@ -318,7 +327,13 @@ export default function Tasks() {
                       <td className="num">
                         <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                           <button className="btn ghost sm" type="button" onClick={() => openDetail(row.t.id)}>链路</button>
-                          {['pending', 'running'].includes(row.t.status) && (
+                          {row.t.status === 'paused' && (
+                            <>
+                              <button className="btn ghost sm" type="button" disabled={busy === `approve-${row.t.id}`} onClick={() => approveTask(row.t, 'approve')}>批准</button>
+                              <button className="btn ghost sm" type="button" disabled={busy === `approve-${row.t.id}`} onClick={() => approveTask(row.t, 'reject', window.prompt('驳回说明', '人工驳回') ?? '')}>驳回</button>
+                            </>
+                          )}
+                          {['pending', 'running', 'paused'].includes(row.t.status) && (
                             <button className="btn ghost sm" type="button" disabled={busy === `cancel-${row.t.id}`} onClick={() => cancelTask(row.t)}>取消</button>
                           )}
                           {['succeeded', 'failed', 'canceled'].includes(row.t.status) && (
@@ -352,6 +367,7 @@ export default function Tasks() {
           onOpenTask={openDetail}
           onCancel={cancelTask}
           onRetry={retryTask}
+          onApprove={approveTask}
         />
       )}
     </div>

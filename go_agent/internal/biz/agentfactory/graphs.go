@@ -20,12 +20,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // planStep 计划中的一步；Agent 为空表示由当前 Agent 自己执行
 type planStep struct {
 	Goal  string `json:"goal"`
 	Agent string `json:"agent"`
+	// DependsOn 依赖的步骤序号（1-based，指向 steps 数组下标+1）：
+	// 空 = 依赖前一步（保守串行）；波次调度（O4）按依赖分层并发
+	DependsOn []int `json:"depends_on,omitempty"`
 }
 
 // evalVerdict 反思型 Agent 的自评结果
@@ -179,13 +183,15 @@ func (u *UseCase) plannerPrompt(def *AgentDef, extra string) string {
 	}
 	b.WriteString(`
 只输出一个 JSON 对象，不要输出其他文字：
-{"steps":[{"goal":"这一步要达成的具体目标","agent":"成员标识或空字符串"}]}
+{"steps":[{"goal":"这一步要达成的具体目标","agent":"成员标识或空字符串","depends_on":[1]}]}
 
 要求：
 1. 步骤数控制在 1~6 个，按依赖顺序排列
-2. 每步写清产出物，不要写"分析一下"这类空泛步骤
-3. 步骤之间不重复，后一步可直接使用前面步骤的结果
-4. 能一步做完就不要拆成两步`)
+2. depends_on 填依赖的步骤序号（从 1 开始的数组）；省略或空数组 = 依赖紧邻的上一步（按顺序串行执行）；
+   多个步骤之间没有依赖时，明确写出各自只依赖哪些步骤，它们会被并行执行以加速
+3. 每步写清产出物，不要写"分析一下"这类空泛步骤
+4. 步骤之间不重复，后一步可直接使用前面步骤的结果
+5. 能一步做完就不要拆成两步`)
 	return b.String()
 }
 
@@ -234,15 +240,17 @@ func (u *UseCase) synthesizePlan(ctx context.Context, def *AgentDef, input strin
 	return u.chatWith(ctx, def, system, user)
 }
 
-// execPlanStep 执行一个计划步骤：指定成员则委派，否则用自身工具循环
-func (u *UseCase) execPlanStep(ctx context.Context, def *AgentDef, rec *Recorder, system, input string, done []string, st planStep) (string, error) {
+// execPlanStep 执行一个计划步骤：指定成员则委派，否则用自身工具循环。
+// 派生 Recorder 并置 silentFinal（单步产出不是任务最终答案），
+// 并发波次下每个步骤有独立轮次计数，不会互相踩。
+// loopSt 为该步骤的工具循环状态（见 cloneForStep；传 nil 则全新）。
+func (u *UseCase) execPlanStep(ctx context.Context, def *AgentDef, rec *Recorder, system, input string, done []string, st planStep, loopSt *RunState) (string, error) {
+	stepRec := rec.derive()
+	stepRec.silentFinal = true
 	if st.Agent != "" && st.Agent != def.AgentKey {
-		return u.delegate(ctx, rec, st.Agent, u.stepSeed(input, done, st.Goal))
+		return u.delegate(ctx, stepRec, st.Agent, u.stepSeed(input, done, st.Goal))
 	}
-	saved := rec.silentFinal
-	rec.silentFinal = true // 单步产出不是任务最终答案
-	res, err := u.runToolLoop(ctx, def, system, u.stepSeed(input, done, st.Goal), clampInt(u.turnBudget(def, 4), 2, 8), rec)
-	rec.silentFinal = saved
+	res, err := u.runToolLoop(ctx, def, system, u.stepSeed(input, done, st.Goal), clampInt(u.turnBudget(def, 4), 2, 8), stepRec, loopSt)
 	if err != nil {
 		return "", err
 	}
@@ -251,66 +259,204 @@ func (u *UseCase) execPlanStep(ctx context.Context, def *AgentDef, rec *Recorder
 
 // —— 1. Plan-and-Execute ——
 
-func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
-	steps, err := u.makePlan(ctx, def, input, "", rec)
-	if err != nil {
-		return nil, fmt.Errorf("生成计划失败: %w", err)
+// runPlanExecute 规划-执行分离：先一次性出完整计划，再按依赖分波执行（O4），
+// 每个波次边界落 checkpoint（O2，崩溃/审批后续跑），单步失败触发重规划（上限 2 次）。
+//
+// 依赖约定：planStep.DependsOn 为 1-based 步骤序号；空 = 依赖前一步（保守串行，
+// 与历史行为一致）。波次调度：每轮收集所有「依赖已满足」的待执行步骤并发跑
+// （上限 parallelLimit），汇聚后推进 StepIdx。
+func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
+	if st == nil {
+		st = newState(input)
 	}
-	if len(steps) == 0 {
-		// 不需要拆解：退化为单轮直答
-		return u.runSimple(ctx, def, input, rec)
+	rec.st = st
+
+	// 计划：新任务生成；续跑任务沿用 checkpoint 里的计划（replan 后的剩余部分）
+	if len(st.Steps) == 0 {
+		steps, err := u.makePlan(ctx, def, input, "", rec)
+		if err != nil {
+			return nil, fmt.Errorf("生成计划失败: %w", err)
+		}
+		if len(steps) == 0 {
+			// 不需要拆解：退化为单轮直答
+			return u.runSimple(ctx, def, input, rec)
+		}
+		st.Steps = steps
+		rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "waves": planWaves(steps)})
+	} else {
+		rec.event(EventPlan, rec.turn, map[string]any{"steps": st.Steps, "resumed": true})
 	}
-	rec.event(EventPlan, rec.turn, map[string]any{"steps": steps})
 
 	system, err := u.buildSystemPrompt(ctx, def)
 	if err != nil {
 		return nil, err
 	}
-	done := make([]string, 0, len(steps))
-	replans := 0
 
-	for i := 0; i < len(steps); i++ {
+	// 续跑对齐：把乱序完成记录（MemberOut["step:<idx>"]）按序搬进 Done
+	st.drainStepOutputs()
+
+	total := len(st.Steps)
+	for st.StepIdx < len(st.Steps) {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("执行被取消: %w", err)
 		}
-		rec.setProgress(10 + (i*75)/len(steps))
-		rec.event(EventNode, rec.turn, map[string]any{
-			"node": fmt.Sprintf("step-%d", i+1), "kind": "step", "agent": steps[i].Agent,
-			"status": "running", "output": truncateRunes(steps[i].Goal, 300),
-		})
-		got, serr := u.execPlanStep(ctx, def, rec, system, input, done, steps[i])
-		if serr != nil {
-			if replans >= 2 {
-				return nil, fmt.Errorf("计划第 %d 步执行失败: %w", i+1, serr)
-			}
-			replans++
-			rec.event(EventError, rec.turn, map[string]any{
-				"message": fmt.Sprintf("第 %d 步失败，触发重规划：%v", i+1, serr),
+		rec.setProgress(10 + (st.StepIdx * 75) / max(total, 1))
+
+		// 收集本波次：所有依赖已满足的待执行步骤
+		ready := readySteps(st.Steps, st.StepIdx)
+		if len(ready) == 0 {
+			ready = []int{st.StepIdx} // 依赖成环等异常：兜底串行推进，防死锁
+		}
+		for _, i := range ready {
+			rec.event(EventNode, rec.turn, map[string]any{
+				"node": fmt.Sprintf("step-%d", i+1), "kind": "step", "agent": st.Steps[i].Agent,
+				"status": "running", "output": truncateRunes(st.Steps[i].Goal, 300),
 			})
-			note := fmt.Sprintf("原计划第 %d 步「%s」执行失败：%v。请重新给出从该步开始的剩余步骤（已完成的不再重复）。", i+1, steps[i].Goal, serr)
+		}
+
+		// 并发执行（上限 parallelLimit；每个步骤派生独立 Recorder 与循环状态）
+		results := make([]string, len(ready))
+		errs := make([]error, len(ready))
+		sem := make(chan struct{}, u.parallelLimit())
+		var wg sync.WaitGroup
+		for k, i := range ready {
+			wg.Add(1)
+			go func(k, i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				results[k], errs[k] = u.execPlanStep(ctx, def, rec, system, input, st.Done, st.Steps[i], st.cloneForStep())
+			}(k, i)
+		}
+		wg.Wait()
+
+		// 失败处理：取最早的失败步骤触发重规划（只重排该步之后的剩余部分；
+		// 乱序完成的后续步骤产出丢弃，重跑代价 < 状态错乱的代价）
+		failK, failIdx := -1, -1
+		for k := range ready {
+			if errs[k] != nil && (failIdx < 0 || ready[k] < failIdx) {
+				failK, failIdx = k, ready[k]
+			}
+		}
+		if failIdx >= 0 {
+			if st.Replans >= 2 {
+				return nil, fmt.Errorf("计划第 %d 步执行失败: %w", failIdx+1, errs[failK])
+			}
+			st.Replans++
+			rec.event(EventError, rec.turn, map[string]any{
+				"message": fmt.Sprintf("第 %d 步失败，触发重规划：%v", failIdx+1, errs[failK]),
+			})
+			note := fmt.Sprintf("原计划第 %d 步「%s」执行失败：%v。请重新给出从该步开始的剩余步骤（已完成的不再重复）。", failIdx+1, st.Steps[failIdx].Goal, errs[failK])
 			next, perr := u.makePlan(ctx, def, input, note, rec)
 			if perr != nil || len(next) == 0 {
-				return nil, fmt.Errorf("第 %d 步失败且重规划无结果: %w", i+1, serr)
+				return nil, fmt.Errorf("第 %d 步失败且重规划无结果: %w", failIdx+1, errs[failK])
 			}
-			steps = append(steps[:i], next...)
-			rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "revised": true})
-			i-- // 重新执行当前位置
-			continue
+			st.Steps = append(st.Steps[:failIdx], next...)
+			total = len(st.Steps)
+			rec.event(EventPlan, rec.turn, map[string]any{"steps": st.Steps, "revised": true})
+			rec.checkpoint(fmt.Sprintf(`{"kind":"plan_step","index":%d}`, st.StepIdx))
+			continue // 不推进 StepIdx：重试当前失败位置
 		}
-		rec.event(EventNode, rec.turn, map[string]any{
-			"node": fmt.Sprintf("step-%d", i+1), "kind": "step", "agent": steps[i].Agent,
-			"status": "done", "output": truncateRunes(got, 800),
-		})
-		done = append(done, fmt.Sprintf("步骤 %d（%s）：%s", i+1, steps[i].Goal, got))
+
+		// 成功：先入乱序完成表，再按序推进 StepIdx（保持 Done 与步骤前缀对齐）
+		for k, i := range ready {
+			st.MemberOut[fmt.Sprintf("step:%d", i)] = results[k]
+		}
+		for {
+			out, ok := st.MemberOut[fmt.Sprintf("step:%d", st.StepIdx)]
+			if !ok {
+				break
+			}
+			delete(st.MemberOut, fmt.Sprintf("step:%d", st.StepIdx))
+			rec.event(EventNode, rec.turn, map[string]any{
+				"node": fmt.Sprintf("step-%d", st.StepIdx+1), "kind": "step", "agent": st.Steps[st.StepIdx].Agent,
+				"status": "done", "output": truncateRunes(out, 800),
+			})
+			st.Done = append(st.Done, fmt.Sprintf("步骤 %d（%s）：%s", st.StepIdx+1, st.Steps[st.StepIdx].Goal, out))
+			st.StepIdx++
+		}
+		rec.checkpoint(fmt.Sprintf(`{"kind":"plan_step","index":%d}`, st.StepIdx))
 	}
 
 	rec.setProgress(92)
-	answer, err := u.synthesizePlan(ctx, def, input, done)
+	answer, err := u.synthesizePlan(ctx, def, input, st.Done)
 	if err != nil {
 		return nil, err
 	}
 	rec.turn++
 	return u.finish(rec, answer), nil
+}
+
+// readySteps 收集本波次可执行的步骤下标：依赖全部落在已完成前缀内。
+// DependsOn 为空 = 依赖前一步（串行语义：只有下一个待执行步骤就绪）。
+func readySteps(steps []planStep, startIdx int) []int {
+	ready := make([]int, 0, len(steps)-startIdx)
+	for i := startIdx; i < len(steps); i++ {
+		deps := steps[i].DependsOn
+		if len(deps) == 0 {
+			if i != startIdx {
+				continue // 串行语义：等前一步
+			}
+			ready = append(ready, i)
+			continue
+		}
+		ok := true
+		for _, d := range deps {
+			if d < 1 || d > startIdx { // 依赖必须是已完成的步骤（1-based ≤ startIdx）
+				ok = false
+				break
+			}
+		}
+		if ok {
+			ready = append(ready, i)
+		}
+	}
+	return ready
+}
+
+// planWaves 静态预览波次分组（事件展示用）：贪心按依赖分层
+func planWaves(steps []planStep) [][]int {
+	done := 0
+	waves := [][]int{}
+	taken := make([]bool, len(steps))
+	for done < len(steps) && len(waves) < 10 {
+		wave := []int{}
+		for i := range steps {
+			if taken[i] {
+				continue
+			}
+			deps := steps[i].DependsOn
+			ok := true
+			for _, d := range deps {
+				if d < 1 || d > len(steps) || !taken[d-1] {
+					ok = false
+					break
+				}
+			}
+			if ok && (len(deps) > 0 || i == done || takenBefore(i, taken)) {
+				wave = append(wave, i+1)
+			}
+		}
+		if len(wave) == 0 {
+			break
+		}
+		for _, n := range wave {
+			taken[n-1] = true
+			done++
+		}
+		waves = append(waves, wave)
+	}
+	return waves
+}
+
+// takenBefore i 之前是否全部已完成（串行约定下首个未完成步骤才可入波）
+func takenBefore(i int, taken []bool) bool {
+	for j := 0; j < i; j++ {
+		if !taken[j] {
+			return false
+		}
+	}
+	return true
 }
 
 // —— 2. Reflexion ——
@@ -352,7 +498,7 @@ func (u *UseCase) runReflexion(ctx context.Context, def *AgentDef, input string,
 		rec.setProgress(10 + (round-1)*60/rounds)
 		saved := rec.silentFinal
 		rec.silentFinal = true // 草稿不是最终答案
-		res, rerr := u.runToolLoop(ctx, def, system, seed, clampInt(u.turnBudget(def, 4), 2, 8), rec)
+		res, rerr := u.runToolLoop(ctx, def, system, seed, clampInt(u.turnBudget(def, 4), 2, 8), rec, nil)
 		rec.silentFinal = saved
 		if rerr != nil {
 			return nil, fmt.Errorf("第 %d 轮执行失败: %w", round, rerr)
@@ -536,7 +682,7 @@ func (u *UseCase) runSelfAsk(ctx context.Context, def *AgentDef, input string, r
 		rec.setProgress(10 + i*70/len(questions))
 		saved := rec.silentFinal
 		rec.silentFinal = true // 子答案不是最终答案
-		res, rerr := u.runToolLoop(ctx, def, system, "## 子问题\n"+q+"\n\n## 执行记录\n", clampInt(u.turnBudget(def, 3), 2, 6), rec)
+		res, rerr := u.runToolLoop(ctx, def, system, "## 子问题\n"+q+"\n\n## 执行记录\n", clampInt(u.turnBudget(def, 3), 2, 6), rec, nil)
 		rec.silentFinal = saved
 		if rerr != nil {
 			qa = append(qa, fmt.Sprintf("Q%d：%s\nA：（未能回答：%v）", i+1, q, rerr))
@@ -793,7 +939,7 @@ func (u *UseCase) runStateMachine(ctx context.Context, def *AgentDef, input stri
 
 // —— 7/8. Orchestrator / Hierarchical ——
 
-func (u *UseCase) runOrchestrator(ctx context.Context, def *AgentDef, input string, rec *Recorder, hierarchical bool) (*RunResult, error) {
+func (u *UseCase) runOrchestrator(ctx context.Context, def *AgentDef, input string, rec *Recorder, hierarchical bool, st *RunState) (*RunResult, error) {
 	members := u.memberKeys(def)
 	mode := "协调器（orchestrator）"
 	extra := "为每个步骤指定负责成员：agent 字段填成员标识，让不同专长的成员分头执行。"
@@ -805,56 +951,66 @@ func (u *UseCase) runOrchestrator(ctx context.Context, def *AgentDef, input stri
 		return nil, fmt.Errorf("%w: %s 模式需要至少一个编排成员（在画布上连入成员 Agent）", ErrInvalidDef, mode)
 	}
 
-	steps, err := u.makePlan(ctx, def, input, extra, rec)
-	if err != nil {
-		return nil, fmt.Errorf("生成计划失败: %w", err)
+	if st == nil {
+		st = newState(input)
 	}
-	if len(steps) == 0 {
-		return u.runSimple(ctx, def, input, rec)
+	rec.st = st
+	if len(st.Steps) == 0 {
+		steps, err := u.makePlan(ctx, def, input, extra, rec)
+		if err != nil {
+			return nil, fmt.Errorf("生成计划失败: %w", err)
+		}
+		if len(steps) == 0 {
+			return u.runSimple(ctx, def, input, rec)
+		}
+		st.Steps = steps
+		rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "mode": def.GraphType})
 	}
-	rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "mode": def.GraphType})
 
 	system, err := u.buildSystemPrompt(ctx, def)
 	if err != nil {
 		return nil, err
 	}
-	done := make([]string, 0, len(steps))
-	for i, st := range steps {
+	for i := st.StepIdx; i < len(st.Steps); i++ {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("执行被取消: %w", err)
 		}
+		s := st.Steps[i]
 		// 未指定成员或成员不合法：按顺序轮转分配，保证每个成员都被用上
-		if st.Agent == "" || !containsStr(members, st.Agent) {
-			st.Agent = members[i%len(members)]
+		if s.Agent == "" || !containsStr(members, s.Agent) {
+			s.Agent = members[i%len(members)]
+			st.Steps[i].Agent = s.Agent
 		}
-		goal := st.Goal
+		goal := s.Goal
 		if hierarchical {
-			goal = "你是该子目标的负责人，请先把子目标细化为 2~4 个子步骤，再逐个执行并给出结果。\n子目标：" + st.Goal
+			goal = "你是该子目标的负责人，请先把子目标细化为 2~4 个子步骤，再逐个执行并给出结果。\n子目标：" + s.Goal
 		}
-		rec.setProgress(10 + i*75/len(steps))
+		rec.setProgress(10 + i*75/len(st.Steps))
 		rec.event(EventNode, rec.turn, map[string]any{
-			"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": st.Agent,
-			"status": "running", "output": truncateRunes(st.Goal, 300),
+			"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": s.Agent,
+			"status": "running", "output": truncateRunes(s.Goal, 300),
 		})
-		got, serr := u.execPlanStep(ctx, def, rec, system, input, done, planStep{Goal: goal, Agent: st.Agent})
+		got, serr := u.execPlanStep(ctx, def, rec, system, input, st.Done, planStep{Goal: goal, Agent: s.Agent}, nil)
 		if serr != nil {
 			// 单个成员失败不整体失败，如实记入汇总材料
 			rec.event(EventNode, rec.turn, map[string]any{
-				"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": st.Agent,
+				"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": s.Agent,
 				"status": "failed", "output": truncateRunes(serr.Error(), 500),
 			})
-			done = append(done, fmt.Sprintf("子目标 %d（%s，由 %s 负责）：[执行失败] %v", i+1, st.Goal, st.Agent, serr))
-			continue
+			got = fmt.Sprintf("[执行失败] %v", serr)
+		} else {
+			rec.event(EventNode, rec.turn, map[string]any{
+				"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": s.Agent,
+				"status": "done", "output": truncateRunes(got, 800),
+			})
 		}
-		rec.event(EventNode, rec.turn, map[string]any{
-			"node": fmt.Sprintf("subgoal-%d", i+1), "kind": "subgoal", "agent": st.Agent,
-			"status": "done", "output": truncateRunes(got, 800),
-		})
-		done = append(done, fmt.Sprintf("子目标 %d（%s，由 %s 负责）：%s", i+1, st.Goal, st.Agent, got))
+		st.Done = append(st.Done, fmt.Sprintf("子目标 %d（%s，由 %s 负责）：%s", i+1, s.Goal, s.Agent, got))
+		st.StepIdx = i + 1
+		rec.checkpoint(fmt.Sprintf(`{"kind":"plan_step","index":%d}`, st.StepIdx))
 	}
 
 	rec.setProgress(92)
-	answer, err := u.synthesizePlan(ctx, def, input, done)
+	answer, err := u.synthesizePlan(ctx, def, input, st.Done)
 	if err != nil {
 		return nil, err
 	}
@@ -864,7 +1020,7 @@ func (u *UseCase) runOrchestrator(ctx context.Context, def *AgentDef, input stri
 
 // —— 9. Debate ——
 
-func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
+func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
 	members := u.memberKeys(def)
 	if len(members) < 2 {
 		return nil, fmt.Errorf("%w: 辩论（debate）模式需要至少 2 个成员（正方 / 反方）", ErrInvalidDef)
@@ -872,36 +1028,47 @@ func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, re
 	pro, con := members[0], members[1]
 	rounds := clampInt(u.turnBudget(def, 2), 1, 4)
 
-	rec.setProgress(10)
-	proposal, err := u.delegate(ctx, rec, pro,
-		fmt.Sprintf("## 任务\n%s\n\n## 你的角色\n你是正方。请给出一个完整、可执行的方案，并说明关键理由与依据。", input))
-	if err != nil {
-		return nil, fmt.Errorf("正方首轮发言失败: %w", err)
+	if st == nil {
+		st = newState(input)
 	}
-	rec.event(EventNode, rec.turn, map[string]any{"node": "proposal", "kind": "debate", "agent": pro, "status": "done", "output": truncateRunes(proposal, 800)})
+	rec.st = st
 
-	var lastCritique string
-	for r := 1; r <= rounds; r++ {
+	// 正方首轮（续跑时复用 checkpoint 里的方案）
+	rec.setProgress(10)
+	if st.Proposal == "" {
+		proposal, err := u.delegate(ctx, rec, pro,
+			fmt.Sprintf("## 任务\n%s\n\n## 你的角色\n你是正方。请给出一个完整、可执行的方案，并说明关键理由与依据。", input))
+		if err != nil {
+			return nil, fmt.Errorf("正方首轮发言失败: %w", err)
+		}
+		st.Proposal = proposal
+		rec.event(EventNode, rec.turn, map[string]any{"node": "proposal", "kind": "debate", "agent": pro, "status": "done", "output": truncateRunes(proposal, 800)})
+		rec.checkpoint(`{"kind":"round","round":0}`)
+	}
+
+	for r := st.Round + 1; r <= rounds; r++ {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("执行被取消: %w", err)
 		}
 		rec.setProgress(20 + r*50/rounds)
 		critique, cerr := u.delegate(ctx, rec, con,
-			fmt.Sprintf("## 任务\n%s\n\n## 正方方案\n%s\n\n## 你的角色\n你是反方。请挑出其中事实错误、逻辑漏洞、遗漏与风险，并给出可执行的改进建议。", input, truncateRunes(proposal, 6000)))
+			fmt.Sprintf("## 任务\n%s\n\n## 正方方案\n%s\n\n## 你的角色\n你是反方。请挑出其中事实错误、逻辑漏洞、遗漏与风险，并给出可执行的改进建议。", input, truncateRunes(st.Proposal, 6000)))
 		if cerr != nil {
 			return nil, fmt.Errorf("第 %d 轮反方发言失败: %w", r, cerr)
 		}
-		lastCritique = critique
+		st.Critique = critique
 		rec.event(EventNode, rec.turn, map[string]any{"node": fmt.Sprintf("round-%d-con", r), "kind": "debate", "agent": con, "status": "done", "output": truncateRunes(critique, 800)})
 
 		revised, rerr := u.delegate(ctx, rec, pro,
 			fmt.Sprintf("## 任务\n%s\n\n## 你的上一版方案\n%s\n\n## 反方意见\n%s\n\n## 你的角色\n你是正方。请据此修订方案，采纳合理意见，对不成立的质疑给出反驳。直接输出修订后的完整方案。",
-				input, truncateRunes(proposal, 6000), truncateRunes(critique, 6000)))
+				input, truncateRunes(st.Proposal, 6000), truncateRunes(critique, 6000)))
 		if rerr != nil {
 			return nil, fmt.Errorf("第 %d 轮正方修订失败: %w", r, rerr)
 		}
-		proposal = revised
+		st.Proposal = revised
+		st.Round = r
 		rec.event(EventNode, rec.turn, map[string]any{"node": fmt.Sprintf("round-%d-pro", r), "kind": "debate", "agent": pro, "status": "done", "output": truncateRunes(revised, 800)})
+		rec.checkpoint(fmt.Sprintf(`{"kind":"round","round":%d}`, r))
 	}
 
 	// 裁决：优先用监察 Agent，其次自我汇总
@@ -909,7 +1076,7 @@ func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, re
 	if def.SupervisorKey != "" {
 		verdict, verr := u.delegate(ctx, rec, def.SupervisorKey,
 			fmt.Sprintf("## 任务\n%s\n\n## 辩论后的最终方案\n%s\n\n## 反方最后意见\n%s\n\n请作为裁决者：采纳成立的意见、修正错误，直接输出面向用户的最终答案。",
-				input, truncateRunes(proposal, 6000), truncateRunes(lastCritique, 4000)))
+				input, truncateRunes(st.Proposal, 6000), truncateRunes(st.Critique, 4000)))
 		if verr == nil && strings.TrimSpace(verdict) != "" {
 			rec.event(EventSupervise, rec.turn, map[string]any{"agent": pro, "supervisor": def.SupervisorKey, "passed": true, "issues": ""})
 			return u.finish(rec, verdict), nil
@@ -917,7 +1084,7 @@ func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, re
 	}
 	rec.turn++
 	answer, err := u.chatWith(ctx, def, directSystem(def)+"\n\n下面是正反双方辩论后的方案与反方意见，请给出共识结论，采纳成立的批评。",
-		fmt.Sprintf("## 任务\n%s\n\n## 正方最终方案\n%s\n\n## 反方最后意见\n%s", input, truncateRunes(proposal, 6000), truncateRunes(lastCritique, 4000)))
+		fmt.Sprintf("## 任务\n%s\n\n## 正方最终方案\n%s\n\n## 反方最后意见\n%s", input, truncateRunes(st.Proposal, 6000), truncateRunes(st.Critique, 4000)))
 	if err != nil {
 		return nil, err
 	}
@@ -926,39 +1093,53 @@ func (u *UseCase) runDebate(ctx context.Context, def *AgentDef, input string, re
 
 // —— 10. Blackboard ——
 
-func (u *UseCase) runBlackboard(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
+func (u *UseCase) runBlackboard(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
 	members := u.memberKeys(def)
 	if len(members) == 0 {
 		return nil, fmt.Errorf("%w: 黑板（blackboard）模式需要至少一个成员", ErrInvalidDef)
 	}
 	rounds := clampInt(u.turnBudget(def, 2), 1, 3)
-	board := "（空）"
+
+	if st == nil {
+		st = newState(input)
+	}
+	rec.st = st
+	if st.Board == "" {
+		st.Board = "（空）"
+	}
 	total := rounds * len(members)
-	step := 0
+	// Wave = 全局发言序号（0-based）：续跑时跳过已完成发言（Wave 之前的不重跑）
+	step := st.Wave
 
 	for r := 1; r <= rounds; r++ {
-		for _, m := range members {
+		for mi, m := range members {
+			g := (r-1)*len(members) + mi
+			if g < st.Wave {
+				continue // 续跑：该发言已完成
+			}
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("执行被取消: %w", err)
 			}
-			step++
-			rec.setProgress(10 + step*75/total)
+			step = g
+			rec.setProgress(10 + (step+1)*75/total)
 			in := fmt.Sprintf("## 目标\n%s\n\n## 黑板（共享状态，第 %d 轮）\n%s\n\n请读取黑板：补充你负责的部分，或修正他人的错误；直接输出你写入黑板的完整内容，不要复述黑板全文。",
-				input, r, truncateRunes(board, 6000))
+				input, r, truncateRunes(st.Board, 6000))
 			got, err := u.delegate(ctx, rec, m, in)
 			if err != nil {
 				rec.event(EventNode, rec.turn, map[string]any{"node": fmt.Sprintf("%s-r%d", m, r), "kind": "blackboard", "agent": m, "status": "failed", "output": truncateRunes(err.Error(), 500)})
 				continue
 			}
-			board += fmt.Sprintf("\n### 第 %d 轮 · %s\n%s", r, m, truncateRunes(got, 3000))
+			st.Board += fmt.Sprintf("\n### 第 %d 轮 · %s\n%s", r, m, truncateRunes(got, 3000))
+			st.Wave = g + 1
 			rec.event(EventNode, rec.turn, map[string]any{"node": fmt.Sprintf("%s-r%d", m, r), "kind": "blackboard", "agent": m, "status": "done", "output": truncateRunes(got, 800)})
+			rec.checkpoint(fmt.Sprintf(`{"kind":"round","round":%d,"member":%q}`, r, m))
 		}
 	}
 
 	rec.setProgress(92)
 	rec.turn++
 	answer, err := u.chatWith(ctx, def, directSystem(def)+"\n\n下面是多轮协作的黑板内容，请整合成最终答案；冲突处以证据更充分的一方为准。",
-		fmt.Sprintf("## 任务\n%s\n\n## 黑板\n%s", input, truncateRunes(board, 12000)))
+		fmt.Sprintf("## 任务\n%s\n\n## 黑板\n%s", input, truncateRunes(st.Board, 12000)))
 	if err != nil {
 		return nil, err
 	}

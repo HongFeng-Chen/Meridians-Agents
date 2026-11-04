@@ -43,6 +43,12 @@ type AgentDefPO struct {
 	SupervisionScope string `gorm:"column:supervision_scope;type:json" json:"supervision_scope"`
 	// RiskAgentKey 风险评估 Agent（role=risk 的 agent_key），仅 MCP 调用前生效
 	RiskAgentKey string `gorm:"column:risk_agent_key;size:64;not null;default:''" json:"risk_agent_key"`
+	// RequireApproval 需人工审批的能力前缀，JSON 数组字符串（支持尾部 * 通配）
+	RequireApproval string `gorm:"column:require_approval;type:json" json:"require_approval"`
+	// ApprovalTimeoutHours 审批超时（小时），0 = 默认 72h
+	ApprovalTimeoutHours int `gorm:"column:approval_timeout_hours;not null;default:0" json:"approval_timeout_hours"`
+	// RiskPauseLevel 风险转人工阈值：none（默认）| high
+	RiskPauseLevel string `gorm:"column:risk_pause_level;size:16;not null;default:'none'" json:"risk_pause_level"`
 	// AutoRun 后台自动运行（cron）
 	AutoRun bool `gorm:"column:auto_run;not null;default:false;index:idx_agent_defs_autorun" json:"auto_run"`
 	// CronExpr 5 段 cron 表达式
@@ -155,3 +161,24 @@ type AgentTaskEventPO struct {
 }
 
 func (AgentTaskEventPO) TableName() string { return "agent_task_events" }
+
+// AgentTaskCheckpointPO agent_task_checkpoints：任务步骤级快照（O2 续跑）。
+// 每个步骤边界（计划步骤 / 波次 / 辩论轮次 / 审批挂起点）追加一条，
+// 恢复时按 id 取最新一条反序列化 RunState。
+type AgentTaskCheckpointPO struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// TaskID 所属任务
+	TaskID uint64 `gorm:"column:task_id;not null;index:idx_agent_task_checkpoints_task" json:"task_id"`
+	// Seq 任务内逻辑序号（恢复路由不依赖它，按 ID 取最新）
+	Seq       int    `gorm:"column:seq;not null;default:0" json:"seq"`
+	GraphType string `gorm:"column:graph_type;size:32;not null;default:''" json:"graph_type"`
+	// Cursor 恢复点描述（JSON）：{"kind":"plan_step|wave|round|loop|approval","index":n,"ability":""}
+	Cursor string `gorm:"column:cursor;size:256;not null;default:''" json:"cursor"`
+	// State RunState JSON
+	State string `gorm:"column:state;type:mediumtext" json:"state"`
+	// Tokens 落盘时已消耗 token（观测用）
+	Tokens    int64     `gorm:"column:tokens;not null;default:0" json:"tokens"`
+	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
+}
+
+func (AgentTaskCheckpointPO) TableName() string { return "agent_task_checkpoints" }

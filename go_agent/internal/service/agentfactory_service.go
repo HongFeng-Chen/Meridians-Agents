@@ -4,6 +4,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	v1 "go_agent/api/agentfactory/v1"
 	"go_agent/internal/biz/agentfactory"
@@ -253,6 +255,21 @@ func (s *AgentFactoryService) RetryTask(ctx context.Context, req *v1.RetryTaskRe
 	return toAgentTask(t), nil
 }
 
+func (s *AgentFactoryService) ApproveTask(ctx context.Context, req *v1.ApproveTaskRequest) (*v1.AgentTask, error) {
+	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
+		return nil, err
+	}
+	decision := strings.ToLower(strings.TrimSpace(req.GetDecision()))
+	if decision != "approve" && decision != "reject" {
+		return nil, fmt.Errorf("decision 仅支持 approve / reject")
+	}
+	t, err := s.uc.ApproveTask(ctx, req.GetId(), decision, req.GetNote())
+	if err != nil {
+		return nil, mapAgentFactoryErr(err)
+	}
+	return toAgentTask(t), nil
+}
+
 func (s *AgentFactoryService) ListTaskEvents(ctx context.Context, req *v1.ListTaskEventsRequest) (*v1.ListTaskEventsReply, error) {
 	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
 		return nil, err
@@ -291,6 +308,9 @@ func toAgentDef(d *agentfactory.AgentDef) *v1.AgentDef {
 		LlmSource:        d.LLMSource,
 		GraphType:        d.GraphType,
 		AutoCompose:      d.AutoCompose,
+		RequireApproval:  d.RequireApproval,
+		ApprovalTimeoutHours: int32(d.ApprovalTimeoutHours),
+		RiskPauseLevel:   d.RiskPauseLevel,
 		Capabilities:     d.Capabilities,
 		Middlewares:      d.Middlewares,
 		MaxTurns:         int32(d.MaxTurns),
@@ -329,6 +349,9 @@ func agentInputFromProto(in *v1.AgentInput) agentfactory.AgentInput {
 		LLMSource:        in.GetLlmSource(),
 		GraphType:        in.GetGraphType(),
 		AutoCompose:      in.GetAutoCompose(),
+		RequireApproval:  in.GetRequireApproval(),
+		ApprovalTimeoutHours: int(in.GetApprovalTimeoutHours()),
+		RiskPauseLevel:   in.GetRiskPauseLevel(),
 		Capabilities:     in.GetCapabilities(),
 		Middlewares:      in.GetMiddlewares(),
 		MaxTurns:         int(in.GetMaxTurns()),

@@ -31,13 +31,15 @@ func (u *UseCase) startScheduler(ctx context.Context) {
 		defer u.wg.Done()
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		u.tickSchedules(ctx) // 启动先扫一次：进程停机期间错过的排期立即补上
+		u.tickSchedules(ctx)        // 启动先扫一次：进程停机期间错过的排期立即补上
+		u.approvalTimeoutScan(ctx) // 审批超时扫描
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				u.tickSchedules(ctx)
+				u.approvalTimeoutScan(ctx) // 审批超时自动驳回（O3）
 			}
 		}
 	}()

@@ -135,15 +135,29 @@ func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[stri
 // toolCapability 调用 MCP 工具，结果压成文本喂回 LLM。
 // 配置了风险评估 Agent 时，调用前先评估风险：high 直接拦截（不执行副作用），
 // medium 放行但把风险提示带回观察结果，low 正常放行。
+// Agent 配置 risk_pause_level=high 时，高危操作不拦截而是转人工：任务挂起（paused），
+// 批准后从 checkpoint 续跑（已批准能力不再重复评估）。
 func (u *UseCase) toolCapability(ctx context.Context, uniqueName string, args map[string]any, rec *Recorder) (string, error) {
 	if u.tools == nil {
 		return "", fmt.Errorf("MCP 工具供给未接线")
 	}
+	ability := CapToolPrefix + uniqueName
 	riskNote := ""
-	if rec != nil && rec.def != nil && rec.def.RiskAgentKey != "" {
+	alreadyApproved := rec != nil && rec.st != nil && rec.st.approved(ability)
+	if !alreadyApproved && rec != nil && rec.def != nil && rec.def.RiskAgentKey != "" {
 		if riskDef := u.loadRiskDef(ctx, rec.def.RiskAgentKey); riskDef != nil {
 			if v := u.assessRisk(ctx, rec.task, riskDef, uniqueName, args, rec); v != nil {
 				if !v.Allow {
+					// 高危转人工（O3）：落 checkpoint + paused 事件，以哨兵错误上抛
+					if strings.EqualFold(rec.def.RiskPauseLevel, "high") && v.Level == "high" && rec.st != nil {
+						rec.st.Cursor = approvalCursor(ability)
+						rec.checkpoint(rec.st.Cursor)
+						rec.event(EventPaused, rec.turn, map[string]any{
+							"ability": ability, "args": args,
+							"reason": "risk_assess_high", "risk_reason": truncateRunes(v.Reason, 300),
+						})
+						return "", ErrApprovalNeeded
+					}
 					return "", fmt.Errorf("操作被风险评估拦截（%s）：%s。请改用更安全的只读方式，或交由人工处理", v.Level, truncateRunes(v.Reason, 200))
 				}
 				if v.Level == "medium" {

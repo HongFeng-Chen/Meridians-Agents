@@ -60,7 +60,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["agent_key","name","description","system","llm_model","graph_type","capabilities","middlewares","max_turns","sandbox","role","orchestration","members","supervisor_key","supervision_scope","risk_agent_key","auto_run","cron_expr","cron_input","flow","llm_source","auto_compose"],
+    bodyProps: ["agent_key","name","description","system","llm_model","graph_type","capabilities","middlewares","max_turns","sandbox","role","orchestration","members","supervisor_key","supervision_scope","risk_agent_key","auto_run","cron_expr","cron_input","flow","llm_source","auto_compose","require_approval","approval_timeout_hours","risk_pause_level"],
   },
   AgentFactoryService_CreateAgentByLLM: {
     service: 'AgentFactoryService',
@@ -217,6 +217,18 @@ export const OPERATIONS = {
     hasBody: false,
     multipart: false,
     bodyProps: [],
+  },
+  AgentFactoryService_ApproveTask: {
+    service: 'AgentFactoryService',
+    group: 'agentfactory',
+    method: 'POST',
+    path: '/api/agentfactory/tasks/{id}/approval',
+    summary: "ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，",
+    pathParams: ["id"],
+    queryParams: [],
+    hasBody: true,
+    multipart: false,
+    bodyProps: ["decision","note"],
   },
   AgentFactoryService_CancelTask: {
     service: 'AgentFactoryService',
@@ -1936,4 +1948,4 @@ export const OPERATIONS = {
   },
 };
 
-export const OPERATION_COUNT = 161;
+export const OPERATION_COUNT = 162;

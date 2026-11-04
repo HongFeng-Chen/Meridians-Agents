@@ -17,6 +17,7 @@ var _ = new(context.Context)
 
 const _ = http.SupportPackageIsVersion3
 
+const OperationAgentFactoryServiceApproveTask = "/agentfactory.v1.AgentFactoryService/ApproveTask"
 const OperationAgentFactoryServiceCancelTask = "/agentfactory.v1.AgentFactoryService/CancelTask"
 const OperationAgentFactoryServiceCreateAgentByLLM = "/agentfactory.v1.AgentFactoryService/CreateAgentByLLM"
 const OperationAgentFactoryServiceCreateAgentDef = "/agentfactory.v1.AgentFactoryService/CreateAgentDef"
@@ -37,6 +38,9 @@ const OperationAgentFactoryServiceToggleAgentDef = "/agentfactory.v1.AgentFactor
 const OperationAgentFactoryServiceUpdateAgentDef = "/agentfactory.v1.AgentFactoryService/UpdateAgentDef"
 
 type AgentFactoryServiceHTTPServer interface {
+	// ApproveTask ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+	// reject 直接终态失败。审批结论落任务事件流。
+	ApproveTask(context.Context, *ApproveTaskRequest) (*AgentTask, error)
 	// CancelTask CancelTask 取消任务（pending 直接置 canceled；running 中断执行）。
 	CancelTask(context.Context, *CancelTaskRequest) (*AgentTask, error)
 	// CreateAgentByLLM CreateAgentByLLM 元编程入口：把需求交给 LLM 生成 Agent 定义（默认沙箱灰度）。
@@ -94,6 +98,7 @@ func RegisterAgentFactoryServiceHTTPServer(s *http.Server, srv AgentFactoryServi
 	r.Handle("GET", "/api/agentfactory/tasks/{id}", _AgentFactoryService_GetTask0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/agentfactory/tasks/{id}/cancel", _AgentFactoryService_CancelTask0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/agentfactory/tasks/{id}/retry", _AgentFactoryService_RetryTask0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/agentfactory/tasks/{id}/approval", _AgentFactoryService_ApproveTask0_HTTP_Handler(srv))
 	r.Handle("GET", "/api/agentfactory/tasks/{id}/events", _AgentFactoryService_ListTaskEvents0_HTTP_Handler(srv))
 }
 
@@ -441,6 +446,28 @@ func _AgentFactoryService_RetryTask0_HTTP_Handler(srv AgentFactoryServiceHTTPSer
 	}
 }
 
+func _AgentFactoryService_ApproveTask0_HTTP_Handler(srv AgentFactoryServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ApproveTaskRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationAgentFactoryServiceApproveTask)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ApproveTask(ctx, req.(*ApproveTaskRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*AgentTask)
+		return ctx.Result(200, reply)
+	}
+}
+
 func _AgentFactoryService_ListTaskEvents0_HTTP_Handler(srv AgentFactoryServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in ListTaskEventsRequest
@@ -464,6 +491,9 @@ func _AgentFactoryService_ListTaskEvents0_HTTP_Handler(srv AgentFactoryServiceHT
 }
 
 type AgentFactoryServiceHTTPClient interface {
+	// ApproveTask ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+	// reject 直接终态失败。审批结论落任务事件流。
+	ApproveTask(ctx context.Context, req *ApproveTaskRequest, opts ...http.CallOption) (rsp *AgentTask, err error)
 	// CancelTask CancelTask 取消任务（pending 直接置 canceled；running 中断执行）。
 	CancelTask(ctx context.Context, req *CancelTaskRequest, opts ...http.CallOption) (rsp *AgentTask, err error)
 	// CreateAgentByLLM CreateAgentByLLM 元编程入口：把需求交给 LLM 生成 Agent 定义（默认沙箱灰度）。
@@ -508,6 +538,25 @@ type AgentFactoryServiceHTTPClientImpl struct {
 
 func NewAgentFactoryServiceHTTPClient(client *http.Client) AgentFactoryServiceHTTPClient {
 	return &AgentFactoryServiceHTTPClientImpl{client}
+}
+
+// ApproveTask ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+// reject 直接终态失败。审批结论落任务事件流。
+func (c *AgentFactoryServiceHTTPClientImpl) ApproveTask(ctx context.Context, in *ApproveTaskRequest, opts ...http.CallOption) (*AgentTask, error) {
+	var out AgentTask
+	pattern := "/api/agentfactory/tasks/{id}/approval"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationAgentFactoryServiceApproveTask),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // CancelTask CancelTask 取消任务（pending 直接置 canceled；running 中断执行）。
