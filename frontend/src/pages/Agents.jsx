@@ -439,7 +439,7 @@ export default function Agents() {
             {!d.enabled && <Badge tone="default">停用</Badge>}
           </div>
           <div className="cell-sub mono">{d.agent_key} · v{d.version}</div>
-          <div className="cell-sub">{d.description}</div>
+          {d.description && <div className="cell-desc">{d.description}</div>}
         </td>
         <td>
           <Badge tone={ROLE_TONES[d.role || 'root'] || 'default'}>{ROLE_LABELS[d.role || 'root']}</Badge>
