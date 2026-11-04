@@ -439,7 +439,9 @@ export default function Agents() {
             {!d.enabled && <Badge tone="default">停用</Badge>}
           </div>
           <div className="cell-sub mono">{d.agent_key} · v{d.version}</div>
-          {d.description && <div className="cell-desc">{d.description}</div>}
+        </td>
+        <td>
+          <div className="cell-desc desc-clamp" title={d.description}>{d.description || '—'}</div>
         </td>
         <td>
           <Badge tone={ROLE_TONES[d.role || 'root'] || 'default'}>{ROLE_LABELS[d.role || 'root']}</Badge>
@@ -1043,6 +1045,7 @@ export default function Agents() {
                   <thead>
                     <tr>
                       <th>Agent</th>
+                      <th>职责描述</th>
                       <th>角色 / 编排</th>
                       <th>能力白名单</th>
                       <th>来源</th>
