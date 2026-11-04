@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentfactory, llm } from '../api.js';
 import { Alert, Badge, EmptyState, FormDrawer, GRAPH_GROUPS, GRAPH_HINTS, GRAPH_LABELS, Pagination, Panel, Spinner, StatCard, usePagedList } from '../components/UI.jsx';
 import AgentFlow from '../components/AgentFlow.jsx';
@@ -260,8 +260,38 @@ export default function Agents() {
   });
   const filterActive = listFilter.kw || listFilter.role || listFilter.graph || listFilter.state;
 
+  // 父子层级：members 引用关系 → 树。外层只显示父级（未被任何 Agent 引用为成员的），
+  // 子级默认收起，点展开逐层下钻；有筛选时退回平铺（保证按关键词/角色能搜到子级）。
+  const childKeySet = useMemo(() => {
+    const s = new Set();
+    for (const a of agents) for (const k of a.members || []) if (k) s.add(k);
+    return s;
+  }, [agents]);
+  const childMap = useMemo(() => {
+    const map = new Map();
+    for (const a of agents) {
+      const kids = [];
+      const seen = new Set();
+      for (const k of a.members || []) {
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        const def = agents.find((x) => x.agent_key === k);
+        if (def) kids.push(def);
+      }
+      if (kids.length) map.set(a.id, kids);
+    }
+    return map;
+  }, [agents]);
+  const treeMode = !filterActive;
+  const rootAgents = useMemo(
+    () => filteredAgents.filter((d) => !childKeySet.has(d.agent_key)),
+    [filteredAgents, childKeySet],
+  );
+  const listAgents = treeMode ? rootAgents : filteredAgents;
+  const [expanded, setExpanded] = useState({});
+
   // Agent 定义列表分页（筛选变化时回到第 1 页）
-  const agentPg = usePagedList(filteredAgents, {
+  const agentPg = usePagedList(listAgents, {
     size: 10,
     resetKey: `${tab}|${listFilter.kw}|${listFilter.role}|${listFilter.graph}|${listFilter.state}`,
   });
@@ -382,6 +412,91 @@ export default function Agents() {
     const res = await act('recall', () => agentfactory.searchAgentDefs({ query, limit: 8 }));
     if (!res) return;
     setHits(res.hits || []);
+  };
+
+  // 层级行渲染：父级带展开/收起开关，子级缩进展示（递归支持嵌套编排）
+  const renderAgentRow = (d, depth, kids) => {
+    const hasKids = kids.length > 0;
+    const open = !!expanded[d.id];
+    return (
+      <tr key={d.id} className={depth > 0 ? 'child-row' : ''}>
+        <td style={depth > 0 ? { paddingLeft: 18 + depth * 26 } : undefined}>
+          <div className="cell-main" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {treeMode && (hasKids ? (
+              <button
+                className="btn ghost sm tree-toggle"
+                type="button"
+                title={open ? '收起子 Agent' : `展开 ${kids.length} 个子 Agent`}
+                onClick={() => setExpanded((m) => ({ ...m, [d.id]: !m[d.id] }))}
+              >
+                {open ? '▾' : '▸'} {kids.length}
+              </button>
+            ) : (
+              <span className="tree-toggle tree-leaf" aria-hidden="true" />
+            ))}
+            {d.name}
+            {d.sandbox && <Badge tone="warn">沙箱</Badge>}
+            {!d.enabled && <Badge tone="default">停用</Badge>}
+          </div>
+          <div className="cell-sub mono">{d.agent_key} · v{d.version}</div>
+          <div className="cell-sub">{d.description}</div>
+        </td>
+        <td>
+          <Badge tone={ROLE_TONES[d.role || 'root'] || 'default'}>{ROLE_LABELS[d.role || 'root']}</Badge>
+          {(() => {
+            const st = graphStats(d.flow);
+            return st ? (
+              <div className="cell-sub">编排图 · {st.nodes} 节点 / {st.edges} 连线</div>
+            ) : (
+              <div className="cell-sub">
+                {d.graph_type} · {ORCH_LABELS[d.orchestration || 'auto']}
+                {(d.members || []).length > 0 ? ` · ${d.members.length} 成员` : ''}
+              </div>
+            );
+          })()}
+          {d.supervisor_key && <div className="cell-sub mono">监察 {d.supervisor_key}</div>}
+          {d.risk_agent_key && <div className="cell-sub mono">风评 {d.risk_agent_key}</div>}
+          {d.auto_run && (
+            <div className="cell-sub">
+              <Badge tone="teal">cron</Badge> <span className="mono">{d.cron_expr}</span>
+              {d.next_run_at && <div className="cell-sub">下次 {formatTime(d.next_run_at)}</div>}
+            </div>
+          )}
+        </td>
+        <td>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {(d.capabilities || []).length === 0 ? <span className="muted">无（纯对话）</span> :
+              (d.capabilities || []).map((c) => <Badge key={c} tone="default">{c}</Badge>)}
+          </div>
+        </td>
+        <td><Badge tone={d.source === 'llm' ? 'violet' : 'default'}>{d.source === 'llm' ? 'LLM 自造' : '人工'}</Badge></td>
+        <td className="num">{d.max_turns}</td>
+        <td className="num">
+          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+            <button className="btn ghost sm" type="button" onClick={() => { setRunTarget(d); setRunTask(null); }}>
+              手动执行
+            </button>
+            <button className="btn ghost sm" type="button" onClick={() => { setForm(formFrom(d)); setShowForm(true); }}>
+              编辑
+            </button>
+            <button className="btn ghost sm" type="button" disabled={busy === `tg-${d.id}`} onClick={() => toggleAgent(d)}>
+              {d.enabled ? '停用' : '启用'}
+            </button>
+            <button className="btn danger sm" type="button" disabled={busy === `del-${d.id}`} onClick={() => removeAgent(d)}>
+              {busy === `del-${d.id}` ? <Spinner text="删除" /> : <IconTrash size={14} />}
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+  const renderTreeRows = (d, depth) => {
+    const kids = treeMode ? (childMap.get(d.id) || []) : [];
+    const rows = [renderAgentRow(d, depth, kids)];
+    if (treeMode && expanded[d.id]) {
+      for (const k of kids) rows.push(...renderTreeRows(k, depth + 1));
+    }
+    return rows;
   };
 
   const toggleCap = (name) => {
@@ -915,10 +1030,12 @@ export default function Agents() {
                   </button>
                 )}
                 <span className="cell-sub" style={{ marginLeft: 'auto' }}>
-                  {filterActive ? `${filteredAgents.length} / ${agents.length} 个 Agent` : `${agents.length} 个 Agent`}
+                  {filterActive
+                    ? `${filteredAgents.length} / ${agents.length} 个 Agent`
+                    : `${rootAgents.length} 个父级 · 共 ${agents.length} 个 Agent`}
                 </span>
               </div>
-              {filteredAgents.length === 0 ? (
+              {listAgents.length === 0 ? (
                 <EmptyState icon={IconSearch} title="没有符合条件的 Agent" desc="调整筛选条件，或点「清除筛选」查看全部" />
               ) : (
               <div className="table-wrap">
@@ -934,65 +1051,7 @@ export default function Agents() {
                     </tr>
                   </thead>
                   <tbody>
-                    {agentPg.paged.map((d) => (
-                      <tr key={d.id}>
-                        <td>
-                          <div className="cell-main">
-                            {d.name}
-                            {d.sandbox && <Badge tone="warn">沙箱</Badge>}
-                            {!d.enabled && <Badge tone="default">停用</Badge>}
-                          </div>
-                          <div className="cell-sub mono">{d.agent_key} · v{d.version}</div>
-                          <div className="cell-sub">{d.description}</div>
-                        </td>
-                        <td>
-                          <Badge tone={ROLE_TONES[d.role || 'root'] || 'default'}>{ROLE_LABELS[d.role || 'root']}</Badge>
-                          {(() => {
-                            const st = graphStats(d.flow);
-                            return st ? (
-                              <div className="cell-sub">编排图 · {st.nodes} 节点 / {st.edges} 连线</div>
-                            ) : (
-                              <div className="cell-sub">
-                                {d.graph_type} · {ORCH_LABELS[d.orchestration || 'auto']}
-                                {(d.members || []).length > 0 ? ` · ${d.members.length} 成员` : ''}
-                              </div>
-                            );
-                          })()}
-                          {d.supervisor_key && <div className="cell-sub mono">监察 {d.supervisor_key}</div>}
-                          {d.risk_agent_key && <div className="cell-sub mono">风评 {d.risk_agent_key}</div>}
-                          {d.auto_run && (
-                            <div className="cell-sub">
-                              <Badge tone="teal">cron</Badge> <span className="mono">{d.cron_expr}</span>
-                              {d.next_run_at && <div className="cell-sub">下次 {formatTime(d.next_run_at)}</div>}
-                            </div>
-                          )}
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                            {(d.capabilities || []).length === 0 ? <span className="muted">无（纯对话）</span> :
-                              (d.capabilities || []).map((c) => <Badge key={c} tone="default">{c}</Badge>)}
-                          </div>
-                        </td>
-                        <td><Badge tone={d.source === 'llm' ? 'violet' : 'default'}>{d.source === 'llm' ? 'LLM 自造' : '人工'}</Badge></td>
-                        <td className="num">{d.max_turns}</td>
-                        <td className="num">
-                          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                            <button className="btn ghost sm" type="button" onClick={() => { setRunTarget(d); setRunTask(null); }}>
-                              手动执行
-                            </button>
-                            <button className="btn ghost sm" type="button" onClick={() => { setForm(formFrom(d)); setShowForm(true); }}>
-                              编辑
-                            </button>
-                            <button className="btn ghost sm" type="button" disabled={busy === `tg-${d.id}`} onClick={() => toggleAgent(d)}>
-                              {d.enabled ? '停用' : '启用'}
-                            </button>
-                            <button className="btn danger sm" type="button" disabled={busy === `del-${d.id}`} onClick={() => removeAgent(d)}>
-                              {busy === `del-${d.id}` ? <Spinner text="删除" /> : <IconTrash size={14} />}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {agentPg.paged.map((d) => renderTreeRows(d, 0)).flat()}
                   </tbody>
                 </table>
               </div>

@@ -478,6 +478,18 @@ h1, h2, h3, p { margin: 0; }
 .table tr:last-child td { border-bottom: none; }
 .table tbody tr:hover { background: #fbfbfe; }
 
+/* Agent 列表父子层级：子级行浅底色 + 左侧层级线，展开开关为小方钮 */
+.table tbody tr.child-row td { background: #fafbfe; }
+.table tbody tr.child-row td:first-child { box-shadow: inset 3px 0 0 var(--border-strong, #d8dbe6); }
+.tree-toggle {
+  min-width: 34px;
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint, #6b7280);
+}
+.tree-toggle.tree-leaf { display: inline-block; min-width: 34px; padding: 0; }
+
 .table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--mono); font-size: 12.5px; }
 
