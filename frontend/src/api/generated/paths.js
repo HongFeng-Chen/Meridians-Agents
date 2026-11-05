@@ -998,6 +998,18 @@ export const OPERATIONS = {
     multipart: false,
     bodyProps: [],
   },
+  MCPService_PreviewMCPProxySpec: {
+    service: 'MCPService',
+    group: 'mcp',
+    method: 'POST',
+    path: '/api/mcp/proxies/preview',
+    summary: "PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。",
+    pathParams: [],
+    queryParams: [],
+    hasBody: true,
+    multipart: false,
+    bodyProps: ["proxy_config"],
+  },
   MCPService_ListMCPServers: {
     service: 'MCPService',
     group: 'mcp',
@@ -1020,7 +1032,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["name","namespace","transport","description","endpoint","headers","command","args","env","health_check_interval","enabled"],
+    bodyProps: ["name","namespace","transport","description","endpoint","headers","command","args","env","health_check_interval","enabled","proxy_config"],
   },
   MCPService_SyncAllMCPServers: {
     service: 'MCPService',
@@ -1056,7 +1068,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["name","namespace","transport","description","endpoint","headers","command","args","env","health_check_interval","enabled"],
+    bodyProps: ["name","namespace","transport","description","endpoint","headers","command","args","env","health_check_interval","enabled","proxy_config"],
   },
   MCPService_DeleteMCPServer: {
     service: 'MCPService',
@@ -1948,4 +1960,4 @@ export const OPERATIONS = {
   },
 };
 
-export const OPERATION_COUNT = 162;
+export const OPERATION_COUNT = 163;

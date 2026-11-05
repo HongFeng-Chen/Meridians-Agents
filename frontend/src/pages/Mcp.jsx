@@ -16,6 +16,17 @@ const TABS = [
 const TRANSPORTS = [
   { value: 'http', label: 'http · Streamable HTTP' },
   { value: 'stdio', label: 'stdio · 本地子进程' },
+  { value: 'proxy', label: 'proxy · Swagger/OpenAPI 代理' },
+];
+
+// 代理鉴权方案：不同系统的 Token 获取差异都在这里统一
+const AUTH_TYPES = [
+  { value: 'none', label: 'none · 不鉴权' },
+  { value: 'static', label: 'static · 固定 Token / 密钥' },
+  { value: 'basic', label: 'basic · HTTP Basic' },
+  { value: 'api_key', label: 'api_key · Header / Query 固定 key' },
+  { value: 'login', label: 'login · 调登录接口换 Token' },
+  { value: 'oauth2', label: 'oauth2 · client_credentials' },
 ];
 
 // 服务上的连接类动作：同一个发请求、同一套刷新逻辑
@@ -40,10 +51,44 @@ function emptyForm() {
     env: '',
     health_check_interval: '30',
     enabled: true,
+    // —— proxy（Swagger/OpenAPI 导入） ——
+    proxy_spec_url: '',
+    proxy_spec_text: '',
+    proxy_base_url: '',
+    auth_type: 'none',
+    auth_header: '',
+    auth_prefix: '',
+    auth_token: '',
+    auth_in: 'header',
+    auth_query_name: '',
+    auth_username: '',
+    auth_password: '',
+    auth_login_url: '',
+    auth_login_method: 'POST',
+    auth_login_body: '',
+    auth_login_headers: '',
+    auth_token_path: '',
+    auth_expire_path: '',
+    auth_token_url: '',
+    auth_client_id: '',
+    auth_client_secret: '',
+    auth_scope: '',
+    req_timeout_ms: '30000',
+    req_body_type: 'json',
+    req_headers: '',
+    req_query: '',
+    proxy_snapshot: null, // 解析快照（编辑时原样带回，避免丢掉 ops/title）
   };
 }
 
 function formFrom(server) {
+  const cfg = safeParse(server.proxy_config) || {};
+  const auth = cfg.auth || {};
+  const req = cfg.request || {};
+  const snapshot = {};
+  for (const k of ['ops', 'spec_title', 'spec_version', 'fetched_at']) {
+    if (cfg[k] !== undefined) snapshot[k] = cfg[k];
+  }
   return {
     id: server.id,
     name: server.name || '',
@@ -57,7 +102,110 @@ function formFrom(server) {
     env: server.env && Object.keys(server.env).length ? JSON.stringify(server.env, null, 2) : '',
     health_check_interval: server.health_check_interval ? String(server.health_check_interval) : '30',
     enabled: !!server.enabled,
+    proxy_spec_url: cfg.spec_url || '',
+    proxy_spec_text: cfg.spec_text || '',
+    proxy_base_url: cfg.base_url || '',
+    auth_type: auth.type || 'none',
+    auth_header: auth.header || '',
+    auth_prefix: auth.prefix || '',
+    auth_token: auth.token || '',
+    auth_in: auth.in || 'header',
+    auth_query_name: auth.query_name || '',
+    auth_username: auth.username || '',
+    auth_password: auth.password || '',
+    auth_login_url: auth.login_url || '',
+    auth_login_method: auth.login_method || 'POST',
+    auth_login_body: auth.login_body || '',
+    auth_login_headers: auth.login_headers && Object.keys(auth.login_headers).length ? JSON.stringify(auth.login_headers, null, 2) : '',
+    auth_token_path: auth.token_path || '',
+    auth_expire_path: auth.expire_path || '',
+    auth_token_url: auth.token_url || '',
+    auth_client_id: auth.client_id || '',
+    auth_client_secret: auth.client_secret || '',
+    auth_scope: auth.scope || '',
+    req_timeout_ms: req.timeout_ms ? String(req.timeout_ms) : '30000',
+    req_body_type: req.body_type || 'json',
+    req_headers: req.headers && Object.keys(req.headers).length ? JSON.stringify(req.headers, null, 2) : '',
+    req_query: req.query && Object.keys(req.query).length ? JSON.stringify(req.query, null, 2) : '',
+    proxy_snapshot: Object.keys(snapshot).length ? snapshot : null,
   };
+}
+
+// buildProxyConfig 把表单字段收敛成后端 ProxySpec（proxy_config JSON）
+function buildProxyConfig(form, { withSnapshot = true } = {}) {
+  const auth = { type: form.auth_type || 'none' };
+  if (form.auth_header.trim()) auth.header = form.auth_header.trim();
+  if (form.auth_prefix.trim()) auth.prefix = form.auth_prefix;
+  switch (auth.type) {
+    case 'static':
+      auth.token = form.auth_token;
+      break;
+    case 'basic':
+      auth.username = form.auth_username;
+      auth.password = form.auth_password;
+      break;
+    case 'api_key':
+      auth.token = form.auth_token;
+      auth.in = form.auth_in || 'header';
+      if (auth.in === 'query') auth.query_name = form.auth_query_name.trim();
+      break;
+    case 'login': {
+      auth.login_url = form.auth_login_url.trim();
+      auth.login_method = form.auth_login_method || 'POST';
+      auth.username = form.auth_username;
+      auth.password = form.auth_password;
+      if (form.auth_login_body.trim()) auth.login_body = form.auth_login_body;
+      const lh = parseMap(form.auth_login_headers, '登录接口请求头');
+      if (Object.keys(lh).length) auth.login_headers = lh;
+      auth.token_path = form.auth_token_path.trim();
+      if (form.auth_expire_path.trim()) auth.expire_path = form.auth_expire_path.trim();
+      break;
+    }
+    case 'oauth2':
+      auth.token_url = form.auth_token_url.trim();
+      auth.client_id = form.auth_client_id.trim();
+      auth.client_secret = form.auth_client_secret;
+      if (form.auth_scope.trim()) auth.scope = form.auth_scope.trim();
+      break;
+    default:
+      break;
+  }
+  const request = {
+    timeout_ms: Number(form.req_timeout_ms) || 30000,
+    body_type: form.req_body_type || 'json',
+  };
+  const reqHeaders = parseMap(form.req_headers, '默认请求头');
+  if (Object.keys(reqHeaders).length) request.headers = reqHeaders;
+  const reqQuery = parseMap(form.req_query, '固定 query 参数');
+  if (Object.keys(reqQuery).length) request.query = reqQuery;
+
+  const cfg = { auth, request };
+  if (form.proxy_spec_url.trim()) cfg.spec_url = form.proxy_spec_url.trim();
+  if (form.proxy_spec_text.trim()) cfg.spec_text = form.proxy_spec_text;
+  if (form.proxy_base_url.trim()) cfg.base_url = form.proxy_base_url.trim();
+  if (withSnapshot && form.proxy_snapshot) Object.assign(cfg, form.proxy_snapshot);
+  return cfg;
+}
+
+// proxyDisplay 服务行的地址展示：代理用解析出的 base_url，其余沿用原逻辑
+function proxyDisplay(s) {
+  if (s.transport !== 'proxy') {
+    return s.transport === 'http' ? s.endpoint : [s.command, ...(s.args || [])].join(' ');
+  }
+  const cfg = safeParse(s.proxy_config) || {};
+  return cfg.base_url || s.endpoint || cfg.spec_url || '（待解析文档）';
+}
+
+// routeDisplay 工具行的 METHOD + 路径
+function routeDisplay(t) {
+  const r = safeParse(t.route);
+  if (!r || !r.method) return null;
+  return { method: r.method, path: r.path };
+}
+
+function transportTone(transport) {
+  if (transport === 'proxy') return 'violet';
+  return transport === 'http' ? 'indigo' : 'teal';
 }
 
 function formatTime(v) {
@@ -145,6 +293,8 @@ export default function Mcp() {
   // 新建 / 编辑表单
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm());
+  // 代理文档解析预览（保存前确认接口清单）
+  const [proxyPreview, setProxyPreview] = useState(null);
 
   // 运行时 http.Client（不落库，只影响当前进程）
   const [client, setClient] = useState({ timeout_seconds: '', proxy_url: '', insecure_tls: false });
@@ -268,6 +418,20 @@ export default function Mcp() {
       return;
     }
     const isHTTP = form.transport === 'http';
+    const isProxy = form.transport === 'proxy';
+    let proxyConfig = '';
+    if (isProxy) {
+      try {
+        proxyConfig = JSON.stringify(buildProxyConfig(form));
+      } catch (err) {
+        setError(err.message);
+        return;
+      }
+      if (!form.proxy_spec_url.trim() && !form.proxy_spec_text.trim()) {
+        setError('代理模式需要填「文档地址」或粘贴「文档内容」');
+        return;
+      }
+    }
     const payload = {
       name: form.name.trim(),
       namespace: form.namespace.trim(),
@@ -275,27 +439,57 @@ export default function Mcp() {
       description: form.description.trim(),
       health_check_interval: Number(form.health_check_interval) || 30,
       enabled: form.enabled ? 'true' : 'false',
-      endpoint: isHTTP ? form.endpoint.trim() : '',
+      endpoint: isHTTP ? form.endpoint.trim() : isProxy ? form.proxy_base_url.trim() : '',
       headers: isHTTP ? headers : {},
-      command: isHTTP ? '' : form.command.trim(),
-      args: isHTTP
-        ? []
-        : form.args
-            .split('\n')
-            .map((v) => v.trim())
-            .filter(Boolean),
-      env: isHTTP ? {} : env,
+      command: isHTTP || isProxy ? '' : form.command.trim(),
+      args:
+        isHTTP || isProxy
+          ? []
+          : form.args
+              .split('\n')
+              .map((v) => v.trim())
+              .filter(Boolean),
+      env: isHTTP || isProxy ? {} : env,
+      proxy_config: proxyConfig,
     };
     const editing = !!form.id;
     const res = await act('save', () =>
       editing ? mcp.updateMCPServer({ id: form.id, ...payload }) : mcp.createMCPServer(payload),
     );
     if (!res) return;
-    setNotice(editing ? `${res.name} 已保存` : `${res.name} 已创建，可点击「连接」拉取工具`);
+    setNotice(
+      isProxy
+        ? `${res.name} 已${editing ? '保存' : '创建'}，解析到 ${res.tool_count ?? 0} 个接口`
+        : editing
+          ? `${res.name} 已保存`
+          : `${res.name} 已创建，可点击「连接」拉取工具`,
+    );
     setShowForm(false);
     setForm(emptyForm());
+    setProxyPreview(null);
     await loadServers();
     if (editing && detail?.id === res.id) setDetail(res);
+  };
+
+  // runPreview 解析文档预览接口清单（不落库）
+  const runPreview = async () => {
+    setError('');
+    setProxyPreview(null);
+    if (!form.proxy_spec_url.trim() && !form.proxy_spec_text.trim()) {
+      setError('先填文档地址或粘贴文档内容');
+      return;
+    }
+    let raw;
+    try {
+      raw = JSON.stringify(buildProxyConfig(form, { withSnapshot: false }));
+    } catch (err) {
+      setError(err.message);
+      return;
+    }
+    const res = await act('preview', () => mcp.previewMCPProxySpec({ proxy_config: raw }));
+    if (!res) return;
+    setProxyPreview(res);
+    if (res.base_url) setForm((f) => ({ ...f, proxy_base_url: res.base_url }));
   };
 
   const deleteServer = async (s) => {
@@ -442,7 +636,7 @@ export default function Mcp() {
               <EmptyState
                 icon={IconLink}
                 title="还没有 MCP 服务"
-                desc="新建一个 http 或 stdio 服务，连接后同步工具清单"
+                desc="新建 http / stdio 服务，或用 proxy 导入 Swagger 文档把接口变成工具"
               />
             ) : (
               <div className="table-wrap">
@@ -467,12 +661,15 @@ export default function Mcp() {
                               {s.name}
                               {!s.enabled && <Badge tone="warn">停用</Badge>}
                             </div>
-                            <div className="cell-sub mono">
-                              {s.namespace} · {s.transport === 'http' ? s.endpoint : [s.command, ...(s.args || [])].join(' ')}
+                            <div className="cell-sub mono ellipsis" style={{ maxWidth: 420 }} title={proxyDisplay(s)}>
+                              {s.namespace} · {proxyDisplay(s)}
                             </div>
                           </td>
                           <td>
-                            <Badge tone={s.transport === 'http' ? 'indigo' : 'teal'}>{s.transport}</Badge>
+                            <Badge tone={transportTone(s.transport)}>{s.transport}</Badge>
+                            {s.transport === 'proxy' && (
+                              <div className="cell-sub">API 代理</div>
+                            )}
                           </td>
                           <td>
                             {running ? <Badge tone="ok">运行中</Badge> : <Badge>未连接</Badge>}
@@ -613,7 +810,329 @@ export default function Mcp() {
                   </label>
                 </div>
 
-                {form.transport === 'http' ? (
+                {form.transport === 'proxy' ? (
+                  <>
+                    <div className="query-row">
+                      <label className="field inline">
+                        <span className="field-label">文档地址（Spec URL）</span>
+                        <input
+                          className="input mono"
+                          placeholder="https://api.example.com/v3/api-docs"
+                          value={form.proxy_spec_url}
+                          onChange={(e) => setForm({ ...form, proxy_spec_url: e.target.value })}
+                        />
+                      </label>
+                      <label className="field inline">
+                        <span className="field-label">Base URL（覆盖文档声明，可留空）</span>
+                        <input
+                          className="input mono"
+                          placeholder="https://api.example.com"
+                          value={form.proxy_base_url}
+                          onChange={(e) => setForm({ ...form, proxy_base_url: e.target.value })}
+                        />
+                      </label>
+                    </div>
+                    <label className="field">
+                      <span className="field-label">或直接粘贴文档内容（JSON / YAML，优先于上面的地址）</span>
+                      <textarea
+                        className="textarea mono"
+                        rows={5}
+                        placeholder={'openapi: 3.0.1\npaths:\n  /users:\n    get:\n      operationId: listUsers ...'}
+                        value={form.proxy_spec_text}
+                        onChange={(e) => setForm({ ...form, proxy_spec_text: e.target.value })}
+                      />
+                    </label>
+
+                    <div className="field-label" style={{ marginTop: 4 }}>Token 获取方案（不同系统的鉴权差异在这里统一）</div>
+                    <div className="query-row">
+                      <label className="field inline">
+                        <span className="field-label">鉴权类型</span>
+                        <select
+                          className="input"
+                          value={form.auth_type}
+                          onChange={(e) => setForm({ ...form, auth_type: e.target.value })}
+                        >
+                          {AUTH_TYPES.map((a) => (
+                            <option key={a.value} value={a.value}>{a.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {form.auth_type !== 'none' && (
+                        <>
+                          <label className="field inline">
+                            <span className="field-label">注入头名（默认 Authorization）</span>
+                            <input
+                              className="input mono"
+                              placeholder="Authorization"
+                              value={form.auth_header}
+                              onChange={(e) => setForm({ ...form, auth_header: e.target.value })}
+                            />
+                          </label>
+                          <label className="field inline">
+                            <span className="field-label">值前缀（如 Bearer ）</span>
+                            <input
+                              className="input mono"
+                              placeholder="Bearer "
+                              value={form.auth_prefix}
+                              onChange={(e) => setForm({ ...form, auth_prefix: e.target.value })}
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+
+                    {(form.auth_type === 'static' || form.auth_type === 'api_key') && (
+                      <div className="query-row">
+                        <label className="field inline">
+                          <span className="field-label">Token / Key</span>
+                          <input
+                            className="input mono"
+                            value={form.auth_token}
+                            onChange={(e) => setForm({ ...form, auth_token: e.target.value })}
+                          />
+                        </label>
+                        {form.auth_type === 'api_key' && (
+                          <>
+                            <label className="field inline">
+                              <span className="field-label">注入位置</span>
+                              <select
+                                className="input"
+                                value={form.auth_in}
+                                onChange={(e) => setForm({ ...form, auth_in: e.target.value })}
+                              >
+                                <option value="header">header</option>
+                                <option value="query">query</option>
+                              </select>
+                            </label>
+                            {form.auth_in === 'query' && (
+                              <label className="field inline">
+                                <span className="field-label">Query 参数名</span>
+                                <input
+                                  className="input mono"
+                                  placeholder="apikey"
+                                  value={form.auth_query_name}
+                                  onChange={(e) => setForm({ ...form, auth_query_name: e.target.value })}
+                                />
+                              </label>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {(form.auth_type === 'basic' || form.auth_type === 'login') && (
+                      <div className="query-row">
+                        <label className="field inline">
+                          <span className="field-label">用户名 / 账号</span>
+                          <input
+                            className="input mono"
+                            value={form.auth_username}
+                            onChange={(e) => setForm({ ...form, auth_username: e.target.value })}
+                          />
+                        </label>
+                        <label className="field inline">
+                          <span className="field-label">密码</span>
+                          <input
+                            className="input mono"
+                            type="password"
+                            value={form.auth_password}
+                            onChange={(e) => setForm({ ...form, auth_password: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                    )}
+
+                    {form.auth_type === 'login' && (
+                      <>
+                        <div className="query-row">
+                          <label className="field inline">
+                            <span className="field-label">登录接口地址</span>
+                            <input
+                              className="input mono"
+                              placeholder="https://sso.example.com/api/login"
+                              value={form.auth_login_url}
+                              onChange={(e) => setForm({ ...form, auth_login_url: e.target.value })}
+                            />
+                          </label>
+                          <label className="field inline">
+                            <span className="field-label">方法</span>
+                            <select
+                              className="input"
+                              value={form.auth_login_method}
+                              onChange={(e) => setForm({ ...form, auth_login_method: e.target.value })}
+                            >
+                              <option value="POST">POST</option>
+                              <option value="GET">GET</option>
+                            </select>
+                          </label>
+                          <label className="field inline">
+                            <span className="field-label">Token 路径</span>
+                            <input
+                              className="input mono"
+                              placeholder="data.access_token"
+                              value={form.auth_token_path}
+                              onChange={(e) => setForm({ ...form, auth_token_path: e.target.value })}
+                            />
+                          </label>
+                          <label className="field inline">
+                            <span className="field-label">过期秒数路径（可选）</span>
+                            <input
+                              className="input mono"
+                              placeholder="data.expires_in"
+                              value={form.auth_expire_path}
+                              onChange={(e) => setForm({ ...form, auth_expire_path: e.target.value })}
+                            />
+                          </label>
+                        </div>
+                        <label className="field">
+                          <span className="field-label">登录请求体（JSON 模板，支持 {'${username}'} {'${password}'}；留空用默认）</span>
+                          <textarea
+                            className="textarea mono"
+                            rows={2}
+                            placeholder={'{"username":"${username}","password":"${password}"}'}
+                            value={form.auth_login_body}
+                            onChange={(e) => setForm({ ...form, auth_login_body: e.target.value })}
+                          />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">登录接口额外请求头（JSON 对象，可选）</span>
+                          <textarea
+                            className="textarea mono"
+                            rows={2}
+                            placeholder={'{\n  "X-Tenant": "acme"\n}'}
+                            value={form.auth_login_headers}
+                            onChange={(e) => setForm({ ...form, auth_login_headers: e.target.value })}
+                          />
+                        </label>
+                      </>
+                    )}
+
+                    {form.auth_type === 'oauth2' && (
+                      <div className="query-row">
+                        <label className="field inline">
+                          <span className="field-label">Token 地址</span>
+                          <input
+                            className="input mono"
+                            placeholder="https://auth.example.com/oauth/token"
+                            value={form.auth_token_url}
+                            onChange={(e) => setForm({ ...form, auth_token_url: e.target.value })}
+                          />
+                        </label>
+                        <label className="field inline">
+                          <span className="field-label">client_id</span>
+                          <input
+                            className="input mono"
+                            value={form.auth_client_id}
+                            onChange={(e) => setForm({ ...form, auth_client_id: e.target.value })}
+                          />
+                        </label>
+                        <label className="field inline">
+                          <span className="field-label">client_secret</span>
+                          <input
+                            className="input mono"
+                            type="password"
+                            value={form.auth_client_secret}
+                            onChange={(e) => setForm({ ...form, auth_client_secret: e.target.value })}
+                          />
+                        </label>
+                        <label className="field inline">
+                          <span className="field-label">scope（可选）</span>
+                          <input
+                            className="input mono"
+                            value={form.auth_scope}
+                            onChange={(e) => setForm({ ...form, auth_scope: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                    )}
+
+                    <div className="field-label" style={{ marginTop: 4 }}>HTTP 请求方案（所有接口共享）</div>
+                    <div className="query-row">
+                      <label className="field inline">
+                        <span className="field-label">超时（毫秒）</span>
+                        <input
+                          className="input mono"
+                          value={form.req_timeout_ms}
+                          onChange={(e) => setForm({ ...form, req_timeout_ms: e.target.value })}
+                        />
+                      </label>
+                      <label className="field inline">
+                        <span className="field-label">请求体编码</span>
+                        <select
+                          className="input"
+                          value={form.req_body_type}
+                          onChange={(e) => setForm({ ...form, req_body_type: e.target.value })}
+                        >
+                          <option value="json">json</option>
+                          <option value="form">form（x-www-form-urlencoded）</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="query-row">
+                      <label className="field inline">
+                        <span className="field-label">默认请求头（JSON 对象）</span>
+                        <textarea
+                          className="textarea mono"
+                          rows={2}
+                          placeholder={'{\n  "X-Tenant": "acme"\n}'}
+                          value={form.req_headers}
+                          onChange={(e) => setForm({ ...form, req_headers: e.target.value })}
+                        />
+                      </label>
+                      <label className="field inline">
+                        <span className="field-label">固定 query 参数（JSON 对象）</span>
+                        <textarea
+                          className="textarea mono"
+                          rows={2}
+                          placeholder={'{\n  "lang": "zh-CN"\n}'}
+                          value={form.req_query}
+                          onChange={(e) => setForm({ ...form, req_query: e.target.value })}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="form-actions" style={{ justifyContent: 'flex-start' }}>
+                      <button
+                        className="btn ghost sm"
+                        type="button"
+                        disabled={busy === 'preview'}
+                        onClick={runPreview}
+                      >
+                        {busy === 'preview' ? <Spinner text="解析中" /> : '解析预览接口'}
+                      </button>
+                      <span className="cell-sub">解析不落库；保存后自动同步，把接口写成工具（能力名 mcp:&lt;命名空间&gt;__&lt;接口&gt;）</span>
+                    </div>
+
+                    {proxyPreview && (
+                      <div className="block" style={{ maxHeight: 260, overflow: 'auto' }}>
+                        <div className="muted" style={{ marginBottom: 6 }}>
+                          {proxyPreview.title || '未命名文档'} {proxyPreview.version ? `· ${proxyPreview.version}` : ''} · {proxyPreview.operations?.length ?? 0} 个接口 · 生效地址 <span className="mono">{proxyPreview.base_url}</span>
+                        </div>
+                        {(proxyPreview.warnings || []).map((w) => (
+                          <div key={w} className="cell-sub" style={{ color: '#b45309' }}>⚠ {w}</div>
+                        ))}
+                        <table className="table">
+                          <thead>
+                            <tr><th>方法</th><th>路径</th><th>工具名</th><th>说明</th></tr>
+                          </thead>
+                          <tbody>
+                            {(proxyPreview.operations || []).slice(0, 200).map((op) => (
+                              <tr key={op.name}>
+                                <td><Badge tone="violet">{op.method}</Badge></td>
+                                <td className="mono">{op.path}</td>
+                                <td className="mono">{op.name}</td>
+                                <td className="ellipsis" title={op.summary || op.description}>
+                                  {op.summary || op.description || '—'}
+                                  {op.deprecated ? ' （已废弃）' : ''}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                ) : form.transport === 'http' ? (
                   <>
                     <label className="field">
                       <span className="field-label">Endpoint（Streamable HTTP）</span>
@@ -722,7 +1241,7 @@ export default function Mcp() {
               desc={detail.description || '无描述'}
               actions={
                 <>
-                  <Badge tone={detail.transport === 'http' ? 'indigo' : 'teal'}>{detail.transport}</Badge>
+                  <Badge tone={transportTone(detail.transport)}>{detail.transport}</Badge>
                   <button className="btn ghost sm" type="button" onClick={() => openToolsOf(detail)}>
                     查看工具 ({detail.tool_count ?? 0})
                   </button>
@@ -896,6 +1415,12 @@ export default function Mcp() {
                         <td>
                           <div className="cell-main">{t.display_name || t.tool_name}</div>
                           <div className="cell-sub mono">{t.unique_name}</div>
+                          {routeDisplay(t) && (
+                            <div className="cell-sub">
+                              <Badge tone="violet">{routeDisplay(t).method}</Badge>{' '}
+                              <span className="mono">{routeDisplay(t).path}</span>
+                            </div>
+                          )}
                           {t.description && (
                             <div className="cell-sub ellipsis" title={t.description}>
                               {t.description}

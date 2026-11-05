@@ -226,7 +226,7 @@
  * @typedef {Object} CreateMCPServerRequest
  * @property {string} name
  * @property {string} [namespace]
- * @property {string} transport - stdio | http
+ * @property {string} transport - stdio | http | proxy
  * @property {string} [description]
  * @property {string} [endpoint]
  * @property {Object<string, string>} [headers]
@@ -235,6 +235,7 @@
  * @property {Object<string, string>} [env]
  * @property {string} [health_check_interval]
  * @property {string} [enabled] - 不传默认启用
+ * @property {string} [proxy_config] - proxy 模式配置（JSON 原文）
  */
 
 /**
@@ -288,12 +289,25 @@
  */
 
 /**
+ * MCPProxyOperation 文档里的一个接口（= 一个待生成的工具）
+ * @typedef {Object} MCPProxyOperation
+ * @property {string} [name]
+ * @property {string} [method]
+ * @property {string} [path]
+ * @property {string} [summary]
+ * @property {string} [description]
+ * @property {string[]} [tags]
+ * @property {boolean} [deprecated]
+ * @property {string} [input_schema] - 生成的工具入参 JSON Schema
+ */
+
+/**
  * MCPServer MCP 服务
  * @typedef {Object} MCPServer
  * @property {string} [id]
  * @property {string} [name]
  * @property {string} [namespace]
- * @property {string} [transport] - stdio | http
+ * @property {string} [transport] - stdio | http | proxy
  * @property {boolean} [enabled]
  * @property {string} [description]
  * @property {string} [endpoint] - http 模式
@@ -307,6 +321,7 @@
  * @property {MCPTool[]} [tools] - 详情接口返回，列表接口留空
  * @property {string} [created_at]
  * @property {string} [updated_at]
+ * @property {string} [proxy_config] - proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
  */
 
 /**
@@ -356,6 +371,7 @@
  * @property {string} [version]
  * @property {string} [created_at]
  * @property {string} [updated_at]
+ * @property {string} [route] - proxy 工具到 HTTP 请求的映射（JSON：method/path/params/body_type）
  */
 
 /**
@@ -364,6 +380,22 @@
  * @property {MCPTool} [tool]
  * @property {number} [score]
  * @property {string} [source] - 命中来源：redis | mysql
+ */
+
+/**
+ * PreviewMCPProxySpecReply
+ * @typedef {Object} PreviewMCPProxySpecReply
+ * @property {string} [base_url]
+ * @property {string} [title]
+ * @property {string} [version]
+ * @property {MCPProxyOperation[]} [operations]
+ * @property {string[]} [warnings]
+ */
+
+/**
+ * PreviewMCPProxySpecRequest
+ * @typedef {Object} PreviewMCPProxySpecRequest
+ * @property {string} proxy_config - 代理配置 JSON（spec_url / spec_text / base_url / auth / request）
  */
 
 /**
@@ -433,6 +465,7 @@
  * @property {Object<string, string>} [env]
  * @property {string} [health_check_interval]
  * @property {string} [enabled]
+ * @property {string} [proxy_config] - proxy 模式配置（JSON 原文）
  */
 
 /* ---------- 记忆系统（MemoryService） ---------- */

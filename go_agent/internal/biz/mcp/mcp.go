@@ -38,6 +38,8 @@ type UseCase struct {
 	cache Cache
 	emb   Embedder
 	mgr   *Manager
+	// proxy Swagger/OpenAPI 代理引擎（transport=proxy）
+	proxy *proxyEngine
 	// hist 统一操作历史（MCP 调用记录，可为 nil：不记录）
 	hist history.Recorder
 
@@ -60,6 +62,7 @@ func New(repo Repo, vec VectorStore, cache Cache, dialer Dialer, clients ClientP
 		cache:      cache,
 		emb:        emb,
 		mgr:        NewManager(dialer, clients),
+		proxy:      newProxyEngine(),
 		hist:       hist,
 		clientOpts: make(map[uint64]ClientOptions),
 	}, nil
@@ -127,6 +130,7 @@ func (u *UseCase) CreateServer(ctx context.Context, in ServerInput) (*Server, er
 		Args:                in.Args,
 		Env:                 in.Env,
 		HealthCheckInterval: in.HealthCheckInterval,
+		ProxyConfig:         in.ProxyConfig,
 	}
 	if err := u.repo.CreateServer(ctx, s); err != nil {
 		return nil, err
@@ -158,6 +162,7 @@ func (u *UseCase) UpdateServer(ctx context.Context, id uint64, in ServerInput) (
 	cur.Args = in.Args
 	cur.Env = in.Env
 	cur.HealthCheckInterval = in.HealthCheckInterval
+	cur.ProxyConfig = in.ProxyConfig
 
 	if err := u.repo.UpdateServer(ctx, cur); err != nil {
 		return nil, err
@@ -235,6 +240,19 @@ func (u *UseCase) ConnectServer(ctx context.Context, id uint64) (Status, error) 
 	if !s.Enabled {
 		return Status{}, fmt.Errorf("%w: %s", ErrServerDisabled, s.Name)
 	}
+	// 代理没有长连接：连上 = 文档可解析 + 服务可达
+	if s.Transport == TransportProxy {
+		if err := u.proxy.Ping(ctx, *s); err != nil {
+			u.markError(ctx, *s, err)
+			return u.statusOf(ctx, *s), fmt.Errorf("代理服务 %s 不可用: %w", s.Name, err)
+		}
+		return u.saveStatus(ctx, *s, func(st *Status) {
+			st.Running = true
+			st.LastPingAt = time.Now()
+			st.ErrorMsg = ""
+			st.HTTPClient = describeClient(*s, u.options(id))
+		}), nil
+	}
 	info, err := u.mgr.Connect(ctx, *s, u.options(id))
 	if err != nil {
 		u.markError(ctx, *s, err)
@@ -276,6 +294,18 @@ func (u *UseCase) PingServer(ctx context.Context, id uint64) (Status, error) {
 	}
 	if !s.Enabled {
 		return Status{}, fmt.Errorf("%w: %s", ErrServerDisabled, s.Name)
+	}
+	if s.Transport == TransportProxy {
+		if err := u.proxy.Ping(ctx, *s); err != nil {
+			u.markError(ctx, *s, err)
+			return u.statusOf(ctx, *s), err
+		}
+		return u.saveStatus(ctx, *s, func(st *Status) {
+			st.Running = true
+			st.LastPingAt = time.Now()
+			st.ErrorMsg = ""
+			st.HTTPClient = describeClient(*s, u.options(id))
+		}), nil
 	}
 	cli, err := u.mgr.Ensure(ctx, *s, u.options(id))
 	if err != nil {
@@ -356,17 +386,40 @@ func (u *UseCase) SyncTools(ctx context.Context, id uint64) (*SyncResult, error)
 	if !s.Enabled {
 		return res, fmt.Errorf("%w: %s", ErrServerDisabled, s.Name)
 	}
-	cli, err := u.mgr.Ensure(ctx, *s, u.options(id))
-	if err != nil {
-		u.markError(ctx, *s, err)
-		return res, fmt.Errorf("连接 MCP 服务 %s 失败: %w", s.Name, err)
+	var tools []Tool
+	if s.Transport == TransportProxy {
+		// 代理：解析文档生成工具（不走 MCP 握手），并把解析快照回写配置
+		built, cfg, base, perr := u.proxy.BuildTools(ctx, *s)
+		if perr != nil {
+			u.markError(ctx, *s, perr)
+			return res, fmt.Errorf("解析代理文档失败: %w", perr)
+		}
+		tools = built
+		if cfg != nil {
+			cfg.BaseURL = base
+			if encoded, eerr := EncodeProxySpec(cfg); eerr == nil {
+				s.ProxyConfig = encoded
+			}
+			if strings.TrimSpace(s.Endpoint) == "" {
+				s.Endpoint = base
+			}
+			if uerr := u.repo.UpdateServer(ctx, s); uerr != nil {
+				log.Warn("回写代理配置失败", "server", s.Name, "err", uerr)
+			}
+		}
+	} else {
+		cli, err := u.mgr.Ensure(ctx, *s, u.options(id))
+		if err != nil {
+			u.markError(ctx, *s, err)
+			return res, fmt.Errorf("连接 MCP 服务 %s 失败: %w", s.Name, err)
+		}
+		remote, err := cli.ListTools(ctx)
+		if err != nil {
+			u.markError(ctx, *s, err)
+			return res, fmt.Errorf("拉取工具列表失败: %w", err)
+		}
+		tools = buildTools(*s, remote)
 	}
-	remote, err := cli.ListTools(ctx)
-	if err != nil {
-		u.markError(ctx, *s, err)
-		return res, fmt.Errorf("拉取工具列表失败: %w", err)
-	}
-	tools := buildTools(*s, remote)
 	res.Fetched = len(tools)
 
 	stat, saved, err := u.repo.UpsertTools(ctx, id, tools)
@@ -408,6 +461,25 @@ func (u *UseCase) SyncTools(ctx context.Context, id uint64) (*SyncResult, error)
 		st.HTTPClient = describeClient(*s, u.options(id))
 	})
 	return res, nil
+}
+
+// PreviewProxy 解析 Swagger/OpenAPI 文档，返回接口清单（不落库，保存前预览用）。
+func (u *UseCase) PreviewProxy(ctx context.Context, proxyConfig string) (*ProxyPreview, error) {
+	cfg, err := DecodeProxySpec(proxyConfig)
+	if err != nil {
+		return nil, err
+	}
+	doc, base, err := u.proxy.Preview(ctx, Server{Transport: TransportProxy, ProxyConfig: proxyConfig}, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &ProxyPreview{
+		BaseURL:  base,
+		Title:    doc.title,
+		Version:  doc.version,
+		Ops:      doc.ops,
+		Warnings: doc.warnings,
+	}, nil
 }
 
 // SyncAll 同步全部启用的服务（单个失败不影响其它）
@@ -607,6 +679,20 @@ func (u *UseCase) CallTool(ctx context.Context, toolID uint64, uniqueName string
 	}
 	if !s.Enabled {
 		return nil, fmt.Errorf("%w: %s", ErrServerDisabled, s.Name)
+	}
+	// 代理：按 route 映射拼 HTTP 请求并注入鉴权
+	if s.Transport == TransportProxy {
+		r, cerr := u.proxy.Call(ctx, *s, *t, args)
+		if cerr != nil {
+			u.markError(ctx, *s, cerr)
+			return nil, fmt.Errorf("调用接口 %s 失败: %w", t.UniqueName, cerr)
+		}
+		u.saveStatus(ctx, *s, func(st *Status) {
+			st.Running = true
+			st.LastPingAt = time.Now()
+			st.ErrorMsg = ""
+		})
+		return r, nil
 	}
 	cli, err := u.mgr.Ensure(ctx, *s, u.options(s.ID))
 	if err != nil {
@@ -875,6 +961,13 @@ func (u *UseCase) markError(ctx context.Context, s Server, err error) {
 
 // describeClient 运行时客户端摘要（stdio 不涉及 http client）
 func describeClient(s Server, opts ClientOptions) string {
+	if s.Transport == TransportProxy {
+		cfg, err := DecodeProxySpec(s.ProxyConfig)
+		if err != nil {
+			return "mode=proxy"
+		}
+		return fmt.Sprintf("mode=proxy auth=%s timeout=%dms ops=%d", cfg.Auth.Type, cfg.Request.TimeoutMS, len(cfg.Ops))
+	}
 	if s.Transport != TransportHTTP {
 		return "mode=stdio"
 	}

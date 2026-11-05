@@ -239,6 +239,7 @@ func (r *MCPRepo) UpsertTools(ctx context.Context, serverID uint64, tools []mcp.
 						"examples":      po.Examples,
 						"tags":          po.Tags,
 						"version":       po.Version,
+						"route":         po.Route,
 						"vectorized":    false, // 内容变了，旧向量作废
 					}).Error; err != nil {
 					return stat, nil, err
@@ -302,6 +303,7 @@ func (r *MCPRepo) insertTool(ctx context.Context, serverID uint64, po *models.To
 			"examples":      po.Examples,
 			"tags":          po.Tags,
 			"version":       po.Version,
+			"route":         po.Route,
 			"is_enabled":    po.Enabled,
 			"vectorized":    false,
 			"deleted_at":    nil,
@@ -468,6 +470,7 @@ func serverToBiz(po *models.MCPServerPO) *mcp.Server {
 		Command:             po.Command,
 		Args:                decodeList(po.Args),
 		Env:                 decodeMap(po.Env),
+		ProxyConfig:         po.ProxyConfig,
 		HealthCheckInterval: po.HealthCheckInterval,
 		CreatedAt:           po.CreatedAt,
 		UpdatedAt:           po.UpdatedAt,
@@ -487,6 +490,7 @@ func serverFromBiz(s *mcp.Server) *models.MCPServerPO {
 		Command:             s.Command,
 		Args:                encodeList(s.Args),
 		Env:                 encodeMap(s.Env),
+		ProxyConfig:         s.ProxyConfig,
 		HealthCheckInterval: s.HealthCheckInterval,
 	}
 }
@@ -508,6 +512,7 @@ func toolToBiz(po *models.ToolPO, serverName, namespace string) *mcp.Tool {
 		Enabled:      po.Enabled,
 		Vectorized:   po.Vectorized,
 		Version:      po.Version,
+		Route:        po.Route,
 		CreatedAt:    po.CreatedAt,
 		UpdatedAt:    po.UpdatedAt,
 	}
@@ -562,6 +567,7 @@ func toolFromBiz(serverID uint64, t *mcp.Tool) *models.ToolPO {
 		Enabled:      t.Enabled,
 		Vectorized:   t.Vectorized,
 		Version:      clip(strings.TrimSpace(t.Version), 64),
+		Route:        t.Route,
 	}
 }
 
@@ -574,5 +580,6 @@ func toolChanged(old *models.ToolPO, in *models.ToolPO) bool {
 		old.OutputSchema != in.OutputSchema ||
 		old.Examples != in.Examples ||
 		old.Tags != in.Tags ||
-		old.Version != in.Version
+		old.Version != in.Version ||
+		old.Route != in.Route
 }

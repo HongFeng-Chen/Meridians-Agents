@@ -385,7 +385,9 @@ paths:
         post:
             tags:
                 - AgentFactoryService
-            description: "ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，\r\n reject 直接终态失败。审批结论落任务事件流。"
+            description: |-
+                ApproveTask 审批挂起（paused）中的任务：approve 置回 pending 从 checkpoint 续跑，
+                 reject 直接终态失败。审批结论落任务事件流。
             operationId: AgentFactoryService_ApproveTask
             parameters:
                 - name: id
@@ -1795,6 +1797,25 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/mcp.v1.ListMCPNamespacesReply'
+    /api/mcp/proxies/preview:
+        post:
+            tags:
+                - MCPService
+            description: PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+            operationId: MCPService_PreviewMCPProxySpec
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/mcp.v1.PreviewMCPProxySpecRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/mcp.v1.PreviewMCPProxySpecReply'
     /api/mcp/servers:
         get:
             tags:
@@ -5441,7 +5462,7 @@ components:
                     type: string
                 transport:
                     type: string
-                    description: stdio | http
+                    description: stdio | http | proxy
                 description:
                     type: string
                 endpoint:
@@ -5465,6 +5486,9 @@ components:
                 enabled:
                     type: string
                     description: 不传默认启用
+                proxy_config:
+                    type: string
+                    description: proxy 模式配置（JSON 原文）
         mcp.v1.DeleteMCPServerReply:
             type: object
             properties:
@@ -5530,6 +5554,29 @@ components:
                 data:
                     type: string
             description: MCPContent 工具返回内容块
+        mcp.v1.MCPProxyOperation:
+            type: object
+            properties:
+                name:
+                    type: string
+                method:
+                    type: string
+                path:
+                    type: string
+                summary:
+                    type: string
+                description:
+                    type: string
+                tags:
+                    type: array
+                    items:
+                        type: string
+                deprecated:
+                    type: boolean
+                input_schema:
+                    type: string
+                    description: 生成的工具入参 JSON Schema
+            description: MCPProxyOperation 文档里的一个接口（= 一个待生成的工具）
         mcp.v1.MCPServer:
             type: object
             properties:
@@ -5541,7 +5588,7 @@ components:
                     type: string
                 transport:
                     type: string
-                    description: stdio | http
+                    description: stdio | http | proxy
                 enabled:
                     type: boolean
                 description:
@@ -5580,6 +5627,9 @@ components:
                     type: string
                 updated_at:
                     type: string
+                proxy_config:
+                    type: string
+                    description: proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
             description: MCPServer MCP 服务
         mcp.v1.MCPStats:
             type: object
@@ -5674,6 +5724,9 @@ components:
                     type: string
                 updated_at:
                     type: string
+                route:
+                    type: string
+                    description: proxy 工具到 HTTP 请求的映射（JSON：method/path/params/body_type）
             description: MCPTool 工具
         mcp.v1.MCPToolHit:
             type: object
@@ -5687,6 +5740,31 @@ components:
                     type: string
                     description: 命中来源：redis | mysql
             description: MCPToolHit 语义召回结果
+        mcp.v1.PreviewMCPProxySpecReply:
+            type: object
+            properties:
+                base_url:
+                    type: string
+                title:
+                    type: string
+                version:
+                    type: string
+                operations:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/mcp.v1.MCPProxyOperation'
+                warnings:
+                    type: array
+                    items:
+                        type: string
+        mcp.v1.PreviewMCPProxySpecRequest:
+            required:
+                - proxy_config
+            type: object
+            properties:
+                proxy_config:
+                    type: string
+                    description: 代理配置 JSON（spec_url / spec_text / base_url / auth / request）
         mcp.v1.SearchMCPToolsReply:
             type: object
             properties:
@@ -5796,6 +5874,9 @@ components:
                     type: string
                 enabled:
                     type: string
+                proxy_config:
+                    type: string
+                    description: proxy 模式配置（JSON 原文）
         memory.v1.AnswerRequest:
             required:
                 - question

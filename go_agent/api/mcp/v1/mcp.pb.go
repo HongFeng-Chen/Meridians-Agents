@@ -171,10 +171,12 @@ type MCPTool struct {
 	Tags         []string `protobuf:"bytes,12,rep,name=tags,proto3" json:"tags,omitempty"`
 	Enabled      bool     `protobuf:"varint,13,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// 向量是否已写入 Milvus（false 时语义召回检索不到）
-	Vectorized    bool   `protobuf:"varint,14,opt,name=vectorized,proto3" json:"vectorized,omitempty"`
-	Version       string `protobuf:"bytes,15,opt,name=version,proto3" json:"version,omitempty"`
-	CreatedAt     string `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
-	UpdatedAt     string `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	Vectorized bool   `protobuf:"varint,14,opt,name=vectorized,proto3" json:"vectorized,omitempty"`
+	Version    string `protobuf:"bytes,15,opt,name=version,proto3" json:"version,omitempty"`
+	CreatedAt  string `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
+	UpdatedAt  string `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	// proxy 工具到 HTTP 请求的映射（JSON：method/path/params/body_type）
+	Route         string `protobuf:"bytes,18,opt,name=route,proto3" json:"route,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -328,13 +330,20 @@ func (x *MCPTool) GetUpdatedAt() string {
 	return ""
 }
 
+func (x *MCPTool) GetRoute() string {
+	if x != nil {
+		return x.Route
+	}
+	return ""
+}
+
 // MCPServer MCP 服务
 type MCPServer struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Id        uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name      string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Namespace string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	// stdio | http
+	// stdio | http | proxy
 	Transport   string `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
 	Enabled     bool   `protobuf:"varint,5,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Description string `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
@@ -349,9 +358,11 @@ type MCPServer struct {
 	ToolCount           int32             `protobuf:"varint,13,opt,name=tool_count,proto3" json:"tool_count,omitempty"`
 	Status              *MCPStatus        `protobuf:"bytes,14,opt,name=status,proto3" json:"status,omitempty"`
 	// 详情接口返回，列表接口留空
-	Tools         []*MCPTool `protobuf:"bytes,15,rep,name=tools,proto3" json:"tools,omitempty"`
-	CreatedAt     string     `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
-	UpdatedAt     string     `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	Tools     []*MCPTool `protobuf:"bytes,15,rep,name=tools,proto3" json:"tools,omitempty"`
+	CreatedAt string     `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
+	UpdatedAt string     `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	// proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+	ProxyConfig   string `protobuf:"bytes,18,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -501,6 +512,13 @@ func (x *MCPServer) GetCreatedAt() string {
 func (x *MCPServer) GetUpdatedAt() string {
 	if x != nil {
 		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *MCPServer) GetProxyConfig() string {
+	if x != nil {
+		return x.ProxyConfig
 	}
 	return ""
 }
@@ -1183,7 +1201,7 @@ type CreateMCPServerRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Namespace string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	// stdio | http
+	// stdio | http | proxy
 	Transport           string            `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
 	Description         string            `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	Endpoint            string            `protobuf:"bytes,5,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
@@ -1193,7 +1211,9 @@ type CreateMCPServerRequest struct {
 	Env                 map[string]string `protobuf:"bytes,9,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	HealthCheckInterval int64             `protobuf:"varint,10,opt,name=health_check_interval,proto3" json:"health_check_interval,omitempty"`
 	// 不传默认启用
-	Enabled       string `protobuf:"bytes,11,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Enabled string `protobuf:"bytes,11,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// proxy 模式配置（JSON 原文）
+	ProxyConfig   string `protobuf:"bytes,12,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1305,6 +1325,13 @@ func (x *CreateMCPServerRequest) GetEnabled() string {
 	return ""
 }
 
+func (x *CreateMCPServerRequest) GetProxyConfig() string {
+	if x != nil {
+		return x.ProxyConfig
+	}
+	return ""
+}
+
 type UpdateMCPServerRequest struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	Id                  uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1319,8 +1346,10 @@ type UpdateMCPServerRequest struct {
 	Env                 map[string]string      `protobuf:"bytes,10,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	HealthCheckInterval int64                  `protobuf:"varint,11,opt,name=health_check_interval,proto3" json:"health_check_interval,omitempty"`
 	Enabled             string                 `protobuf:"bytes,12,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// proxy 模式配置（JSON 原文）
+	ProxyConfig   string `protobuf:"bytes,13,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateMCPServerRequest) Reset() {
@@ -1437,6 +1466,236 @@ func (x *UpdateMCPServerRequest) GetEnabled() string {
 	return ""
 }
 
+func (x *UpdateMCPServerRequest) GetProxyConfig() string {
+	if x != nil {
+		return x.ProxyConfig
+	}
+	return ""
+}
+
+// MCPProxyOperation 文档里的一个接口（= 一个待生成的工具）
+type MCPProxyOperation struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Method      string                 `protobuf:"bytes,2,opt,name=method,proto3" json:"method,omitempty"`
+	Path        string                 `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	Summary     string                 `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	Description string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	Tags        []string               `protobuf:"bytes,6,rep,name=tags,proto3" json:"tags,omitempty"`
+	Deprecated  bool                   `protobuf:"varint,7,opt,name=deprecated,proto3" json:"deprecated,omitempty"`
+	// 生成的工具入参 JSON Schema
+	InputSchema   string `protobuf:"bytes,8,opt,name=input_schema,proto3" json:"input_schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MCPProxyOperation) Reset() {
+	*x = MCPProxyOperation{}
+	mi := &file_mcp_v1_mcp_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MCPProxyOperation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MCPProxyOperation) ProtoMessage() {}
+
+func (x *MCPProxyOperation) ProtoReflect() protoreflect.Message {
+	mi := &file_mcp_v1_mcp_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MCPProxyOperation.ProtoReflect.Descriptor instead.
+func (*MCPProxyOperation) Descriptor() ([]byte, []int) {
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *MCPProxyOperation) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *MCPProxyOperation) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *MCPProxyOperation) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *MCPProxyOperation) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *MCPProxyOperation) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *MCPProxyOperation) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+func (x *MCPProxyOperation) GetDeprecated() bool {
+	if x != nil {
+		return x.Deprecated
+	}
+	return false
+}
+
+func (x *MCPProxyOperation) GetInputSchema() string {
+	if x != nil {
+		return x.InputSchema
+	}
+	return ""
+}
+
+type PreviewMCPProxySpecRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 代理配置 JSON（spec_url / spec_text / base_url / auth / request）
+	ProxyConfig   string `protobuf:"bytes,1,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewMCPProxySpecRequest) Reset() {
+	*x = PreviewMCPProxySpecRequest{}
+	mi := &file_mcp_v1_mcp_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewMCPProxySpecRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewMCPProxySpecRequest) ProtoMessage() {}
+
+func (x *PreviewMCPProxySpecRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mcp_v1_mcp_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewMCPProxySpecRequest.ProtoReflect.Descriptor instead.
+func (*PreviewMCPProxySpecRequest) Descriptor() ([]byte, []int) {
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *PreviewMCPProxySpecRequest) GetProxyConfig() string {
+	if x != nil {
+		return x.ProxyConfig
+	}
+	return ""
+}
+
+type PreviewMCPProxySpecReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BaseUrl       string                 `protobuf:"bytes,1,opt,name=base_url,proto3" json:"base_url,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	Operations    []*MCPProxyOperation   `protobuf:"bytes,4,rep,name=operations,proto3" json:"operations,omitempty"`
+	Warnings      []string               `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PreviewMCPProxySpecReply) Reset() {
+	*x = PreviewMCPProxySpecReply{}
+	mi := &file_mcp_v1_mcp_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreviewMCPProxySpecReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreviewMCPProxySpecReply) ProtoMessage() {}
+
+func (x *PreviewMCPProxySpecReply) ProtoReflect() protoreflect.Message {
+	mi := &file_mcp_v1_mcp_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreviewMCPProxySpecReply.ProtoReflect.Descriptor instead.
+func (*PreviewMCPProxySpecReply) Descriptor() ([]byte, []int) {
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *PreviewMCPProxySpecReply) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+func (x *PreviewMCPProxySpecReply) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *PreviewMCPProxySpecReply) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *PreviewMCPProxySpecReply) GetOperations() []*MCPProxyOperation {
+	if x != nil {
+		return x.Operations
+	}
+	return nil
+}
+
+func (x *PreviewMCPProxySpecReply) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
+	}
+	return nil
+}
+
 type DeleteMCPServerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1446,7 +1705,7 @@ type DeleteMCPServerRequest struct {
 
 func (x *DeleteMCPServerRequest) Reset() {
 	*x = DeleteMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[16]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1458,7 +1717,7 @@ func (x *DeleteMCPServerRequest) String() string {
 func (*DeleteMCPServerRequest) ProtoMessage() {}
 
 func (x *DeleteMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[16]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1471,7 +1730,7 @@ func (x *DeleteMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{16}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DeleteMCPServerRequest) GetId() uint64 {
@@ -1491,7 +1750,7 @@ type DeleteMCPServerReply struct {
 
 func (x *DeleteMCPServerReply) Reset() {
 	*x = DeleteMCPServerReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[17]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1503,7 +1762,7 @@ func (x *DeleteMCPServerReply) String() string {
 func (*DeleteMCPServerReply) ProtoMessage() {}
 
 func (x *DeleteMCPServerReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[17]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1516,7 +1775,7 @@ func (x *DeleteMCPServerReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPServerReply.ProtoReflect.Descriptor instead.
 func (*DeleteMCPServerReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{17}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeleteMCPServerReply) GetId() uint64 {
@@ -1543,7 +1802,7 @@ type ToggleMCPServerRequest struct {
 
 func (x *ToggleMCPServerRequest) Reset() {
 	*x = ToggleMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[18]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1555,7 +1814,7 @@ func (x *ToggleMCPServerRequest) String() string {
 func (*ToggleMCPServerRequest) ProtoMessage() {}
 
 func (x *ToggleMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[18]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1568,7 +1827,7 @@ func (x *ToggleMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToggleMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*ToggleMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{18}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ToggleMCPServerRequest) GetId() uint64 {
@@ -1594,7 +1853,7 @@ type ConnectMCPServerRequest struct {
 
 func (x *ConnectMCPServerRequest) Reset() {
 	*x = ConnectMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[19]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1606,7 +1865,7 @@ func (x *ConnectMCPServerRequest) String() string {
 func (*ConnectMCPServerRequest) ProtoMessage() {}
 
 func (x *ConnectMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[19]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1619,7 +1878,7 @@ func (x *ConnectMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*ConnectMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{19}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ConnectMCPServerRequest) GetId() uint64 {
@@ -1638,7 +1897,7 @@ type DisconnectMCPServerRequest struct {
 
 func (x *DisconnectMCPServerRequest) Reset() {
 	*x = DisconnectMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[20]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1650,7 +1909,7 @@ func (x *DisconnectMCPServerRequest) String() string {
 func (*DisconnectMCPServerRequest) ProtoMessage() {}
 
 func (x *DisconnectMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[20]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1663,7 +1922,7 @@ func (x *DisconnectMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisconnectMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*DisconnectMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{20}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DisconnectMCPServerRequest) GetId() uint64 {
@@ -1682,7 +1941,7 @@ type PingMCPServerRequest struct {
 
 func (x *PingMCPServerRequest) Reset() {
 	*x = PingMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[21]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1694,7 +1953,7 @@ func (x *PingMCPServerRequest) String() string {
 func (*PingMCPServerRequest) ProtoMessage() {}
 
 func (x *PingMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[21]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1707,7 +1966,7 @@ func (x *PingMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*PingMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{21}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PingMCPServerRequest) GetId() uint64 {
@@ -1727,7 +1986,7 @@ type SetMCPClientRequest struct {
 
 func (x *SetMCPClientRequest) Reset() {
 	*x = SetMCPClientRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[22]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1739,7 +1998,7 @@ func (x *SetMCPClientRequest) String() string {
 func (*SetMCPClientRequest) ProtoMessage() {}
 
 func (x *SetMCPClientRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[22]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1752,7 +2011,7 @@ func (x *SetMCPClientRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMCPClientRequest.ProtoReflect.Descriptor instead.
 func (*SetMCPClientRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{22}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SetMCPClientRequest) GetId() uint64 {
@@ -1778,7 +2037,7 @@ type SyncMCPServerRequest struct {
 
 func (x *SyncMCPServerRequest) Reset() {
 	*x = SyncMCPServerRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[23]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1790,7 +2049,7 @@ func (x *SyncMCPServerRequest) String() string {
 func (*SyncMCPServerRequest) ProtoMessage() {}
 
 func (x *SyncMCPServerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[23]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1803,7 +2062,7 @@ func (x *SyncMCPServerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncMCPServerRequest.ProtoReflect.Descriptor instead.
 func (*SyncMCPServerRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{23}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *SyncMCPServerRequest) GetId() uint64 {
@@ -1822,7 +2081,7 @@ type SyncMCPServerReply struct {
 
 func (x *SyncMCPServerReply) Reset() {
 	*x = SyncMCPServerReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[24]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1834,7 +2093,7 @@ func (x *SyncMCPServerReply) String() string {
 func (*SyncMCPServerReply) ProtoMessage() {}
 
 func (x *SyncMCPServerReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[24]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1847,7 +2106,7 @@ func (x *SyncMCPServerReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncMCPServerReply.ProtoReflect.Descriptor instead.
 func (*SyncMCPServerReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{24}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SyncMCPServerReply) GetResult() *SyncResult {
@@ -1865,7 +2124,7 @@ type SyncAllMCPServersRequest struct {
 
 func (x *SyncAllMCPServersRequest) Reset() {
 	*x = SyncAllMCPServersRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[25]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1877,7 +2136,7 @@ func (x *SyncAllMCPServersRequest) String() string {
 func (*SyncAllMCPServersRequest) ProtoMessage() {}
 
 func (x *SyncAllMCPServersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[25]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1890,7 +2149,7 @@ func (x *SyncAllMCPServersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncAllMCPServersRequest.ProtoReflect.Descriptor instead.
 func (*SyncAllMCPServersRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{25}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{28}
 }
 
 type SyncAllMCPServersReply struct {
@@ -1902,7 +2161,7 @@ type SyncAllMCPServersReply struct {
 
 func (x *SyncAllMCPServersReply) Reset() {
 	*x = SyncAllMCPServersReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[26]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +2173,7 @@ func (x *SyncAllMCPServersReply) String() string {
 func (*SyncAllMCPServersReply) ProtoMessage() {}
 
 func (x *SyncAllMCPServersReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[26]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +2186,7 @@ func (x *SyncAllMCPServersReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncAllMCPServersReply.ProtoReflect.Descriptor instead.
 func (*SyncAllMCPServersReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{26}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SyncAllMCPServersReply) GetResults() []*SyncResult {
@@ -1952,7 +2211,7 @@ type ListMCPToolsRequest struct {
 
 func (x *ListMCPToolsRequest) Reset() {
 	*x = ListMCPToolsRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[27]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1964,7 +2223,7 @@ func (x *ListMCPToolsRequest) String() string {
 func (*ListMCPToolsRequest) ProtoMessage() {}
 
 func (x *ListMCPToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[27]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1977,7 +2236,7 @@ func (x *ListMCPToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPToolsRequest.ProtoReflect.Descriptor instead.
 func (*ListMCPToolsRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{27}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListMCPToolsRequest) GetMcpServerId() uint64 {
@@ -2032,7 +2291,7 @@ type ListMCPToolsReply struct {
 
 func (x *ListMCPToolsReply) Reset() {
 	*x = ListMCPToolsReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[28]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2044,7 +2303,7 @@ func (x *ListMCPToolsReply) String() string {
 func (*ListMCPToolsReply) ProtoMessage() {}
 
 func (x *ListMCPToolsReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[28]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2057,7 +2316,7 @@ func (x *ListMCPToolsReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMCPToolsReply.ProtoReflect.Descriptor instead.
 func (*ListMCPToolsReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{28}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListMCPToolsReply) GetTools() []*MCPTool {
@@ -2083,7 +2342,7 @@ type GetMCPToolRequest struct {
 
 func (x *GetMCPToolRequest) Reset() {
 	*x = GetMCPToolRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[29]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2095,7 +2354,7 @@ func (x *GetMCPToolRequest) String() string {
 func (*GetMCPToolRequest) ProtoMessage() {}
 
 func (x *GetMCPToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[29]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2108,7 +2367,7 @@ func (x *GetMCPToolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMCPToolRequest.ProtoReflect.Descriptor instead.
 func (*GetMCPToolRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{29}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetMCPToolRequest) GetId() uint64 {
@@ -2128,7 +2387,7 @@ type ToggleMCPToolRequest struct {
 
 func (x *ToggleMCPToolRequest) Reset() {
 	*x = ToggleMCPToolRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[30]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2140,7 +2399,7 @@ func (x *ToggleMCPToolRequest) String() string {
 func (*ToggleMCPToolRequest) ProtoMessage() {}
 
 func (x *ToggleMCPToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[30]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2153,7 +2412,7 @@ func (x *ToggleMCPToolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToggleMCPToolRequest.ProtoReflect.Descriptor instead.
 func (*ToggleMCPToolRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{30}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ToggleMCPToolRequest) GetId() uint64 {
@@ -2179,7 +2438,7 @@ type DeleteMCPToolRequest struct {
 
 func (x *DeleteMCPToolRequest) Reset() {
 	*x = DeleteMCPToolRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[31]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2191,7 +2450,7 @@ func (x *DeleteMCPToolRequest) String() string {
 func (*DeleteMCPToolRequest) ProtoMessage() {}
 
 func (x *DeleteMCPToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[31]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2204,7 +2463,7 @@ func (x *DeleteMCPToolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPToolRequest.ProtoReflect.Descriptor instead.
 func (*DeleteMCPToolRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{31}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DeleteMCPToolRequest) GetId() uint64 {
@@ -2224,7 +2483,7 @@ type DeleteMCPToolReply struct {
 
 func (x *DeleteMCPToolReply) Reset() {
 	*x = DeleteMCPToolReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[32]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2236,7 +2495,7 @@ func (x *DeleteMCPToolReply) String() string {
 func (*DeleteMCPToolReply) ProtoMessage() {}
 
 func (x *DeleteMCPToolReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[32]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2249,7 +2508,7 @@ func (x *DeleteMCPToolReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMCPToolReply.ProtoReflect.Descriptor instead.
 func (*DeleteMCPToolReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{32}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *DeleteMCPToolReply) GetId() uint64 {
@@ -2279,7 +2538,7 @@ type SearchMCPToolsRequest struct {
 
 func (x *SearchMCPToolsRequest) Reset() {
 	*x = SearchMCPToolsRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[33]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2291,7 +2550,7 @@ func (x *SearchMCPToolsRequest) String() string {
 func (*SearchMCPToolsRequest) ProtoMessage() {}
 
 func (x *SearchMCPToolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[33]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2304,7 +2563,7 @@ func (x *SearchMCPToolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMCPToolsRequest.ProtoReflect.Descriptor instead.
 func (*SearchMCPToolsRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{33}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SearchMCPToolsRequest) GetQ() string {
@@ -2344,7 +2603,7 @@ type SearchMCPToolsReply struct {
 
 func (x *SearchMCPToolsReply) Reset() {
 	*x = SearchMCPToolsReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[34]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2356,7 +2615,7 @@ func (x *SearchMCPToolsReply) String() string {
 func (*SearchMCPToolsReply) ProtoMessage() {}
 
 func (x *SearchMCPToolsReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[34]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2369,7 +2628,7 @@ func (x *SearchMCPToolsReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMCPToolsReply.ProtoReflect.Descriptor instead.
 func (*SearchMCPToolsReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{34}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SearchMCPToolsReply) GetHits() []*MCPToolHit {
@@ -2392,7 +2651,7 @@ type CallMCPToolRequest struct {
 
 func (x *CallMCPToolRequest) Reset() {
 	*x = CallMCPToolRequest{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[35]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +2663,7 @@ func (x *CallMCPToolRequest) String() string {
 func (*CallMCPToolRequest) ProtoMessage() {}
 
 func (x *CallMCPToolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[35]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +2676,7 @@ func (x *CallMCPToolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallMCPToolRequest.ProtoReflect.Descriptor instead.
 func (*CallMCPToolRequest) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{35}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CallMCPToolRequest) GetId() uint64 {
@@ -2454,7 +2713,7 @@ type CallMCPToolReply struct {
 
 func (x *CallMCPToolReply) Reset() {
 	*x = CallMCPToolReply{}
-	mi := &file_mcp_v1_mcp_proto_msgTypes[36]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2466,7 +2725,7 @@ func (x *CallMCPToolReply) String() string {
 func (*CallMCPToolReply) ProtoMessage() {}
 
 func (x *CallMCPToolReply) ProtoReflect() protoreflect.Message {
-	mi := &file_mcp_v1_mcp_proto_msgTypes[36]
+	mi := &file_mcp_v1_mcp_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2479,7 +2738,7 @@ func (x *CallMCPToolReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallMCPToolReply.ProtoReflect.Descriptor instead.
 func (*CallMCPToolReply) Descriptor() ([]byte, []int) {
-	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{36}
+	return file_mcp_v1_mcp_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *CallMCPToolReply) GetIsError() bool {
@@ -2528,7 +2787,7 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\vhttp_client\x18\b \x01(\tR\vhttp_client\x12*\n" +
 	"\x10protocol_version\x18\t \x01(\tR\x10protocol_version\x12&\n" +
 	"\x0eserver_version\x18\n" +
-	" \x01(\tR\x0eserver_version\"\x9b\x04\n" +
+	" \x01(\tR\x0eserver_version\"\xb1\x04\n" +
 	"\aMCPTool\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12$\n" +
 	"\rmcp_server_id\x18\x02 \x01(\x04R\rmcp_server_id\x12(\n" +
@@ -2553,7 +2812,8 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"created_at\x12\x1e\n" +
 	"\n" +
 	"updated_at\x18\x11 \x01(\tR\n" +
-	"updated_at\"\xb5\x05\n" +
+	"updated_at\x12\x14\n" +
+	"\x05route\x18\x12 \x01(\tR\x05route\"\xd9\x05\n" +
 	"\tMCPServer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
@@ -2578,7 +2838,8 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"created_at\x12\x1e\n" +
 	"\n" +
 	"updated_at\x18\x11 \x01(\tR\n" +
-	"updated_at\x1a:\n" +
+	"updated_at\x12\"\n" +
+	"\fproxy_config\x18\x12 \x01(\tR\fproxy_config\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a6\n" +
@@ -2639,7 +2900,7 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\aservers\x18\x01 \x03(\v2\x11.mcp.v1.MCPServerR\aservers\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\"*\n" +
 	"\x13GetMCPServerRequest\x12\x13\n" +
-	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"\xa4\x04\n" +
+	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"\xc8\x04\n" +
 	"\x16CreateMCPServerRequest\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tB\x03\xe0A\x02R\x04name\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12!\n" +
@@ -2652,13 +2913,14 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\x03env\x18\t \x03(\v2'.mcp.v1.CreateMCPServerRequest.EnvEntryR\x03env\x124\n" +
 	"\x15health_check_interval\x18\n" +
 	" \x01(\x03R\x15health_check_interval\x12\x18\n" +
-	"\aenabled\x18\v \x01(\tR\aenabled\x1a:\n" +
+	"\aenabled\x18\v \x01(\tR\aenabled\x12\"\n" +
+	"\fproxy_config\x18\f \x01(\tR\fproxy_config\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdd\x04\n" +
 	"\x16UpdateMCPServerRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tB\x03\xe0A\x02R\x04name\x12\x1c\n" +
@@ -2672,13 +2934,35 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\x03env\x18\n" +
 	" \x03(\v2'.mcp.v1.UpdateMCPServerRequest.EnvEntryR\x03env\x124\n" +
 	"\x15health_check_interval\x18\v \x01(\x03R\x15health_check_interval\x12\x18\n" +
-	"\aenabled\x18\f \x01(\tR\aenabled\x1a:\n" +
+	"\aenabled\x18\f \x01(\tR\aenabled\x12\"\n" +
+	"\fproxy_config\x18\r \x01(\tR\fproxy_config\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"-\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe7\x01\n" +
+	"\x11MCPProxyOperation\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12\x18\n" +
+	"\asummary\x18\x04 \x01(\tR\asummary\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\x12\x12\n" +
+	"\x04tags\x18\x06 \x03(\tR\x04tags\x12\x1e\n" +
+	"\n" +
+	"deprecated\x18\a \x01(\bR\n" +
+	"deprecated\x12\"\n" +
+	"\finput_schema\x18\b \x01(\tR\finput_schema\"E\n" +
+	"\x1aPreviewMCPProxySpecRequest\x12'\n" +
+	"\fproxy_config\x18\x01 \x01(\tB\x03\xe0A\x02R\fproxy_config\"\xbd\x01\n" +
+	"\x18PreviewMCPProxySpecReply\x12\x1a\n" +
+	"\bbase_url\x18\x01 \x01(\tR\bbase_url\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x129\n" +
+	"\n" +
+	"operations\x18\x04 \x03(\v2\x19.mcp.v1.MCPProxyOperationR\n" +
+	"operations\x12\x1a\n" +
+	"\bwarnings\x18\x05 \x03(\tR\bwarnings\"-\n" +
 	"\x16DeleteMCPServerRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"@\n" +
 	"\x14DeleteMCPServerReply\x12\x0e\n" +
@@ -2744,7 +3028,7 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"structured\x12\x1e\n" +
 	"\n" +
 	"elapsed_ms\x18\x04 \x01(\x03R\n" +
-	"elapsed_ms2\xa9\x11\n" +
+	"elapsed_ms2\xac\x12\n" +
 	"\n" +
 	"MCPService\x12S\n" +
 	"\vGetMCPStats\x12\x1a.mcp.v1.GetMCPStatsRequest\x1a\x10.mcp.v1.MCPStats\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/api/mcp/stats\x12r\n" +
@@ -2768,7 +3052,8 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"GetMCPTool\x12\x19.mcp.v1.GetMCPToolRequest\x1a\x0f.mcp.v1.MCPTool\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/mcp/tools/{id}\x12e\n" +
 	"\rToggleMCPTool\x12\x1c.mcp.v1.ToggleMCPToolRequest\x1a\x0f.mcp.v1.MCPTool\"%\x82\xd3\xe4\x93\x02\x1f:\x01*\"\x1a/api/mcp/tools/{id}/toggle\x12f\n" +
 	"\rDeleteMCPTool\x12\x1c.mcp.v1.DeleteMCPToolRequest\x1a\x1a.mcp.v1.DeleteMCPToolReply\"\x1b\x82\xd3\xe4\x93\x02\x15*\x13/api/mcp/tools/{id}\x12h\n" +
-	"\vCallMCPTool\x12\x1a.mcp.v1.CallMCPToolRequest\x1a\x18.mcp.v1.CallMCPToolReply\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/api/mcp/tools/{id}/callB\x18Z\x16go_agent/api/mcp/v1;v1b\x06proto3"
+	"\vCallMCPTool\x12\x1a.mcp.v1.CallMCPToolRequest\x1a\x18.mcp.v1.CallMCPToolReply\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/api/mcp/tools/{id}/call\x12\x80\x01\n" +
+	"\x13PreviewMCPProxySpec\x12\".mcp.v1.PreviewMCPProxySpecRequest\x1a .mcp.v1.PreviewMCPProxySpecReply\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/api/mcp/proxies/previewB\x18Z\x16go_agent/api/mcp/v1;v1b\x06proto3"
 
 var (
 	file_mcp_v1_mcp_proto_rawDescOnce sync.Once
@@ -2782,7 +3067,7 @@ func file_mcp_v1_mcp_proto_rawDescGZIP() []byte {
 	return file_mcp_v1_mcp_proto_rawDescData
 }
 
-var file_mcp_v1_mcp_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_mcp_v1_mcp_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_mcp_v1_mcp_proto_goTypes = []any{
 	(*MCPStatus)(nil),                  // 0: mcp.v1.MCPStatus
 	(*MCPTool)(nil),                    // 1: mcp.v1.MCPTool
@@ -2800,98 +3085,104 @@ var file_mcp_v1_mcp_proto_goTypes = []any{
 	(*GetMCPServerRequest)(nil),        // 13: mcp.v1.GetMCPServerRequest
 	(*CreateMCPServerRequest)(nil),     // 14: mcp.v1.CreateMCPServerRequest
 	(*UpdateMCPServerRequest)(nil),     // 15: mcp.v1.UpdateMCPServerRequest
-	(*DeleteMCPServerRequest)(nil),     // 16: mcp.v1.DeleteMCPServerRequest
-	(*DeleteMCPServerReply)(nil),       // 17: mcp.v1.DeleteMCPServerReply
-	(*ToggleMCPServerRequest)(nil),     // 18: mcp.v1.ToggleMCPServerRequest
-	(*ConnectMCPServerRequest)(nil),    // 19: mcp.v1.ConnectMCPServerRequest
-	(*DisconnectMCPServerRequest)(nil), // 20: mcp.v1.DisconnectMCPServerRequest
-	(*PingMCPServerRequest)(nil),       // 21: mcp.v1.PingMCPServerRequest
-	(*SetMCPClientRequest)(nil),        // 22: mcp.v1.SetMCPClientRequest
-	(*SyncMCPServerRequest)(nil),       // 23: mcp.v1.SyncMCPServerRequest
-	(*SyncMCPServerReply)(nil),         // 24: mcp.v1.SyncMCPServerReply
-	(*SyncAllMCPServersRequest)(nil),   // 25: mcp.v1.SyncAllMCPServersRequest
-	(*SyncAllMCPServersReply)(nil),     // 26: mcp.v1.SyncAllMCPServersReply
-	(*ListMCPToolsRequest)(nil),        // 27: mcp.v1.ListMCPToolsRequest
-	(*ListMCPToolsReply)(nil),          // 28: mcp.v1.ListMCPToolsReply
-	(*GetMCPToolRequest)(nil),          // 29: mcp.v1.GetMCPToolRequest
-	(*ToggleMCPToolRequest)(nil),       // 30: mcp.v1.ToggleMCPToolRequest
-	(*DeleteMCPToolRequest)(nil),       // 31: mcp.v1.DeleteMCPToolRequest
-	(*DeleteMCPToolReply)(nil),         // 32: mcp.v1.DeleteMCPToolReply
-	(*SearchMCPToolsRequest)(nil),      // 33: mcp.v1.SearchMCPToolsRequest
-	(*SearchMCPToolsReply)(nil),        // 34: mcp.v1.SearchMCPToolsReply
-	(*CallMCPToolRequest)(nil),         // 35: mcp.v1.CallMCPToolRequest
-	(*CallMCPToolReply)(nil),           // 36: mcp.v1.CallMCPToolReply
-	nil,                                // 37: mcp.v1.MCPServer.HeadersEntry
-	nil,                                // 38: mcp.v1.MCPServer.EnvEntry
-	nil,                                // 39: mcp.v1.CreateMCPServerRequest.HeadersEntry
-	nil,                                // 40: mcp.v1.CreateMCPServerRequest.EnvEntry
-	nil,                                // 41: mcp.v1.UpdateMCPServerRequest.HeadersEntry
-	nil,                                // 42: mcp.v1.UpdateMCPServerRequest.EnvEntry
+	(*MCPProxyOperation)(nil),          // 16: mcp.v1.MCPProxyOperation
+	(*PreviewMCPProxySpecRequest)(nil), // 17: mcp.v1.PreviewMCPProxySpecRequest
+	(*PreviewMCPProxySpecReply)(nil),   // 18: mcp.v1.PreviewMCPProxySpecReply
+	(*DeleteMCPServerRequest)(nil),     // 19: mcp.v1.DeleteMCPServerRequest
+	(*DeleteMCPServerReply)(nil),       // 20: mcp.v1.DeleteMCPServerReply
+	(*ToggleMCPServerRequest)(nil),     // 21: mcp.v1.ToggleMCPServerRequest
+	(*ConnectMCPServerRequest)(nil),    // 22: mcp.v1.ConnectMCPServerRequest
+	(*DisconnectMCPServerRequest)(nil), // 23: mcp.v1.DisconnectMCPServerRequest
+	(*PingMCPServerRequest)(nil),       // 24: mcp.v1.PingMCPServerRequest
+	(*SetMCPClientRequest)(nil),        // 25: mcp.v1.SetMCPClientRequest
+	(*SyncMCPServerRequest)(nil),       // 26: mcp.v1.SyncMCPServerRequest
+	(*SyncMCPServerReply)(nil),         // 27: mcp.v1.SyncMCPServerReply
+	(*SyncAllMCPServersRequest)(nil),   // 28: mcp.v1.SyncAllMCPServersRequest
+	(*SyncAllMCPServersReply)(nil),     // 29: mcp.v1.SyncAllMCPServersReply
+	(*ListMCPToolsRequest)(nil),        // 30: mcp.v1.ListMCPToolsRequest
+	(*ListMCPToolsReply)(nil),          // 31: mcp.v1.ListMCPToolsReply
+	(*GetMCPToolRequest)(nil),          // 32: mcp.v1.GetMCPToolRequest
+	(*ToggleMCPToolRequest)(nil),       // 33: mcp.v1.ToggleMCPToolRequest
+	(*DeleteMCPToolRequest)(nil),       // 34: mcp.v1.DeleteMCPToolRequest
+	(*DeleteMCPToolReply)(nil),         // 35: mcp.v1.DeleteMCPToolReply
+	(*SearchMCPToolsRequest)(nil),      // 36: mcp.v1.SearchMCPToolsRequest
+	(*SearchMCPToolsReply)(nil),        // 37: mcp.v1.SearchMCPToolsReply
+	(*CallMCPToolRequest)(nil),         // 38: mcp.v1.CallMCPToolRequest
+	(*CallMCPToolReply)(nil),           // 39: mcp.v1.CallMCPToolReply
+	nil,                                // 40: mcp.v1.MCPServer.HeadersEntry
+	nil,                                // 41: mcp.v1.MCPServer.EnvEntry
+	nil,                                // 42: mcp.v1.CreateMCPServerRequest.HeadersEntry
+	nil,                                // 43: mcp.v1.CreateMCPServerRequest.EnvEntry
+	nil,                                // 44: mcp.v1.UpdateMCPServerRequest.HeadersEntry
+	nil,                                // 45: mcp.v1.UpdateMCPServerRequest.EnvEntry
 }
 var file_mcp_v1_mcp_proto_depIdxs = []int32{
-	37, // 0: mcp.v1.MCPServer.headers:type_name -> mcp.v1.MCPServer.HeadersEntry
-	38, // 1: mcp.v1.MCPServer.env:type_name -> mcp.v1.MCPServer.EnvEntry
+	40, // 0: mcp.v1.MCPServer.headers:type_name -> mcp.v1.MCPServer.HeadersEntry
+	41, // 1: mcp.v1.MCPServer.env:type_name -> mcp.v1.MCPServer.EnvEntry
 	0,  // 2: mcp.v1.MCPServer.status:type_name -> mcp.v1.MCPStatus
 	1,  // 3: mcp.v1.MCPServer.tools:type_name -> mcp.v1.MCPTool
 	1,  // 4: mcp.v1.MCPToolHit.tool:type_name -> mcp.v1.MCPTool
 	2,  // 5: mcp.v1.ListMCPServersReply.servers:type_name -> mcp.v1.MCPServer
-	39, // 6: mcp.v1.CreateMCPServerRequest.headers:type_name -> mcp.v1.CreateMCPServerRequest.HeadersEntry
-	40, // 7: mcp.v1.CreateMCPServerRequest.env:type_name -> mcp.v1.CreateMCPServerRequest.EnvEntry
-	41, // 8: mcp.v1.UpdateMCPServerRequest.headers:type_name -> mcp.v1.UpdateMCPServerRequest.HeadersEntry
-	42, // 9: mcp.v1.UpdateMCPServerRequest.env:type_name -> mcp.v1.UpdateMCPServerRequest.EnvEntry
-	7,  // 10: mcp.v1.SetMCPClientRequest.client:type_name -> mcp.v1.MCPClientOptions
-	4,  // 11: mcp.v1.SyncMCPServerReply.result:type_name -> mcp.v1.SyncResult
-	4,  // 12: mcp.v1.SyncAllMCPServersReply.results:type_name -> mcp.v1.SyncResult
-	1,  // 13: mcp.v1.ListMCPToolsReply.tools:type_name -> mcp.v1.MCPTool
-	5,  // 14: mcp.v1.SearchMCPToolsReply.hits:type_name -> mcp.v1.MCPToolHit
-	6,  // 15: mcp.v1.CallMCPToolReply.content:type_name -> mcp.v1.MCPContent
-	8,  // 16: mcp.v1.MCPService.GetMCPStats:input_type -> mcp.v1.GetMCPStatsRequest
-	9,  // 17: mcp.v1.MCPService.ListMCPNamespaces:input_type -> mcp.v1.ListMCPNamespacesRequest
-	11, // 18: mcp.v1.MCPService.ListMCPServers:input_type -> mcp.v1.ListMCPServersRequest
-	14, // 19: mcp.v1.MCPService.CreateMCPServer:input_type -> mcp.v1.CreateMCPServerRequest
-	25, // 20: mcp.v1.MCPService.SyncAllMCPServers:input_type -> mcp.v1.SyncAllMCPServersRequest
-	13, // 21: mcp.v1.MCPService.GetMCPServer:input_type -> mcp.v1.GetMCPServerRequest
-	15, // 22: mcp.v1.MCPService.UpdateMCPServer:input_type -> mcp.v1.UpdateMCPServerRequest
-	16, // 23: mcp.v1.MCPService.DeleteMCPServer:input_type -> mcp.v1.DeleteMCPServerRequest
-	18, // 24: mcp.v1.MCPService.ToggleMCPServer:input_type -> mcp.v1.ToggleMCPServerRequest
-	19, // 25: mcp.v1.MCPService.ConnectMCPServer:input_type -> mcp.v1.ConnectMCPServerRequest
-	20, // 26: mcp.v1.MCPService.DisconnectMCPServer:input_type -> mcp.v1.DisconnectMCPServerRequest
-	21, // 27: mcp.v1.MCPService.PingMCPServer:input_type -> mcp.v1.PingMCPServerRequest
-	23, // 28: mcp.v1.MCPService.SyncMCPServer:input_type -> mcp.v1.SyncMCPServerRequest
-	22, // 29: mcp.v1.MCPService.SetMCPClient:input_type -> mcp.v1.SetMCPClientRequest
-	27, // 30: mcp.v1.MCPService.ListMCPTools:input_type -> mcp.v1.ListMCPToolsRequest
-	33, // 31: mcp.v1.MCPService.SearchMCPTools:input_type -> mcp.v1.SearchMCPToolsRequest
-	35, // 32: mcp.v1.MCPService.CallMCPToolByName:input_type -> mcp.v1.CallMCPToolRequest
-	29, // 33: mcp.v1.MCPService.GetMCPTool:input_type -> mcp.v1.GetMCPToolRequest
-	30, // 34: mcp.v1.MCPService.ToggleMCPTool:input_type -> mcp.v1.ToggleMCPToolRequest
-	31, // 35: mcp.v1.MCPService.DeleteMCPTool:input_type -> mcp.v1.DeleteMCPToolRequest
-	35, // 36: mcp.v1.MCPService.CallMCPTool:input_type -> mcp.v1.CallMCPToolRequest
-	3,  // 37: mcp.v1.MCPService.GetMCPStats:output_type -> mcp.v1.MCPStats
-	10, // 38: mcp.v1.MCPService.ListMCPNamespaces:output_type -> mcp.v1.ListMCPNamespacesReply
-	12, // 39: mcp.v1.MCPService.ListMCPServers:output_type -> mcp.v1.ListMCPServersReply
-	2,  // 40: mcp.v1.MCPService.CreateMCPServer:output_type -> mcp.v1.MCPServer
-	26, // 41: mcp.v1.MCPService.SyncAllMCPServers:output_type -> mcp.v1.SyncAllMCPServersReply
-	2,  // 42: mcp.v1.MCPService.GetMCPServer:output_type -> mcp.v1.MCPServer
-	2,  // 43: mcp.v1.MCPService.UpdateMCPServer:output_type -> mcp.v1.MCPServer
-	17, // 44: mcp.v1.MCPService.DeleteMCPServer:output_type -> mcp.v1.DeleteMCPServerReply
-	2,  // 45: mcp.v1.MCPService.ToggleMCPServer:output_type -> mcp.v1.MCPServer
-	0,  // 46: mcp.v1.MCPService.ConnectMCPServer:output_type -> mcp.v1.MCPStatus
-	0,  // 47: mcp.v1.MCPService.DisconnectMCPServer:output_type -> mcp.v1.MCPStatus
-	0,  // 48: mcp.v1.MCPService.PingMCPServer:output_type -> mcp.v1.MCPStatus
-	24, // 49: mcp.v1.MCPService.SyncMCPServer:output_type -> mcp.v1.SyncMCPServerReply
-	0,  // 50: mcp.v1.MCPService.SetMCPClient:output_type -> mcp.v1.MCPStatus
-	28, // 51: mcp.v1.MCPService.ListMCPTools:output_type -> mcp.v1.ListMCPToolsReply
-	34, // 52: mcp.v1.MCPService.SearchMCPTools:output_type -> mcp.v1.SearchMCPToolsReply
-	36, // 53: mcp.v1.MCPService.CallMCPToolByName:output_type -> mcp.v1.CallMCPToolReply
-	1,  // 54: mcp.v1.MCPService.GetMCPTool:output_type -> mcp.v1.MCPTool
-	1,  // 55: mcp.v1.MCPService.ToggleMCPTool:output_type -> mcp.v1.MCPTool
-	32, // 56: mcp.v1.MCPService.DeleteMCPTool:output_type -> mcp.v1.DeleteMCPToolReply
-	36, // 57: mcp.v1.MCPService.CallMCPTool:output_type -> mcp.v1.CallMCPToolReply
-	37, // [37:58] is the sub-list for method output_type
-	16, // [16:37] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	42, // 6: mcp.v1.CreateMCPServerRequest.headers:type_name -> mcp.v1.CreateMCPServerRequest.HeadersEntry
+	43, // 7: mcp.v1.CreateMCPServerRequest.env:type_name -> mcp.v1.CreateMCPServerRequest.EnvEntry
+	44, // 8: mcp.v1.UpdateMCPServerRequest.headers:type_name -> mcp.v1.UpdateMCPServerRequest.HeadersEntry
+	45, // 9: mcp.v1.UpdateMCPServerRequest.env:type_name -> mcp.v1.UpdateMCPServerRequest.EnvEntry
+	16, // 10: mcp.v1.PreviewMCPProxySpecReply.operations:type_name -> mcp.v1.MCPProxyOperation
+	7,  // 11: mcp.v1.SetMCPClientRequest.client:type_name -> mcp.v1.MCPClientOptions
+	4,  // 12: mcp.v1.SyncMCPServerReply.result:type_name -> mcp.v1.SyncResult
+	4,  // 13: mcp.v1.SyncAllMCPServersReply.results:type_name -> mcp.v1.SyncResult
+	1,  // 14: mcp.v1.ListMCPToolsReply.tools:type_name -> mcp.v1.MCPTool
+	5,  // 15: mcp.v1.SearchMCPToolsReply.hits:type_name -> mcp.v1.MCPToolHit
+	6,  // 16: mcp.v1.CallMCPToolReply.content:type_name -> mcp.v1.MCPContent
+	8,  // 17: mcp.v1.MCPService.GetMCPStats:input_type -> mcp.v1.GetMCPStatsRequest
+	9,  // 18: mcp.v1.MCPService.ListMCPNamespaces:input_type -> mcp.v1.ListMCPNamespacesRequest
+	11, // 19: mcp.v1.MCPService.ListMCPServers:input_type -> mcp.v1.ListMCPServersRequest
+	14, // 20: mcp.v1.MCPService.CreateMCPServer:input_type -> mcp.v1.CreateMCPServerRequest
+	28, // 21: mcp.v1.MCPService.SyncAllMCPServers:input_type -> mcp.v1.SyncAllMCPServersRequest
+	13, // 22: mcp.v1.MCPService.GetMCPServer:input_type -> mcp.v1.GetMCPServerRequest
+	15, // 23: mcp.v1.MCPService.UpdateMCPServer:input_type -> mcp.v1.UpdateMCPServerRequest
+	19, // 24: mcp.v1.MCPService.DeleteMCPServer:input_type -> mcp.v1.DeleteMCPServerRequest
+	21, // 25: mcp.v1.MCPService.ToggleMCPServer:input_type -> mcp.v1.ToggleMCPServerRequest
+	22, // 26: mcp.v1.MCPService.ConnectMCPServer:input_type -> mcp.v1.ConnectMCPServerRequest
+	23, // 27: mcp.v1.MCPService.DisconnectMCPServer:input_type -> mcp.v1.DisconnectMCPServerRequest
+	24, // 28: mcp.v1.MCPService.PingMCPServer:input_type -> mcp.v1.PingMCPServerRequest
+	26, // 29: mcp.v1.MCPService.SyncMCPServer:input_type -> mcp.v1.SyncMCPServerRequest
+	25, // 30: mcp.v1.MCPService.SetMCPClient:input_type -> mcp.v1.SetMCPClientRequest
+	30, // 31: mcp.v1.MCPService.ListMCPTools:input_type -> mcp.v1.ListMCPToolsRequest
+	36, // 32: mcp.v1.MCPService.SearchMCPTools:input_type -> mcp.v1.SearchMCPToolsRequest
+	38, // 33: mcp.v1.MCPService.CallMCPToolByName:input_type -> mcp.v1.CallMCPToolRequest
+	32, // 34: mcp.v1.MCPService.GetMCPTool:input_type -> mcp.v1.GetMCPToolRequest
+	33, // 35: mcp.v1.MCPService.ToggleMCPTool:input_type -> mcp.v1.ToggleMCPToolRequest
+	34, // 36: mcp.v1.MCPService.DeleteMCPTool:input_type -> mcp.v1.DeleteMCPToolRequest
+	38, // 37: mcp.v1.MCPService.CallMCPTool:input_type -> mcp.v1.CallMCPToolRequest
+	17, // 38: mcp.v1.MCPService.PreviewMCPProxySpec:input_type -> mcp.v1.PreviewMCPProxySpecRequest
+	3,  // 39: mcp.v1.MCPService.GetMCPStats:output_type -> mcp.v1.MCPStats
+	10, // 40: mcp.v1.MCPService.ListMCPNamespaces:output_type -> mcp.v1.ListMCPNamespacesReply
+	12, // 41: mcp.v1.MCPService.ListMCPServers:output_type -> mcp.v1.ListMCPServersReply
+	2,  // 42: mcp.v1.MCPService.CreateMCPServer:output_type -> mcp.v1.MCPServer
+	29, // 43: mcp.v1.MCPService.SyncAllMCPServers:output_type -> mcp.v1.SyncAllMCPServersReply
+	2,  // 44: mcp.v1.MCPService.GetMCPServer:output_type -> mcp.v1.MCPServer
+	2,  // 45: mcp.v1.MCPService.UpdateMCPServer:output_type -> mcp.v1.MCPServer
+	20, // 46: mcp.v1.MCPService.DeleteMCPServer:output_type -> mcp.v1.DeleteMCPServerReply
+	2,  // 47: mcp.v1.MCPService.ToggleMCPServer:output_type -> mcp.v1.MCPServer
+	0,  // 48: mcp.v1.MCPService.ConnectMCPServer:output_type -> mcp.v1.MCPStatus
+	0,  // 49: mcp.v1.MCPService.DisconnectMCPServer:output_type -> mcp.v1.MCPStatus
+	0,  // 50: mcp.v1.MCPService.PingMCPServer:output_type -> mcp.v1.MCPStatus
+	27, // 51: mcp.v1.MCPService.SyncMCPServer:output_type -> mcp.v1.SyncMCPServerReply
+	0,  // 52: mcp.v1.MCPService.SetMCPClient:output_type -> mcp.v1.MCPStatus
+	31, // 53: mcp.v1.MCPService.ListMCPTools:output_type -> mcp.v1.ListMCPToolsReply
+	37, // 54: mcp.v1.MCPService.SearchMCPTools:output_type -> mcp.v1.SearchMCPToolsReply
+	39, // 55: mcp.v1.MCPService.CallMCPToolByName:output_type -> mcp.v1.CallMCPToolReply
+	1,  // 56: mcp.v1.MCPService.GetMCPTool:output_type -> mcp.v1.MCPTool
+	1,  // 57: mcp.v1.MCPService.ToggleMCPTool:output_type -> mcp.v1.MCPTool
+	35, // 58: mcp.v1.MCPService.DeleteMCPTool:output_type -> mcp.v1.DeleteMCPToolReply
+	39, // 59: mcp.v1.MCPService.CallMCPTool:output_type -> mcp.v1.CallMCPToolReply
+	18, // 60: mcp.v1.MCPService.PreviewMCPProxySpec:output_type -> mcp.v1.PreviewMCPProxySpecReply
+	39, // [39:61] is the sub-list for method output_type
+	17, // [17:39] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_mcp_v1_mcp_proto_init() }
@@ -2905,7 +3196,7 @@ func file_mcp_v1_mcp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mcp_v1_mcp_proto_rawDesc), len(file_mcp_v1_mcp_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   43,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

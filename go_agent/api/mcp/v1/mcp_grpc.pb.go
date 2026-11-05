@@ -49,6 +49,7 @@ const (
 	MCPService_ToggleMCPTool_FullMethodName       = "/mcp.v1.MCPService/ToggleMCPTool"
 	MCPService_DeleteMCPTool_FullMethodName       = "/mcp.v1.MCPService/DeleteMCPTool"
 	MCPService_CallMCPTool_FullMethodName         = "/mcp.v1.MCPService/CallMCPTool"
+	MCPService_PreviewMCPProxySpec_FullMethodName = "/mcp.v1.MCPService/PreviewMCPProxySpec"
 )
 
 // MCPServiceClient is the client API for MCPService service.
@@ -99,6 +100,8 @@ type MCPServiceClient interface {
 	DeleteMCPTool(ctx context.Context, in *DeleteMCPToolRequest, opts ...grpc.CallOption) (*DeleteMCPToolReply, error)
 	// CallMCPTool 调用工具。
 	CallMCPTool(ctx context.Context, in *CallMCPToolRequest, opts ...grpc.CallOption) (*CallMCPToolReply, error)
+	// PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+	PreviewMCPProxySpec(ctx context.Context, in *PreviewMCPProxySpecRequest, opts ...grpc.CallOption) (*PreviewMCPProxySpecReply, error)
 }
 
 type mCPServiceClient struct {
@@ -319,6 +322,16 @@ func (c *mCPServiceClient) CallMCPTool(ctx context.Context, in *CallMCPToolReque
 	return out, nil
 }
 
+func (c *mCPServiceClient) PreviewMCPProxySpec(ctx context.Context, in *PreviewMCPProxySpecRequest, opts ...grpc.CallOption) (*PreviewMCPProxySpecReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewMCPProxySpecReply)
+	err := c.cc.Invoke(ctx, MCPService_PreviewMCPProxySpec_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MCPServiceServer is the server API for MCPService service.
 // All implementations must embed UnimplementedMCPServiceServer
 // for forward compatibility.
@@ -367,6 +380,8 @@ type MCPServiceServer interface {
 	DeleteMCPTool(context.Context, *DeleteMCPToolRequest) (*DeleteMCPToolReply, error)
 	// CallMCPTool 调用工具。
 	CallMCPTool(context.Context, *CallMCPToolRequest) (*CallMCPToolReply, error)
+	// PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+	PreviewMCPProxySpec(context.Context, *PreviewMCPProxySpecRequest) (*PreviewMCPProxySpecReply, error)
 	mustEmbedUnimplementedMCPServiceServer()
 }
 
@@ -439,6 +454,9 @@ func (UnimplementedMCPServiceServer) DeleteMCPTool(context.Context, *DeleteMCPTo
 }
 func (UnimplementedMCPServiceServer) CallMCPTool(context.Context, *CallMCPToolRequest) (*CallMCPToolReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallMCPTool not implemented")
+}
+func (UnimplementedMCPServiceServer) PreviewMCPProxySpec(context.Context, *PreviewMCPProxySpecRequest) (*PreviewMCPProxySpecReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewMCPProxySpec not implemented")
 }
 func (UnimplementedMCPServiceServer) mustEmbedUnimplementedMCPServiceServer() {}
 func (UnimplementedMCPServiceServer) testEmbeddedByValue()                    {}
@@ -839,6 +857,24 @@ func _MCPService_CallMCPTool_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MCPService_PreviewMCPProxySpec_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewMCPProxySpecRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MCPServiceServer).PreviewMCPProxySpec(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MCPService_PreviewMCPProxySpec_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MCPServiceServer).PreviewMCPProxySpec(ctx, req.(*PreviewMCPProxySpecRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MCPService_ServiceDesc is the grpc.ServiceDesc for MCPService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -929,6 +965,10 @@ var MCPService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CallMCPTool",
 			Handler:    _MCPService_CallMCPTool_Handler,
+		},
+		{
+			MethodName: "PreviewMCPProxySpec",
+			Handler:    _MCPService_PreviewMCPProxySpec_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

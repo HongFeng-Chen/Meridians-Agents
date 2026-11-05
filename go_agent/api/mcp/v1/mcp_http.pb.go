@@ -31,6 +31,7 @@ const OperationMCPServiceListMCPNamespaces = "/mcp.v1.MCPService/ListMCPNamespac
 const OperationMCPServiceListMCPServers = "/mcp.v1.MCPService/ListMCPServers"
 const OperationMCPServiceListMCPTools = "/mcp.v1.MCPService/ListMCPTools"
 const OperationMCPServicePingMCPServer = "/mcp.v1.MCPService/PingMCPServer"
+const OperationMCPServicePreviewMCPProxySpec = "/mcp.v1.MCPService/PreviewMCPProxySpec"
 const OperationMCPServiceSearchMCPTools = "/mcp.v1.MCPService/SearchMCPTools"
 const OperationMCPServiceSetMCPClient = "/mcp.v1.MCPService/SetMCPClient"
 const OperationMCPServiceSyncAllMCPServers = "/mcp.v1.MCPService/SyncAllMCPServers"
@@ -68,6 +69,8 @@ type MCPServiceHTTPServer interface {
 	ListMCPTools(context.Context, *ListMCPToolsRequest) (*ListMCPToolsReply, error)
 	// PingMCPServer PingMCPServer 探活（未连接时先连接）。
 	PingMCPServer(context.Context, *PingMCPServerRequest) (*MCPStatus, error)
+	// PreviewMCPProxySpec PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+	PreviewMCPProxySpec(context.Context, *PreviewMCPProxySpecRequest) (*PreviewMCPProxySpecReply, error)
 	// SearchMCPTools SearchMCPTools 工具语义召回（声明在 {id} 之前）。
 	SearchMCPTools(context.Context, *SearchMCPToolsRequest) (*SearchMCPToolsReply, error)
 	// SetMCPClient SetMCPClient 运行时替换 http.Client 参数并重连（不落库）。
@@ -107,6 +110,7 @@ func RegisterMCPServiceHTTPServer(s *http.Server, srv MCPServiceHTTPServer) {
 	r.Handle("POST", "/api/mcp/tools/{id}/toggle", _MCPService_ToggleMCPTool0_HTTP_Handler(srv))
 	r.Handle("DELETE", "/api/mcp/tools/{id}", _MCPService_DeleteMCPTool0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/mcp/tools/{id}/call", _MCPService_CallMCPTool0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/mcp/proxies/preview", _MCPService_PreviewMCPProxySpec0_HTTP_Handler(srv))
 }
 
 func _MCPService_GetMCPStats0_HTTP_Handler(srv MCPServiceHTTPServer) func(ctx http.Context) error {
@@ -547,6 +551,25 @@ func _MCPService_CallMCPTool0_HTTP_Handler(srv MCPServiceHTTPServer) func(ctx ht
 	}
 }
 
+func _MCPService_PreviewMCPProxySpec0_HTTP_Handler(srv MCPServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in PreviewMCPProxySpecRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationMCPServicePreviewMCPProxySpec)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.PreviewMCPProxySpec(ctx, req.(*PreviewMCPProxySpecRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*PreviewMCPProxySpecReply)
+		return ctx.Result(200, reply)
+	}
+}
+
 type MCPServiceHTTPClient interface {
 	// CallMCPTool CallMCPTool 调用工具。
 	CallMCPTool(ctx context.Context, req *CallMCPToolRequest, opts ...http.CallOption) (rsp *CallMCPToolReply, err error)
@@ -576,6 +599,8 @@ type MCPServiceHTTPClient interface {
 	ListMCPTools(ctx context.Context, req *ListMCPToolsRequest, opts ...http.CallOption) (rsp *ListMCPToolsReply, err error)
 	// PingMCPServer PingMCPServer 探活（未连接时先连接）。
 	PingMCPServer(ctx context.Context, req *PingMCPServerRequest, opts ...http.CallOption) (rsp *MCPStatus, err error)
+	// PreviewMCPProxySpec PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+	PreviewMCPProxySpec(ctx context.Context, req *PreviewMCPProxySpecRequest, opts ...http.CallOption) (rsp *PreviewMCPProxySpecReply, err error)
 	// SearchMCPTools SearchMCPTools 工具语义召回（声明在 {id} 之前）。
 	SearchMCPTools(ctx context.Context, req *SearchMCPToolsRequest, opts ...http.CallOption) (rsp *SearchMCPToolsReply, err error)
 	// SetMCPClient SetMCPClient 运行时替换 http.Client 参数并重连（不落库）。
@@ -835,6 +860,24 @@ func (c *MCPServiceHTTPClientImpl) PingMCPServer(ctx context.Context, in *PingMC
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "POST", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PreviewMCPProxySpec PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+func (c *MCPServiceHTTPClientImpl) PreviewMCPProxySpec(ctx context.Context, in *PreviewMCPProxySpecRequest, opts ...http.CallOption) (*PreviewMCPProxySpecReply, error) {
+	var out PreviewMCPProxySpecReply
+	pattern := "/api/mcp/proxies/preview"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationMCPServicePreviewMCPProxySpec),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}

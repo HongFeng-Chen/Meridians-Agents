@@ -28,6 +28,8 @@ import (
 const (
 	TransportStdio = "stdio"
 	TransportHTTP  = "http" // Streamable HTTP MCP
+	// TransportProxy API 代理：导入 Swagger/OpenAPI 文档，把接口当工具调用
+	TransportProxy = "proxy"
 )
 
 // DefaultNamespace 未显式指定命名空间时的默认值
@@ -63,6 +65,9 @@ type Server struct {
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 
+	// Proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+	ProxyConfig string `json:"proxy_config,omitempty"`
+
 	HealthCheckInterval int64 `json:"health_check_interval"`
 
 	ToolCount int       `json:"tool_count"`
@@ -91,15 +96,17 @@ type Tool struct {
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 	// InputSchema / OutputSchema 为 JSON 原文，前端按文本框展示、按需解析
-	InputSchema  string    `json:"input_schema"`
-	OutputSchema string    `json:"output_schema"`
-	Examples     []string  `json:"examples,omitempty"`
-	Tags         []string  `json:"tags,omitempty"`
-	Enabled      bool      `json:"enabled"`
-	Vectorized   bool      `json:"vectorized"`
-	Version      string    `json:"version"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	InputSchema  string   `json:"input_schema"`
+	OutputSchema string   `json:"output_schema"`
+	Examples     []string `json:"examples,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	Vectorized   bool     `json:"vectorized"`
+	Version      string   `json:"version"`
+	// Route Proxy 工具到 HTTP 请求的映射（JSON：method/path/params），其他传输为空
+	Route     string    `json:"route,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // EmbeddingText 参与向量化的文本：唯一名 + 描述 + 标签 + 示例。
@@ -180,6 +187,8 @@ type ServerInput struct {
 	Env                 map[string]string
 	HealthCheckInterval int64
 	Enabled             *bool
+	// ProxyConfig Proxy 模式配置（JSON 原文，见 ProxySpec）
+	ProxyConfig string
 }
 
 // Normalize 归一化并校验
@@ -222,8 +231,20 @@ func (in *ServerInput) Normalize() error {
 		if in.Command == "" {
 			return fmt.Errorf("%w: stdio 模式必须填 command", ErrInvalidServer)
 		}
+	case TransportProxy:
+		cfg, err := DecodeProxySpec(in.ProxyConfig)
+		if err != nil {
+			return err
+		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		// 归一化后的配置回写，保证落库内容与校验口径一致
+		if normalized, err := EncodeProxySpec(cfg); err == nil {
+			in.ProxyConfig = normalized
+		}
 	default:
-		return fmt.Errorf("%w: transport 只能是 stdio 或 http", ErrInvalidServer)
+		return fmt.Errorf("%w: transport 只能是 stdio / http / proxy", ErrInvalidServer)
 	}
 	return nil
 }

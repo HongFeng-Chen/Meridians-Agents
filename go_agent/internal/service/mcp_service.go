@@ -80,13 +80,23 @@ func (s *MCPService) ListMCPServers(ctx context.Context, req *v1.ListMCPServersR
 func (s *MCPService) CreateMCPServer(ctx context.Context, req *v1.CreateMCPServerRequest) (*v1.MCPServer, error) {
 	in, err := serverInput(req.GetName(), req.GetNamespace(), req.GetTransport(), req.GetDescription(),
 		req.GetEndpoint(), req.GetHeaders(), req.GetCommand(), req.GetArgs(), req.GetEnv(),
-		req.GetHealthCheckInterval(), req.GetEnabled())
+		req.GetHealthCheckInterval(), req.GetEnabled(), req.GetProxyConfig())
 	if err != nil {
 		return nil, mapMCPErr(err)
 	}
 	sv, err := s.uc.CreateServer(ctx, in)
 	if err != nil {
 		return nil, mapMCPErr(err)
+	}
+	// 代理模式：创建即尝试解析文档并同步工具（失败不阻塞创建，状态里能看到原因）
+	if sv.Transport == mcp.TransportProxy {
+		if _, serr := s.uc.SyncTools(ctx, sv.ID); serr != nil {
+			if latest, gerr := s.uc.GetServer(ctx, sv.ID); gerr == nil {
+				return toMCPServer(latest, true), nil
+			}
+		} else if latest, gerr := s.uc.GetServer(ctx, sv.ID); gerr == nil {
+			return toMCPServer(latest, true), nil
+		}
 	}
 	return toMCPServer(sv, true), nil
 }
@@ -95,13 +105,21 @@ func (s *MCPService) CreateMCPServer(ctx context.Context, req *v1.CreateMCPServe
 func (s *MCPService) UpdateMCPServer(ctx context.Context, req *v1.UpdateMCPServerRequest) (*v1.MCPServer, error) {
 	in, err := serverInput(req.GetName(), req.GetNamespace(), req.GetTransport(), req.GetDescription(),
 		req.GetEndpoint(), req.GetHeaders(), req.GetCommand(), req.GetArgs(), req.GetEnv(),
-		req.GetHealthCheckInterval(), req.GetEnabled())
+		req.GetHealthCheckInterval(), req.GetEnabled(), req.GetProxyConfig())
 	if err != nil {
 		return nil, mapMCPErr(err)
 	}
 	sv, err := s.uc.UpdateServer(ctx, req.GetId(), in)
 	if err != nil {
 		return nil, mapMCPErr(err)
+	}
+	// 代理模式：配置变更后重新解析（旧的 route 映射可能已失效）
+	if sv.Transport == mcp.TransportProxy {
+		if _, serr := s.uc.SyncTools(ctx, sv.ID); serr == nil {
+			if latest, gerr := s.uc.GetServer(ctx, sv.ID); gerr == nil {
+				return toMCPServer(latest, true), nil
+			}
+		}
 	}
 	return toMCPServer(sv, true), nil
 }
@@ -287,10 +305,38 @@ func (s *MCPService) CallMCPToolByName(ctx context.Context, req *v1.CallMCPToolR
 	return toCallReply(res), nil
 }
 
+// PreviewMCPProxySpec 预览 Swagger/OpenAPI 解析结果（保存代理前确认接口清单）。
+func (s *MCPService) PreviewMCPProxySpec(ctx context.Context, req *v1.PreviewMCPProxySpecRequest) (*v1.PreviewMCPProxySpecReply, error) {
+	preview, err := s.uc.PreviewProxy(ctx, req.GetProxyConfig())
+	if err != nil {
+		return nil, mapMCPErr(err)
+	}
+	out := &v1.PreviewMCPProxySpecReply{
+		BaseUrl:  preview.BaseURL,
+		Title:    preview.Title,
+		Version:  preview.Version,
+		Warnings: preview.Warnings,
+	}
+	out.Operations = make([]*v1.MCPProxyOperation, 0, len(preview.Ops))
+	for _, op := range preview.Ops {
+		out.Operations = append(out.Operations, &v1.MCPProxyOperation{
+			Name:        op.Name,
+			Method:      op.Method,
+			Path:        op.Path,
+			Summary:     op.Summary,
+			Description: op.Description,
+			Tags:        op.Tags,
+			Deprecated:  op.Deprecated,
+			InputSchema: op.InputSchema(),
+		})
+	}
+	return out, nil
+}
+
 // —— 转换 ——
 
 func serverInput(name, namespace, transport, desc, endpoint string, headers map[string]string,
-	command string, args []string, env map[string]string, health int64, enabled string) (mcp.ServerInput, error) {
+	command string, args []string, env map[string]string, health int64, enabled, proxyConfig string) (mcp.ServerInput, error) {
 	in := mcp.ServerInput{
 		Name:                name,
 		Namespace:           namespace,
@@ -303,6 +349,7 @@ func serverInput(name, namespace, transport, desc, endpoint string, headers map[
 		Env:                 env,
 		HealthCheckInterval: health,
 		Enabled:             parseBoolFilter(enabled),
+		ProxyConfig:         proxyConfig,
 	}
 	return in, nil
 }
@@ -321,6 +368,7 @@ func toMCPServer(s *mcp.Server, withTools bool) *v1.MCPServer {
 		Args:                s.Args,
 		Env:                 s.Env,
 		HealthCheckInterval: s.HealthCheckInterval,
+		ProxyConfig:         s.ProxyConfig,
 		ToolCount:           int32(s.ToolCount),
 		Status:              toMCPStatus(s.Status),
 		CreatedAt:           formatTS(s.CreatedAt),
@@ -355,6 +403,7 @@ func toMCPTool(t *mcp.Tool) *v1.MCPTool {
 		Enabled:       t.Enabled,
 		Vectorized:    t.Vectorized,
 		Version:       t.Version,
+		Route:         t.Route,
 		CreatedAt:     formatTS(t.CreatedAt),
 		UpdatedAt:     formatTS(t.UpdatedAt),
 	}

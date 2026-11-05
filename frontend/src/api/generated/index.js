@@ -883,6 +883,16 @@ export const listMCPNamespaces = (input = {}, options) =>
   call('MCPService_ListMCPNamespaces', input, options);
 
 /**
+ * PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+ *
+ * POST /api/mcp/proxies/preview
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<PreviewMCPProxySpecReply>}
+ */
+export const previewMCPProxySpec = (input = {}, options) =>
+  call('MCPService_PreviewMCPProxySpec', input, options);
+
+/**
  * ListMCPServers 服务列表（含运行状态）。
  *
  * GET /api/mcp/servers
@@ -1772,6 +1782,7 @@ export const llm = {
 
 export const mcp = {
   listMCPNamespaces,
+  previewMCPProxySpec,
   listMCPServers,
   createMCPServer,
   syncAllMCPServers,

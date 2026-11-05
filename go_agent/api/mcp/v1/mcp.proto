@@ -55,6 +55,8 @@ message MCPTool {
   string version = 15 [json_name = "version"];
   string created_at = 16 [json_name = "created_at"];
   string updated_at = 17 [json_name = "updated_at"];
+  // proxy 工具到 HTTP 请求的映射（JSON：method/path/params/body_type）
+  string route = 18 [json_name = "route"];
 }
 
 // MCPServer MCP 服务
@@ -62,7 +64,7 @@ message MCPServer {
   uint64 id = 1 [json_name = "id"];
   string name = 2 [json_name = "name"];
   string namespace = 3 [json_name = "namespace"];
-  // stdio | http
+  // stdio | http | proxy
   string transport = 4 [json_name = "transport"];
   bool enabled = 5 [json_name = "enabled"];
   string description = 6 [json_name = "description"];
@@ -81,6 +83,8 @@ message MCPServer {
   repeated MCPTool tools = 15 [json_name = "tools"];
   string created_at = 16 [json_name = "created_at"];
   string updated_at = 17 [json_name = "updated_at"];
+  // proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+  string proxy_config = 18 [json_name = "proxy_config"];
 }
 
 // MCPStats 规模统计
@@ -166,7 +170,7 @@ message GetMCPServerRequest {
 message CreateMCPServerRequest {
   string name = 1 [(google.api.field_behavior) = REQUIRED, json_name = "name"];
   string namespace = 2 [json_name = "namespace"];
-  // stdio | http
+  // stdio | http | proxy
   string transport = 3 [(google.api.field_behavior) = REQUIRED, json_name = "transport"];
   string description = 4 [json_name = "description"];
   string endpoint = 5 [json_name = "endpoint"];
@@ -177,6 +181,8 @@ message CreateMCPServerRequest {
   int64 health_check_interval = 10 [json_name = "health_check_interval"];
   // 不传默认启用
   string enabled = 11 [json_name = "enabled"];
+  // proxy 模式配置（JSON 原文）
+  string proxy_config = 12 [json_name = "proxy_config"];
 }
 
 message UpdateMCPServerRequest {
@@ -192,6 +198,34 @@ message UpdateMCPServerRequest {
   map<string, string> env = 10 [json_name = "env"];
   int64 health_check_interval = 11 [json_name = "health_check_interval"];
   string enabled = 12 [json_name = "enabled"];
+  // proxy 模式配置（JSON 原文）
+  string proxy_config = 13 [json_name = "proxy_config"];
+}
+
+// MCPProxyOperation 文档里的一个接口（= 一个待生成的工具）
+message MCPProxyOperation {
+  string name = 1 [json_name = "name"];
+  string method = 2 [json_name = "method"];
+  string path = 3 [json_name = "path"];
+  string summary = 4 [json_name = "summary"];
+  string description = 5 [json_name = "description"];
+  repeated string tags = 6 [json_name = "tags"];
+  bool deprecated = 7 [json_name = "deprecated"];
+  // 生成的工具入参 JSON Schema
+  string input_schema = 8 [json_name = "input_schema"];
+}
+
+message PreviewMCPProxySpecRequest {
+  // 代理配置 JSON（spec_url / spec_text / base_url / auth / request）
+  string proxy_config = 1 [(google.api.field_behavior) = REQUIRED, json_name = "proxy_config"];
+}
+
+message PreviewMCPProxySpecReply {
+  string base_url = 1 [json_name = "base_url"];
+  string title = 2 [json_name = "title"];
+  string version = 3 [json_name = "version"];
+  repeated MCPProxyOperation operations = 4 [json_name = "operations"];
+  repeated string warnings = 5 [json_name = "warnings"];
 }
 
 message DeleteMCPServerRequest {
@@ -452,6 +486,14 @@ service MCPService {
   rpc CallMCPTool(CallMCPToolRequest) returns (CallMCPToolReply) {
     option (google.api.http) = {
       post: "/api/mcp/tools/{id}/call"
+      body: "*"
+    };
+  }
+
+  // PreviewMCPProxySpec 解析 Swagger/OpenAPI 文档，预览可导入的接口（不落库）。
+  rpc PreviewMCPProxySpec(PreviewMCPProxySpecRequest) returns (PreviewMCPProxySpecReply) {
+    option (google.api.http) = {
+      post: "/api/mcp/proxies/preview"
       body: "*"
     };
   }

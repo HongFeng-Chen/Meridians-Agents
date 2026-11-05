@@ -28,6 +28,10 @@ type MCPServerPO struct {
 	Args    string `gorm:"column:args;type:json" json:"args"` // []string
 	Env     string `gorm:"column:env;type:json" json:"env"`   // map[string]string
 
+	// Proxy 模式（transport=proxy 生效）：Swagger/OpenAPI 导入配置 JSON
+	// 结构见 biz/mcp.ProxySpec（spec 来源 / 鉴权方案 / 请求方案 / 解析快照）
+	ProxyConfig string `gorm:"column:proxy_config;type:mediumtext" json:"proxy_config"`
+
 	// 健康检查间隔（秒），<=0 表示不主动探活
 	HealthCheckInterval int64 `gorm:"column:health_check_interval;not null;default:30" json:"health_check_interval"`
 
@@ -59,6 +63,9 @@ type ToolPO struct {
 	// Vectorized 向量是否已写入 Milvus（embedding 失败时为 false，可单独重试）
 	Vectorized bool   `gorm:"column:vectorized;not null;default:false;index:idx_tools_vectorized" json:"vectorized"`
 	Version    string `gorm:"column:version;size:64;not null;default:''" json:"version"`
+	// Route 代理工具到 HTTP 请求的映射（JSON：method/path/params/body_type），
+	// 只有 transport=proxy 服务下的工具有值；MCP 原生工具为空。
+	Route string `gorm:"column:route;type:text" json:"route"`
 
 	CreatedAt time.Time      `gorm:"column:created_at;not null" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"column:updated_at;not null" json:"updated_at"`
