@@ -300,7 +300,7 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("执行被取消: %w", err)
 		}
-		rec.setProgress(10 + (st.StepIdx * 75) / max(total, 1))
+		rec.setProgress(10 + (st.StepIdx*75)/max(total, 1))
 
 		// 收集本波次：所有依赖已满足的待执行步骤
 		ready := readySteps(st.Steps, st.StepIdx)

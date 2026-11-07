@@ -146,8 +146,8 @@ const ScopeAll = "*"
 // —— 任务状态 ——
 
 const (
-	TaskPending   = "pending"
-	TaskRunning   = "running"
+	TaskPending = "pending"
+	TaskRunning = "running"
 	// TaskPaused 挂起：命中 require_approval / 高危风险转人工，等待审批。
 	// 审批通过（approve）→ 置回 pending 从 checkpoint 续跑；驳回（reject）→ failed。
 	// 挂起任务留在任务池（不归档），RequeueInterrupted 不会误捞（只捞 running）。
@@ -178,21 +178,21 @@ func IsTerminalStatus(s string) bool {
 // —— 事件类型（trace 链路） ——
 
 const (
-	EventStatus     = "status"      // 状态流转，payload: {"from":"","to":""}
-	EventThought    = "thought"     // 一轮思考，payload: {"turn":n,"thought":""}
-	EventToolCall   = "tool_call"   // 调用能力，payload: {"turn":n,"name":"","args":{}}
-	EventToolResult = "tool_result" // 能力结果，payload: {"turn":n,"elapsed_ms":n,"result":"","is_error":false}
-	EventDelegate   = "delegate"    // 委派子 Agent，payload: {"turn":n,"agent":"","child_task_id":n}
-	EventSupervise  = "supervise"   // 监察审查，payload: {"agent":"","supervisor":"","passed":bool,"issues":""}
-	EventRiskAssess = "risk_assess" // 风险评估，payload: {"tool":"","level":"","allow":bool,"reason":""}
-	EventNode       = "node"        // 编排图节点，payload: {"node":"","kind":"","agent":"","status":"","output":"","branch":""}
-	EventPlan       = "plan"        // 计划（plan_execute / self_ask / 多 Agent），payload: {"steps":[...]} 或 {"questions":[...]}
-	EventEvaluate   = "evaluate"    // 评估打分（reflexion），payload: {"round":n,"pass":bool,"score":n,"issues":""}
-	EventReflect    = "reflect"     // 反思教训（reflexion），payload: {"round":n,"lesson":""}
-	EventRoute      = "route"       // 路由决策（router），payload: {"target":"","args":{},"reason":""}
+	EventStatus      = "status"      // 状态流转，payload: {"from":"","to":""}
+	EventThought     = "thought"     // 一轮思考，payload: {"turn":n,"thought":""}
+	EventToolCall    = "tool_call"   // 调用能力，payload: {"turn":n,"name":"","args":{}}
+	EventToolResult  = "tool_result" // 能力结果，payload: {"turn":n,"elapsed_ms":n,"result":"","is_error":false}
+	EventDelegate    = "delegate"    // 委派子 Agent，payload: {"turn":n,"agent":"","child_task_id":n}
+	EventSupervise   = "supervise"   // 监察审查，payload: {"agent":"","supervisor":"","passed":bool,"issues":""}
+	EventRiskAssess  = "risk_assess" // 风险评估，payload: {"tool":"","level":"","allow":bool,"reason":""}
+	EventNode        = "node"        // 编排图节点，payload: {"node":"","kind":"","agent":"","status":"","output":"","branch":""}
+	EventPlan        = "plan"        // 计划（plan_execute / self_ask / 多 Agent），payload: {"steps":[...]} 或 {"questions":[...]}
+	EventEvaluate    = "evaluate"    // 评估打分（reflexion），payload: {"round":n,"pass":bool,"score":n,"issues":""}
+	EventReflect     = "reflect"     // 反思教训（reflexion），payload: {"round":n,"lesson":""}
+	EventRoute       = "route"       // 路由决策（router），payload: {"target":"","args":{},"reason":""}
 	EventOrchestrate = "orchestrate" // 自动编排：LLM 选定架构与成员，payload: {"graph_type":"","reason":"","members":[...],"created":[...],"reused":[...]}
-	EventFinal      = "final"       // 最终答案，payload: {"answer":""}
-	EventError      = "error"       // 错误，payload: {"message":""}
+	EventFinal       = "final"       // 最终答案，payload: {"answer":""}
+	EventError       = "error"       // 错误，payload: {"message":""}
 	// EventPaused 人工审批挂起：payload: {"ability":"","args":{},"reason":""}
 	EventPaused = "paused"
 	// EventResume 从 checkpoint 续跑：payload: {"seq":n,"cursor":""}
@@ -332,15 +332,15 @@ func (d AgentDef) EmbeddingText() string {
 
 // AgentInput 创建/更新定义的入参
 type AgentInput struct {
-	AgentKey     string   `json:"agent_key"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	System       string   `json:"system"`
-	LLMModel     string   `json:"llm_model"`
-	LLMSource    string   `json:"llm_source"`
-	GraphType    string   `json:"graph_type"`
+	AgentKey    string `json:"agent_key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	System      string `json:"system"`
+	LLMModel    string `json:"llm_model"`
+	LLMSource   string `json:"llm_source"`
+	GraphType   string `json:"graph_type"`
 	// AutoCompose 自动装配（见 AgentDef.AutoCompose）
-	AutoCompose bool     `json:"auto_compose"`
+	AutoCompose  bool     `json:"auto_compose"`
 	Capabilities []string `json:"capabilities"`
 	Middlewares  []string `json:"middlewares"`
 	MaxTurns     int      `json:"max_turns"`

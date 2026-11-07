@@ -977,11 +977,16 @@ func TestCreateByLLMBadOrchestration(t *testing.T) {
 // TestCreateByLLMIntentFallback 模型完全漏填意图字段（auto_run/cron/auto_compose/
 // orchestration 一个都没给）：服务端必须从需求原文推导出「每小时排期 + 自动装配」，
 // 而不是静默丢掉用户意图（回归：线上「每小时巡检 K8s」创建后 cron 为空、画布为空）。
+// 第二段脚本是创建期预装配的规划调用：断言子 Agent 在创建时即落库（父子立即可见）。
 func TestCreateByLLMIntentFallback(t *testing.T) {
 	chat := &fakeChatter{script: []string{
 		`{"name":"K8s定时巡检诊断Agent","agent_key":"k8s-periodic-inspector","system":"你是K8s巡检诊断Agent","graph_type":"plan_execute","capabilities":["mcp:demo__calc"],"max_turns":20}`,
+		`{"graph_type":"orchestrator","reason":"采集-分析-建议分工","members":[
+			{"agent_key":"k8s-collector","name":"采集Agent","description":"查询K8s资源","duty":"采集","system":"你是采集Agent"},
+			{"agent_key":"k8s-analyzer","name":"分析Agent","description":"定位根因","duty":"分析","system":"你是分析Agent"},
+			{"agent_key":"k8s-advisor","name":"建议Agent","description":"给出修复建议","duty":"建议","system":"你是建议Agent"}]}`,
 	}}
-	u, _, _ := newTestUseCase(t, chat)
+	u, repo, _ := newTestUseCase(t, chat)
 	def, raw, err := u.Factory().CreateByLLM(context.Background(),
 		"创建一个每小时巡检K8s命名空间的Agent，多个子Agent协同完成任务，诊断异常并给出优化建议")
 	if err != nil {
@@ -995,6 +1000,19 @@ func TestCreateByLLMIntentFallback(t *testing.T) {
 	}
 	if !def.AutoCompose {
 		t.Fatal("协同意图未从需求推导: auto_compose 应为 true")
+	}
+	// 创建期预装配：成员立即落库并回写根定义（画布/列表父子立即可见）
+	if len(def.Members) != 3 || def.GraphType != GraphOrchestrator {
+		t.Fatalf("创建期预装配未生效: members=%v graph=%s", def.Members, def.GraphType)
+	}
+	for _, k := range def.Members {
+		sub, err := repo.GetDefByKey(context.Background(), k)
+		if err != nil || sub == nil {
+			t.Fatalf("子 Agent %s 未落库: %v", k, err)
+		}
+		if sub.Role != RoleSub || !sub.Sandbox {
+			t.Fatalf("子 Agent %s 应 role=sub sandbox=true: %+v", k, sub)
+		}
 	}
 	if !strings.Contains(raw, "[factory]") {
 		t.Fatalf("推导动作应通过 [factory] 提示回传前端, raw=%s", raw)

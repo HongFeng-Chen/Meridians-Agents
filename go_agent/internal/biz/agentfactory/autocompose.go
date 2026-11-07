@@ -239,7 +239,8 @@ func normalizePlan(p *autoPlan, def *AgentDef) *autoPlan {
 	return out
 }
 
-// materializeMembers 复用同名子 Agent，缺失的按最小权限创建；返回最终成员 key 列表
+// materializeMembers 复用同名子 Agent，缺失的按最小权限创建；返回最终成员 key 列表。
+// rec 可为 nil（创建期预装配没有任务上下文，此时事件只落日志）。
 func (u *UseCase) materializeMembers(ctx context.Context, def *AgentDef, plan *autoPlan, rec *Recorder) (keys, created, reused []string) {
 	caps := memberCapabilities(def)
 	for _, m := range plan.Members {
@@ -257,12 +258,14 @@ func (u *UseCase) materializeMembers(ctx context.Context, def *AgentDef, plan *a
 			Role:         RoleSub,
 			MaxTurns:     4,
 			LLMSource:    def.LLMSource, // 成员跟随根 Agent 数据源，避免默认源不可用时整棵树卡住
-			Sandbox:      true, // 护栏：自动创建的成员先进沙箱，不允许再委派
+			Sandbox:      true,          // 护栏：自动创建的成员先进沙箱，不允许再委派
 			Capabilities: caps,
 		})
 		if err != nil {
 			u.warn("自动创建编排成员失败", "agent_key", m.AgentKey, "err", err)
-			rec.event(EventError, rec.turn, map[string]any{"message": fmt.Sprintf("创建成员 %s 失败：%v", m.AgentKey, err)})
+			if rec != nil {
+				rec.event(EventError, rec.turn, map[string]any{"message": fmt.Sprintf("创建成员 %s 失败：%v", m.AgentKey, err)})
+			}
 			continue
 		}
 		keys = append(keys, d.AgentKey)

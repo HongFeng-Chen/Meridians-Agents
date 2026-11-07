@@ -98,6 +98,13 @@ func (u *UseCase) factoryCapability(ctx context.Context, args map[string]any) (s
 	if err != nil {
 		return "", err
 	}
+	if pre := u.precomposeCreated(ctx, def, fa.Description+" "+fa.System); pre != "" {
+		if note != "" {
+			note += "；" + pre
+		} else {
+			note = pre
+		}
+	}
 	return marshalPayload(map[string]any{
 		"agent_id":     def.ID,
 		"agent_key":    def.AgentKey,
@@ -106,6 +113,7 @@ func (u *UseCase) factoryCapability(ctx context.Context, args map[string]any) (s
 		"auto_run":     def.AutoRun,
 		"cron_expr":    def.CronExpr,
 		"auto_compose": def.AutoCompose,
+		"members":      def.Members,
 		"note":         note,
 		"hint":         "Agent 已注册，可通过 agent:" + def.AgentKey + " 能力委派任务（沙箱内不允许再委派）",
 	}), nil
@@ -314,7 +322,40 @@ func (f *AgentFactory) CreateByLLM(ctx context.Context, requirement string) (*Ag
 	if err != nil {
 		return nil, output, err
 	}
+	if note := u.precomposeCreated(ctx, created, requirement); note != "" {
+		output += "\n[factory] " + note
+	}
 	return created, output, nil
+}
+
+// precomposeCreated 创建期预装配：auto_compose（或 auto 图/多 Agent 图缺成员）的根 Agent
+// 创建后立即规划一次架构与成员并落库——编排画布、Agent 列表的父子关系马上可见，
+// 不用等第一次任务运行。失败不阻断创建（返回说明文本），运行时 ensureOrchestration 会重试。
+func (u *UseCase) precomposeCreated(ctx context.Context, def *AgentDef, input string) string {
+	if def == nil || def.Role != RoleRoot || !u.needsAutoCompose(def) {
+		return ""
+	}
+	plan, err := u.planOrchestration(ctx, def, input)
+	if err != nil {
+		u.warn("创建期自动装配预规划失败（首次任务运行时会重试）", "agent_key", def.AgentKey, "err", err)
+		return "创建期自动装配预规划失败（首次运行任务时会自动重试）：" + err.Error()
+	}
+	plan = normalizePlan(plan, def)
+	keys, created, reused := u.materializeMembers(ctx, def, plan, nil)
+	if spec, multi := multiAgentSpec(plan.GraphType); multi && len(keys) < spec.min {
+		u.warn("创建期自动装配成员不足，交由首次任务运行重试", "agent_key", def.AgentKey,
+			"graph_type", plan.GraphType, "members", len(keys))
+		return fmt.Sprintf("自动装配成员不足（%s 至少需要 %d 个，实际 %d 个），首次运行任务时会自动重试",
+			plan.GraphType, spec.min, len(keys))
+	}
+	out := applyPlan(def, plan.GraphType, keys)
+	u.persistPlan(ctx, def, out)
+	*def = *out
+	if len(created) == 0 && len(reused) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("创建期自动装配完成：架构 %s，新建成员 %v，复用成员 %v，成员列表 %v——编排画布已可见",
+		out.GraphType, created, reused, keys)
 }
 
 // sanitizeFactoryIntent 对 LLM 给出的意图字段做兜底（不因幻觉让整次创建失败）：
@@ -352,8 +393,8 @@ func sanitizeFactoryIntent(u *UseCase, in *AgentInput, requirement string) strin
 	if !in.AutoCompose && requirementImpliesCollab(requirement) {
 		in.AutoCompose = true
 		u.warn("需求含协同语义但 LLM 漏填自动装配，已开启 auto_compose")
-		notes = append(notes, "需求含多 Agent 协同/编排语义，已开启自动装配：首次运行任务"+
-			"（含定时触发）时自动规划架构并创建子 Agent，出现在编排画布")
+		notes = append(notes, "需求含多 Agent 协同/编排语义，已开启自动装配：创建时即自动规划架构"+
+			"并创建子 Agent（编排画布可见），后续任务按需调整成员")
 	}
 
 	if !in.AutoRun {
