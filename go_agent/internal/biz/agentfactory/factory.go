@@ -32,6 +32,32 @@ type factoryArgs struct {
 	GraphType    string   `json:"graph_type"`
 	Capabilities []string `json:"capabilities"`
 	MaxTurns     int      `json:"max_turns"`
+	// 意图直传字段：需求里写了周期性/编排语义时由 LLM 填写，缺省即保持旧行为
+	AutoCompose   bool   `json:"auto_compose"`
+	Orchestration string `json:"orchestration"`
+	AutoRun       bool   `json:"auto_run"`
+	CronExpr      string `json:"cron_expr"`
+	CronInput     string `json:"cron_input"`
+}
+
+// toAgentInput 工厂入参 → AgentInput（factoryCapability 与 CreateByLLM 共用，
+// 新增意图字段时两边自动生效）
+func (fa factoryArgs) toAgentInput(sandbox bool) AgentInput {
+	return AgentInput{
+		Name:          fa.Name,
+		AgentKey:      fa.AgentKey,
+		Description:   fa.Description,
+		System:        fa.System,
+		GraphType:     fa.GraphType,
+		Capabilities:  fa.Capabilities,
+		MaxTurns:      fa.MaxTurns,
+		AutoCompose:   fa.AutoCompose,
+		Orchestration: fa.Orchestration,
+		AutoRun:       fa.AutoRun,
+		CronExpr:      fa.CronExpr,
+		CronInput:     fa.CronInput,
+		Sandbox:       sandbox,
+	}
 }
 
 // splitDelegateCaps 沙箱 Agent 不可委派：把 agent:* 能力从白名单里剔除。
@@ -63,25 +89,25 @@ func (u *UseCase) factoryCapability(ctx context.Context, args map[string]any) (s
 	if len(dropped) > 0 {
 		u.warn("沙箱 Agent 已剔除委派能力", "agent_key", fa.AgentKey, "dropped", dropped)
 	}
-	def, err := u.Factory().Create(ctx, SourceLLM, AgentInput{
-		Name:         fa.Name,
-		AgentKey:     fa.AgentKey,
-		Description:  fa.Description,
-		System:       fa.System,
-		GraphType:    fa.GraphType,
-		Capabilities: caps,
-		MaxTurns:     fa.MaxTurns,
-		Sandbox:      true, // 护栏 4：LLM 创建的 Agent 一律先进沙箱灰度
-	})
+	fa.Capabilities = caps
+	// 与 CreateByLLM 同一套意图兜底：工具调用方漏填 auto_run/auto_compose 时，
+	// 从描述与角色提示词里推导（周期语义 → cron，协同语义 → 自动装配）
+	in := fa.toAgentInput(true)
+	note := sanitizeFactoryIntent(u, &in, fa.Description+" "+fa.System)
+	def, err := u.Factory().Create(ctx, SourceLLM, in)
 	if err != nil {
 		return "", err
 	}
 	return marshalPayload(map[string]any{
-		"agent_id":  def.ID,
-		"agent_key": def.AgentKey,
-		"name":      def.Name,
-		"sandbox":   def.Sandbox,
-		"hint":      "Agent 已注册，可通过 agent:" + def.AgentKey + " 能力委派任务（沙箱内不允许再委派）",
+		"agent_id":     def.ID,
+		"agent_key":    def.AgentKey,
+		"name":         def.Name,
+		"sandbox":      def.Sandbox,
+		"auto_run":     def.AutoRun,
+		"cron_expr":    def.CronExpr,
+		"auto_compose": def.AutoCompose,
+		"note":         note,
+		"hint":         "Agent 已注册，可通过 agent:" + def.AgentKey + " 能力委派任务（沙箱内不允许再委派）",
 	}), nil
 }
 
@@ -223,10 +249,11 @@ func (f *AgentFactory) CreateByLLM(ctx context.Context, requirement string) (*Ag
 	}
 
 	system := `你是 Agent 平台的 AgentFactory：根据用户需求设计一个新 Agent 的定义，输出严格 JSON（不要输出其他文字）：
-{"name":"中文名称","agent_key":"小写字母数字连字符标识","description":"给 LLM 看的职责描述，50字以内","system":"角色提示词，包含工作方法与边界","graph_type":"执行图，见下方可选值","capabilities":["从下方可用能力里选择"],"max_turns":10}
+{"name":"中文名称","agent_key":"小写字母数字连字符标识","description":"给 LLM 看的职责描述，50字以内","system":"角色提示词，包含工作方法与边界","graph_type":"执行图，见下方可选值","capabilities":["从下方可用能力里选择"],"max_turns":10,"auto_compose":false,"orchestration":"auto","auto_run":false,"cron_expr":"","cron_input":""}
 
 规则：
-1. capabilities 只能从可用能力清单中选择，不能编造；不需要能力就留空数组
+1. capabilities 按需求逐项挑选，只选与需求领域真正相关的能力（如 K8s 巡检选 mcp:*k8s* 工具），
+   宁缺毋滥，不能编造；不需要能力就留空数组
 2. graph_type 可选：simple（单轮直答）/ react（思考-行动-观察）/ plan_execute（先计划再执行）/
    reflexion（执行-评估-反思重试）/ router（意图路由到技能）/ self_ask（拆子问题逐个回答）/
    function_call（无思考、直接调工具）/ state_machine（固定状态流转）/
@@ -235,8 +262,18 @@ func (f *AgentFactory) CreateByLLM(ctx context.Context, requirement string) (*Ag
 4. max_turns 取 5~20
 5. description 是语义召回的依据，要写清楚这个 Agent 擅长什么
 6. 新 Agent 处于沙箱灰度，不允许委派其他 Agent：可用能力清单已排除 agent:* 项，不要编造；
-   如需求涉及多 Agent 协作，请按「单 Agent + 多步骤」设计（把协作方法写进 system），
-   由人工验证后手动补充委派能力
+   如需求是「委派/复用已有 Agent」，由人工验证后手动补充委派能力；
+   如需求是「组建新团队协同」，用 auto_compose（见规则 8），不要写成单 Agent
+7. orchestration 可选 auto / serial / parallel：需求写明固定步骤依次执行用 serial，
+   明确要求并行用 parallel，其余一律 auto
+8. auto_compose 自动装配：需求出现「协同/协作/团队/分工/编排/多个子 Agent/自动拆解」
+   等语义时必须 true（首次任务运行时会自动规划架构并创建子 Agent）；单 Agent 任务保持 false
+9. 后台自动运行：需求出现「每小时/每天 X 点/定时/周期性/自动巡检」等周期执行语义时，
+   必须设 auto_run=true，并给出：
+   - cron_expr：5 段 cron（分 时 日 月 周）。每小时=0 * * * *；每30分钟=*/30 * * * *；
+     每天 9 点=0 9 * * *；工作日 9 点=0 9 * * 1-5；每周一 9 点=0 9 * * 1
+   - cron_input：定时触发时提交给 Agent 的固定任务输入，从需求提炼（一句话任务指令）
+   需求没有周期执行语义时保持 auto_run=false，cron_expr 与 cron_input 留空字符串
 
 可用能力清单：
 ` + strings.Join(avail, "\n")
@@ -266,19 +303,73 @@ func (f *AgentFactory) CreateByLLM(ctx context.Context, requirement string) (*Ag
 	if len(dropped) > 0 {
 		u.warn("LLM 造 Agent 时已剔除委派能力（沙箱不可委派）", "agent_key", def.AgentKey, "dropped", dropped)
 	}
+	def.Capabilities = caps
 
-	created, err := f.Create(ctx, SourceLLM, AgentInput{
-		Name:         def.Name,
-		AgentKey:     def.AgentKey,
-		Description:  def.Description,
-		System:       def.System,
-		GraphType:    def.GraphType,
-		Capabilities: caps,
-		MaxTurns:     def.MaxTurns,
-		Sandbox:      true, // 护栏 4：LLM 创建默认沙箱灰度
-	})
+	in := def.toAgentInput(true)
+	if note := sanitizeFactoryIntent(u, &in, requirement); note != "" {
+		output += "\n[factory] " + note
+	}
+
+	created, err := f.Create(ctx, SourceLLM, in)
 	if err != nil {
 		return nil, output, err
 	}
 	return created, output, nil
+}
+
+// sanitizeFactoryIntent 对 LLM 给出的意图字段做兜底（不因幻觉让整次创建失败）：
+//   - orchestration 非法 → 降级为 auto；
+//   - 模型漏填 auto_run/cron 但需求含周期语义 → 按需求原文推导排期（intent.go）；
+//   - 模型漏填 auto_compose 但需求含协同/编排语义 → 开启自动装配；
+//   - cron 表达式非法 → 关闭后台自动运行并提示人工补配；
+//   - auto_run 开启但缺 cron_input → 用需求原文补齐。
+//
+// 有降级/推导动作时返回提示文本（拼到 raw 输出里给前端展示），无动作时返回空串。
+func sanitizeFactoryIntent(u *UseCase, in *AgentInput, requirement string) string {
+	var notes []string
+
+	in.Orchestration = strings.ToLower(strings.TrimSpace(in.Orchestration))
+	if in.Orchestration == "" {
+		in.Orchestration = OrchestrationAuto
+	}
+	if !ValidOrchestration(in.Orchestration) {
+		u.warn("LLM 生成的编排方式不合法，已降级为 auto", "orchestration", in.Orchestration)
+		in.Orchestration = OrchestrationAuto
+		notes = append(notes, "LLM 生成的编排方式不合法，已降级为 auto")
+	}
+
+	// 模型漏填时的服务端意图推导：提示词只是「请求」，这里才是「保证」——
+	// 用户写了「每小时巡检」「多 Agent 协同」却得到一个手动单 Agent，属于意图丢失。
+	if !in.AutoRun {
+		if cron, why := deriveCronFromRequirement(requirement); cron != "" {
+			in.AutoRun, in.CronExpr = true, cron
+			u.warn("需求含周期语义但 LLM 漏填定时字段，已按需求推导排期",
+				"cron_expr", cron, "依据", why)
+			notes = append(notes, "需求含周期执行语义（"+why+"）但 LLM 未设置后台自动运行，"+
+				"已自动排期 cron="+cron+"；定时输入取需求原文，可在编辑页调整")
+		}
+	}
+	if !in.AutoCompose && requirementImpliesCollab(requirement) {
+		in.AutoCompose = true
+		u.warn("需求含协同语义但 LLM 漏填自动装配，已开启 auto_compose")
+		notes = append(notes, "需求含多 Agent 协同/编排语义，已开启自动装配：首次运行任务"+
+			"（含定时触发）时自动规划架构并创建子 Agent，出现在编排画布")
+	}
+
+	if !in.AutoRun {
+		return strings.Join(notes, "；")
+	}
+
+	in.CronExpr = strings.TrimSpace(in.CronExpr)
+	in.CronInput = strings.TrimSpace(in.CronInput)
+	if err := ValidateCron(in.CronExpr); err != nil {
+		u.warn("LLM 生成的 cron 表达式不合法，已关闭后台自动运行（可人工补配）",
+			"cron_expr", in.CronExpr, "err", err)
+		in.AutoRun, in.CronExpr, in.CronInput = false, "", ""
+		notes = append(notes, "LLM 生成的 cron 表达式不合法，已自动关闭后台自动运行；"+
+			"Agent 已创建，可在编辑页手动勾选后台自动运行并填写 cron")
+	} else if in.CronInput == "" {
+		in.CronInput = truncateRunes(strings.TrimSpace(requirement), 4000)
+	}
+	return strings.Join(notes, "；")
 }

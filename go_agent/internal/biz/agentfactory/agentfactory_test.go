@@ -893,6 +893,147 @@ func TestCreateByLLM(t *testing.T) {
 	}
 }
 
+// TestCreateByLLMPeriodicIntent 需求里写了「每小时自动巡检」：LLM 输出的 auto_run/cron/
+// orchestration 必须原样落库（回归：factoryArgs 缺字段导致定时意图被静默丢弃）。
+func TestCreateByLLMPeriodicIntent(t *testing.T) {
+	chat := &fakeChatter{script: []string{
+		`{"name":"K8s集群健康巡检","agent_key":"k8s-health-inspector","description":"定期巡检集群","system":"你是K8s运维专家","graph_type":"plan_execute","capabilities":["mcp:demo__calc"],"max_turns":12,"orchestration":"auto","auto_run":true,"cron_expr":"0 * * * *","cron_input":"执行一次 K8s 集群健康巡检并输出报告"}`,
+	}}
+	u, _, _ := newTestUseCase(t, chat)
+	def, raw, err := u.Factory().CreateByLLM(context.Background(),
+		"帮我做一个 K8s 集群健康巡检 Agent，每小时自动跑一次")
+	if err != nil {
+		t.Fatalf("CreateByLLM: %v raw=%s", err, raw)
+	}
+	if !def.AutoRun || def.CronExpr != "0 * * * *" {
+		t.Fatalf("定时意图未落库: auto_run=%v cron=%q", def.AutoRun, def.CronExpr)
+	}
+	if def.CronInput != "执行一次 K8s 集群健康巡检并输出报告" {
+		t.Fatalf("cron_input 未落库: %q", def.CronInput)
+	}
+	if def.Orchestration != OrchestrationAuto {
+		t.Fatalf("编排方式未落库: %q", def.Orchestration)
+	}
+	if def.NextRunAt.IsZero() {
+		t.Fatal("auto_run Agent 创建后应立即建立排期 NextRunAt")
+	}
+	if def.Role != RoleRoot {
+		t.Fatalf("工厂创建的 Agent 应为 root（定时语义仅 root 生效）: %q", def.Role)
+	}
+}
+
+// TestCreateByLLMBadCronDegrades cron 非法：不应让整次创建失败，而是关闭自动运行并在
+// raw 输出里给出提示；缺 cron_input 时用需求原文补齐。
+func TestCreateByLLMBadCronDegrades(t *testing.T) {
+	chat := &fakeChatter{script: []string{
+		`{"name":"巡检员","agent_key":"inspector","description":"巡检","system":"你是巡检专家","graph_type":"react","capabilities":[],"max_turns":8,"auto_run":true,"cron_expr":"every hour","cron_input":""}`,
+	}}
+	u, _, _ := newTestUseCase(t, chat)
+	def, raw, err := u.Factory().CreateByLLM(context.Background(), "每小时巡检一次集群节点")
+	if err != nil {
+		t.Fatalf("cron 非法不应导致创建失败: %v", err)
+	}
+	if def.AutoRun || def.CronExpr != "" || def.CronInput != "" {
+		t.Fatalf("非法 cron 应回退为手动运行: auto_run=%v cron=%q", def.AutoRun, def.CronExpr)
+	}
+	if !strings.Contains(raw, "cron 表达式不合法") {
+		t.Fatalf("raw 输出应包含降级提示: %s", raw)
+	}
+}
+
+// TestCreateByLLMCronInputFallback auto_run 开了但 LLM 没给 cron_input：用需求原文补齐。
+func TestCreateByLLMCronInputFallback(t *testing.T) {
+	chat := &fakeChatter{script: []string{
+		`{"name":"巡检员","agent_key":"inspector-2","description":"巡检","system":"你是巡检专家","graph_type":"react","capabilities":[],"max_turns":8,"auto_run":true,"cron_expr":"*/30 * * * *"}`,
+	}}
+	u, _, _ := newTestUseCase(t, chat)
+	def, _, err := u.Factory().CreateByLLM(context.Background(), "每 30 分钟巡检一次集群")
+	if err != nil {
+		t.Fatalf("CreateByLLM: %v", err)
+	}
+	if def.CronInput == "" || !strings.Contains(def.CronInput, "每 30 分钟巡检一次集群") {
+		t.Fatalf("cron_input 应回退为需求原文: %q", def.CronInput)
+	}
+}
+
+// TestCreateByLLMBadOrchestration 编排值非法：降级为 auto，不阻断创建。
+func TestCreateByLLMBadOrchestration(t *testing.T) {
+	chat := &fakeChatter{script: []string{
+		`{"name":"巡检员","agent_key":"inspector-3","description":"巡检","system":"你是巡检专家","graph_type":"react","capabilities":[],"max_turns":8,"orchestration":"全自动流水线"}`,
+	}}
+	u, _, _ := newTestUseCase(t, chat)
+	def, raw, err := u.Factory().CreateByLLM(context.Background(), "做一个巡检 Agent")
+	if err != nil {
+		t.Fatalf("编排非法不应导致创建失败: %v", err)
+	}
+	if def.Orchestration != OrchestrationAuto {
+		t.Fatalf("非法编排应降级为 auto: %q", def.Orchestration)
+	}
+	if !strings.Contains(raw, "编排方式不合法") {
+		t.Fatalf("raw 输出应包含降级提示: %s", raw)
+	}
+}
+
+// TestCreateByLLMIntentFallback 模型完全漏填意图字段（auto_run/cron/auto_compose/
+// orchestration 一个都没给）：服务端必须从需求原文推导出「每小时排期 + 自动装配」，
+// 而不是静默丢掉用户意图（回归：线上「每小时巡检 K8s」创建后 cron 为空、画布为空）。
+func TestCreateByLLMIntentFallback(t *testing.T) {
+	chat := &fakeChatter{script: []string{
+		`{"name":"K8s定时巡检诊断Agent","agent_key":"k8s-periodic-inspector","system":"你是K8s巡检诊断Agent","graph_type":"plan_execute","capabilities":["mcp:demo__calc"],"max_turns":20}`,
+	}}
+	u, _, _ := newTestUseCase(t, chat)
+	def, raw, err := u.Factory().CreateByLLM(context.Background(),
+		"创建一个每小时巡检K8s命名空间的Agent，多个子Agent协同完成任务，诊断异常并给出优化建议")
+	if err != nil {
+		t.Fatalf("CreateByLLM: %v raw=%s", err, raw)
+	}
+	if !def.AutoRun || def.CronExpr != "0 * * * *" {
+		t.Fatalf("周期意图未从需求推导: auto_run=%v cron=%q", def.AutoRun, def.CronExpr)
+	}
+	if strings.TrimSpace(def.CronInput) == "" {
+		t.Fatal("cron_input 应回退为需求原文，不能为空（调度器要求非空）")
+	}
+	if !def.AutoCompose {
+		t.Fatal("协同意图未从需求推导: auto_compose 应为 true")
+	}
+	if !strings.Contains(raw, "[factory]") {
+		t.Fatalf("推导动作应通过 [factory] 提示回传前端, raw=%s", raw)
+	}
+}
+
+// TestDeriveCronFromRequirement 需求原文 → cron 的映射表
+func TestDeriveCronFromRequirement(t *testing.T) {
+	cases := []struct {
+		req  string
+		want string
+	}{
+		{"每小时巡检K8s命名空间", "0 * * * *"},
+		{"每 30 分钟同步一次告警", "*/30 * * * *"},
+		{"每15分钟检查一次队列", "*/15 * * * *"},
+		{"每2小时汇总一次指标", "0 */2 * * *"},
+		{"每天 9 点生成日报", "0 9 * * *"},
+		{"每日早上8点推送摘要", "0 8 * * *"},
+		{"工作日9点开晨会准备", "0 9 * * 1-5"},
+		{"每周一 8 点出周报", "0 8 * * 1"},
+		{"每周三10点做数据备份", "0 10 * * 3"},
+		{"定期巡检集群健康状态", "0 * * * *"},
+		{"写一份合并复盘报告", ""}, // 无周期语义 → 不推导
+		{"", ""},
+	}
+	for _, c := range cases {
+		got, _ := deriveCronFromRequirement(c.req)
+		if got != c.want {
+			t.Errorf("deriveCron(%q) = %q, want %q", c.req, got, c.want)
+		}
+	}
+	if !requirementImpliesCollab("多个子Agent协同完成任务") {
+		t.Error("协同意图未识别")
+	}
+	if requirementImpliesCollab("写一个查天气的Agent") {
+		t.Error("单 Agent 需求误判为协同")
+	}
+}
+
 // TestCreateByLLMStripsDelegation 沙箱 Agent 不可委派：候选能力清单里不应出现 agent:*，
 // 即使模型仍选了，也应剔除后正常创建，而不是整单失败（回归：候选集与沙箱护栏自相矛盾）。
 func TestCreateByLLMStripsDelegation(t *testing.T) {

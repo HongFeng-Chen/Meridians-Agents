@@ -40,10 +40,12 @@ func (c *Catalog) Schemas(ctx context.Context) ([]CapabilitySchema, error) {
 	schemas = append(schemas, CapabilitySchema{
 		Name: CapFactory,
 		Type: "factory",
-		Description: "创建一个新的 Agent（元编程）：给出名称、职责描述、所需能力白名单与执行图，" +
+		Description: "创建一个新的 Agent（元编程）：给出名称、职责描述、所需能力白名单、执行图，" +
+			"以及可选的后台自动运行（auto_run+cron_expr+cron_input）、自动装配（auto_compose）与编排方式（orchestration）。" +
 			"工厂校验后注册，新 Agent 立即可被委派。注意：新 Agent 不能携带 create_agent 能力（防无限自举）；" +
-			"新 Agent 进入沙箱灰度，不能携带委派能力（agent:*，会被自动剔除），人工验证后可解除沙箱。",
-		ArgsExample: `{"name":"合规审查助手","description":"审查合同条款风险","system":"你是资深合规审查专家…","capabilities":["mcp:legal__search"],"graph_type":"react","max_turns":10}`,
+			"新 Agent 进入沙箱灰度，不能携带委派能力（agent:*，会被自动剔除），人工验证后可解除沙箱。" +
+			"能力白名单按需求领域逐项挑选（如 K8s 巡检选 mcp:*k8s* 工具）。",
+		ArgsExample: `{"name":"K8s集群健康巡检","description":"定期巡检K8s集群健康状态","system":"你是K8s运维专家…","capabilities":["mcp:k8s-mcp__list_pods","mcp:k8s-mcp__get_events"],"graph_type":"plan_execute","max_turns":12,"auto_compose":false,"orchestration":"auto","auto_run":true,"cron_expr":"0 * * * *","cron_input":"执行一次 K8s 集群健康巡检并输出报告"}`,
 	})
 
 	// Agent 委派能力
