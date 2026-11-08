@@ -1341,8 +1341,11 @@ func TestSkillCapability(t *testing.T) {
 		t.Fatalf("skill schemas = %v, want [skill:document-pro]", names)
 	}
 
-	// 调用：返回 SKILL.md 内容
-	out, err := u.InvokeDispatch(ctx, "skill:document-pro", map[string]any{"purpose": "解析财报"}, nil)
+	// 调用：返回 SKILL.md 内容（白名单内 → 放行）
+	rec := &Recorder{u: u, task: &Task{ID: 1}, def: &AgentDef{
+		AgentKey: "doc-agent", Name: "文档 Agent", Capabilities: []string{"skill:document-pro"},
+	}}
+	out, err := u.InvokeDispatch(ctx, "skill:document-pro", map[string]any{"purpose": "解析财报"}, rec)
 	if err != nil {
 		t.Fatalf("InvokeDispatch(skill): %v", err)
 	}
@@ -1350,8 +1353,12 @@ func TestSkillCapability(t *testing.T) {
 		t.Fatalf("技能内容缺失: %q", truncateRunes(out, 120))
 	}
 
-	// 未启用技能报错
-	if _, err := u.InvokeDispatch(ctx, "skill:disabled-one", nil, nil); err == nil {
+	// 未启用技能报错：白名单里写了也不行（授权 ≠ 资源可用，两处各自把关）
+	recBoth := &Recorder{u: u, task: &Task{ID: 1}, def: &AgentDef{
+		AgentKey: "doc-agent", Name: "文档 Agent",
+		Capabilities: []string{"skill:document-pro", "skill:disabled-one"},
+	}}
+	if _, err := u.InvokeDispatch(ctx, "skill:disabled-one", nil, recBoth); err == nil {
 		t.Fatal("调用未启用技能应报错")
 	}
 

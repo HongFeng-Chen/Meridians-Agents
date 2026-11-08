@@ -319,9 +319,11 @@ func TestRememberAndDedup(t *testing.T) {
 	if len(graph.insertedEnts) != 2 || len(graph.insertedRels) != 1 {
 		t.Fatalf("图谱应写入 2 实体 1 关系，实际 %d/%d", len(graph.insertedEnts), len(graph.insertedRels))
 	}
+	// 引用必须带归属：mem::<user>::<memoryID>#0（图谱与 RAG 共用，靠引用区分归属）
+	wantRef := memoryRef(res.Memory.UserID, res.Memory.ID)
 	for _, e := range graph.insertedEnts {
-		if len(e.ChunkRefs) != 1 || !strings.HasPrefix(e.ChunkRefs[0], res.Memory.ID+"#") {
-			t.Fatalf("实体引用前缀错误: %v", e.ChunkRefs)
+		if len(e.ChunkRefs) != 1 || e.ChunkRefs[0] != wantRef {
+			t.Fatalf("实体引用错误: %v，want %s", e.ChunkRefs, wantRef)
 		}
 	}
 	if repo.mems[res.Memory.ID].Entities != 2 {
@@ -392,7 +394,8 @@ func TestExpiryAndPurge(t *testing.T) {
 	if _, ok := vec.items["mem-ok"]; !ok {
 		t.Fatal("有效记忆的向量不应被删除")
 	}
-	if !strings.HasPrefix(graph.deleted[0], "mem-exp#") {
+	// 前缀带归属：删除只清理本条记忆的引用，不会误删同 ID 的他人节点
+	if !strings.HasPrefix(graph.deleted[0], memoryRefDocPrefix("default", "mem-exp")) {
 		t.Fatalf("图谱孤儿清理前缀错误: %v", graph.deleted)
 	}
 }
@@ -445,8 +448,12 @@ func TestAnswerFlow(t *testing.T) {
 // 图谱召回：实体种子 -> 关系扩展 -> 子图上下文
 func TestRecallWithGraph(t *testing.T) {
 	u, _, _, vec, graph, _ := newTestUseCase(t, false)
-	graph.seeds = []graphrag.Entity{{Name: "Milvus", Type: "技术", Freq: 3}}
-	graph.relsOf = []graphrag.Relation{{Source: "Milvus", Target: "Redis", Relation: "配合使用", Weight: 2}}
+	// 实体必须带本人引用：图谱召回按引用归属裁剪，无归属节点视为他人数据
+	graph.seeds = []graphrag.Entity{{Name: "Milvus", Type: "技术", Freq: 3, ChunkRefs: []string{memoryRef("default", "m1")}}}
+	graph.relsOf = []graphrag.Relation{{
+		Source: "Milvus", Target: "Redis", Relation: "配合使用", Weight: 2,
+		ChunkRefs: []string{memoryRef("default", "m1")},
+	}}
 
 	res, err := u.Recall(context.Background(), "检索架构", "", 0, true, RecallSourceAPI)
 	if err != nil {
@@ -504,7 +511,7 @@ func TestDeleteMemory(t *testing.T) {
 	if _, ok := vec.items[id]; ok {
 		t.Fatal("向量未删除")
 	}
-	if len(graph.deleted) != 1 || !strings.HasPrefix(graph.deleted[0], id+"#") {
+	if len(graph.deleted) != 1 || !strings.HasPrefix(graph.deleted[0], memoryRefDocPrefix("default", id)) {
 		t.Fatalf("图谱清理前缀错误: %v", graph.deleted)
 	}
 	if _, err := u.Get(context.Background(), id); err != ErrNotFound {
@@ -535,3 +542,60 @@ var (
 	_ rag.Embedder = fakeEmbed{}
 	_ GraphStore   = (*fakeGraph)(nil)
 )
+
+// 记忆图谱跨用户隔离（SEC-007）：
+// 图谱集合与 RAG 共用、检索没有用户维度，所以召回结果必须按引用归属裁剪。
+// 断言「他人的实体/关系不出现」且「保留下来的实体不含他人引用」。
+func TestRecallGraphScopedByUser(t *testing.T) {
+	u, _, _, _, graph, _ := newTestUseCase(t, false)
+	shared := []string{memoryRef("alice", "a1"), memoryRef("bob", "b1")}
+	graph.seeds = []graphrag.Entity{
+		{Name: "Milvus", ChunkRefs: shared},                            // 双方都引用
+		{Name: "BobOnly", ChunkRefs: []string{memoryRef("bob", "b1")}}, // 只属于 Bob
+	}
+	graph.relsOf = []graphrag.Relation{
+		{Source: "Milvus", Target: "Redis", Relation: "配合使用", ChunkRefs: shared},
+		{Source: "BobOnly", Target: "Milvus", Relation: "私有关系", ChunkRefs: []string{memoryRef("bob", "b1")}},
+	}
+
+	res, err := u.Recall(context.Background(), "检索架构", "alice", 0, true, RecallSourceAPI)
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if res.Graph == nil {
+		t.Fatal("应返回图谱上下文")
+	}
+	if len(res.Graph.Entities) != 1 || res.Graph.Entities[0].Name != "Milvus" {
+		t.Fatalf("只应保留本人引用的实体，实际 %+v", res.Graph.Entities)
+	}
+	for _, ref := range res.Graph.Entities[0].ChunkRefs {
+		if strings.Contains(ref, "bob") {
+			t.Fatalf("实体仍带他人引用: %v", res.Graph.Entities[0].ChunkRefs)
+		}
+	}
+	if len(res.Graph.Relations) != 1 {
+		t.Fatalf("只应保留本人引用的关系，实际 %+v", res.Graph.Relations)
+	}
+	for _, ref := range res.Graph.Relations[0].ChunkRefs {
+		if strings.Contains(ref, "bob") {
+			t.Fatalf("关系仍带他人引用: %v", res.Graph.Relations[0].ChunkRefs)
+		}
+	}
+
+	// Bob 视角：能看到的实体集合不同（同一份数据，不同视图）
+	resBob, err := u.Recall(context.Background(), "检索架构", "bob", 0, true, RecallSourceAPI)
+	if err != nil {
+		t.Fatalf("Recall(bob): %v", err)
+	}
+	if len(resBob.Graph.Entities) != 2 {
+		t.Fatalf("Bob 应看到 2 个实体，实际 %d", len(resBob.Graph.Entities))
+	}
+	// 交叉检查：Bob 视图里不能出现 alice 的引用
+	for _, e := range resBob.Graph.Entities {
+		for _, ref := range e.ChunkRefs {
+			if strings.Contains(ref, "alice") {
+				t.Fatalf("Bob 视图出现 alice 引用: %s %v", e.Name, e.ChunkRefs)
+			}
+		}
+	}
+}

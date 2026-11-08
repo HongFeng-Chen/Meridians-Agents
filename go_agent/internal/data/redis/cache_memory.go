@@ -11,12 +11,22 @@ import (
 
 	"go_agent/internal/biz/memory"
 	"go_agent/internal/data/redis/models"
+	"go_agent/internal/pkg/identity"
 
 	goredis "github.com/redis/go-redis/v9"
 )
 
 // maxHistory 单会话最多保留的消息数，保留策略统一定义在 models 里
 const maxHistory = models.MaxSessionMessages
+
+// key 会话键：带 tenant / user 作用域。
+//
+// 作用域从 ctx 身份推导，而不是从参数传入 —— 调用方（service / biz / worker）
+// 都拿得到同一个身份，少一个参数就少一处「忘了传」的漏洞。
+// 未注入身份时回落到 default/public，与单机开发态行为一致。
+func (s *ShortTermStore) key(ctx context.Context, sessionID string) string {
+	return models.ScopedSessionKey(identity.TenantID(ctx), identity.UserID(ctx), sessionID)
+}
 
 // ShortTermStore 短期记忆存储，实现 memory.ShortTermStore
 type ShortTermStore struct {
@@ -42,7 +52,7 @@ func (s *ShortTermStore) Append(ctx context.Context, sessionID string, msg memor
 	if err != nil {
 		return fmt.Errorf("短期记忆: 序列化消息: %w", err)
 	}
-	key := models.ShortSessionKey(sessionID)
+	key := s.key(ctx, sessionID)
 	pipe := s.rdb.TxPipeline()
 	pipe.RPush(ctx, key, raw)
 	pipe.LTrim(ctx, key, -maxHistory, -1)
@@ -61,7 +71,7 @@ func (s *ShortTermStore) History(ctx context.Context, sessionID string, limit in
 	if limit <= 0 {
 		limit = 20
 	}
-	key := models.ShortSessionKey(sessionID)
+	key := s.key(ctx, sessionID)
 	n, err := s.rdb.LLen(ctx, key).Result()
 	if err != nil {
 		return nil, nil // 会话不存在或 Redis 异常：按空历史处理，不阻断问答
@@ -86,7 +96,7 @@ func (s *ShortTermStore) History(ctx context.Context, sessionID string, limit in
 
 // Len 会话消息数
 func (s *ShortTermStore) Len(ctx context.Context, sessionID string) (int64, error) {
-	n, err := s.rdb.LLen(ctx, models.ShortSessionKey(sessionID)).Result()
+	n, err := s.rdb.LLen(ctx, s.key(ctx, sessionID)).Result()
 	if err != nil {
 		return 0, nil
 	}
@@ -98,7 +108,7 @@ func (s *ShortTermStore) Clear(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return nil
 	}
-	if err := s.rdb.Del(ctx, models.ShortSessionKey(sessionID)).Err(); err != nil {
+	if err := s.rdb.Del(ctx, s.key(ctx, sessionID)).Err(); err != nil {
 		return fmt.Errorf("短期记忆: 清空会话: %w", err)
 	}
 	return nil
@@ -106,7 +116,7 @@ func (s *ShortTermStore) Clear(ctx context.Context, sessionID string) error {
 
 // TTL 查询会话剩余存活时间（管理端展示用；-2 表示不存在）
 func (s *ShortTermStore) TTL(ctx context.Context, sessionID string) (time.Duration, error) {
-	return s.rdb.TTL(ctx, models.ShortSessionKey(sessionID)).Result()
+	return s.rdb.TTL(ctx, s.key(ctx, sessionID)).Result()
 }
 
 // ScanSessions 枚举会话键（管理端统计用，SCAN 避免 KEYS 阻塞）

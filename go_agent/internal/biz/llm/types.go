@@ -207,6 +207,8 @@ func MetaFrom(ctx context.Context) CallMeta {
 // CallRecord 一次 LLM 调用记录（一份数据源尝试一条）
 type CallRecord struct {
 	ID          uint64    `json:"id"`
+	TenantID    string    `json:"tenant_id"` // 归属（写入时从 ctx 身份取）
+	UserID      string    `json:"user_id"`
 	Provider    string    `json:"provider"`     // 数据源名（fallback 表示配置兜底）
 	Model       string    `json:"model"`        // 实际使用的模型
 	Scene       string    `json:"scene"`        // 场景路由（general/rag/memory/...）
@@ -256,6 +258,9 @@ func PromptFull(system, user string) string {
 
 // CallFilter 调用记录过滤
 type CallFilter struct {
+	// UserID 非空时只返回该用户的调用记录（服务层按登录身份设置；管理员传空 = 全平台）
+	UserID   string
+	TenantID string
 	TaskID   uint64
 	Model    string
 	Models   []string // 多模型过滤（与 Model 取并集）

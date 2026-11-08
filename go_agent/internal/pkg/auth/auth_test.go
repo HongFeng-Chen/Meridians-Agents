@@ -132,3 +132,72 @@ func TestStaticTokenAdmin(t *testing.T) {
 		t.Fatal("tok-user 不应为管理员")
 	}
 }
+
+// 没有 exp 的签名令牌默认拒绝（否则一次泄露 = 永久后门）
+func TestVerifyRequiresExp(t *testing.T) {
+	v := New("secret", nil)
+	tok := sign(t, "secret", map[string]any{"sub": "u"}, "HS256")
+	if _, err := v.Verify(tok); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("缺少 exp 应被拒绝，实际 %v", err)
+	}
+
+	// 显式放开（兼容历史签发体系）后才接受
+	v2 := New("secret", nil)
+	v2.RequireExp = false
+	if _, err := v2.Verify(tok); err != nil {
+		t.Fatalf("RequireExp=false 时应放行: %v", err)
+	}
+}
+
+// iss / aud 配置后必须匹配（多系统共用密钥时的基本隔离）
+func TestVerifyIssuerAudience(t *testing.T) {
+	v := New("secret", nil)
+	v.Issuer = "meridians"
+	v.Audience = "agents-api"
+
+	okTok := sign(t, "secret", map[string]any{
+		"sub": "u", "iss": "meridians", "aud": "agents-api",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, "HS256")
+	if _, err := v.Verify(okTok); err != nil {
+		t.Fatalf("iss/aud 匹配应通过: %v", err)
+	}
+
+	// aud 用数组形式也应识别
+	arrTok := sign(t, "secret", map[string]any{
+		"sub": "u", "iss": "meridians", "aud": []string{"other", "agents-api"},
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, "HS256")
+	if _, err := v.Verify(arrTok); err != nil {
+		t.Fatalf("aud 数组应通过: %v", err)
+	}
+
+	badIss := sign(t, "secret", map[string]any{
+		"sub": "u", "iss": "someone-else", "aud": "agents-api",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, "HS256")
+	if _, err := v.Verify(badIss); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("iss 不匹配应拒绝，实际 %v", err)
+	}
+
+	badAud := sign(t, "secret", map[string]any{
+		"sub": "u", "iss": "meridians", "aud": "other-api",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}, "HS256")
+	if _, err := v.Verify(badAud); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("aud 不匹配应拒绝，实际 %v", err)
+	}
+}
+
+// iat 在未来（超出时钟偏移）视为非法签发
+func TestVerifyRejectsFutureIat(t *testing.T) {
+	v := New("secret", nil)
+	tok := sign(t, "secret", map[string]any{
+		"sub": "u",
+		"iat": time.Now().Add(time.Hour).Unix(),
+		"exp": time.Now().Add(2 * time.Hour).Unix(),
+	}, "HS256")
+	if _, err := v.Verify(tok); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("未来 iat 应拒绝，实际 %v", err)
+	}
+}

@@ -33,7 +33,10 @@ var ValidKinds = []string{KindMCPCall, KindSkillUse, KindMemoryRecall, KindRagRe
 
 // Record 一条操作历史
 type Record struct {
-	ID        uint64    `json:"id"`
+	ID uint64 `json:"id"`
+	// TenantID / UserID 归属（写入时由 ctx 身份补齐；查询时作为过滤条件）
+	TenantID  string    `json:"tenant_id"`
+	UserID    string    `json:"user_id"`
 	Kind      string    `json:"kind"`       // 五类之一
 	TaskID    uint64    `json:"task_id"`    // 关联任务（0 = 手动/控制台调用）
 	AgentKey  string    `json:"agent_key"`  // 执行 Agent（任务内调用才有）
@@ -49,13 +52,17 @@ type Record struct {
 
 // Filter 查询条件
 type Filter struct {
-	Kind   string // 五类之一，空 = 全部
-	TaskID uint64 // 0 = 不过滤
-	ConvID string // 来源会话精确匹配，空 = 不过滤
-	Ref    string // 操作对象精确匹配，空 = 不过滤
-	OK     *bool  // nil = 不过滤
-	Limit  int
-	Offset int
+	// UserID 非空时只返回该用户的记录（服务层按登录身份设置；
+	// 管理员查询传空表示全平台，用于审计）
+	UserID   string
+	TenantID string
+	Kind     string // 五类之一，空 = 全部
+	TaskID   uint64 // 0 = 不过滤
+	ConvID   string // 来源会话精确匹配，空 = 不过滤
+	Ref      string // 操作对象精确匹配，空 = 不过滤
+	OK       *bool  // nil = 不过滤
+	Limit    int
+	Offset   int
 }
 
 // KindStat 按 kind 聚合的数量

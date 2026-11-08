@@ -206,7 +206,8 @@ docker compose exec ollama ollama pull bge-m3
 
 ```bash
 cd go_agent
-go run ./cmd/go_agent -conf ./configs    # HTTP :8000 · gRPC :9000 · 健康检查 /api/health
+# 认证关闭时监听 0.0.0.0 会被启动闸门拒绝，本机开发显式声明开发模式
+AUTH_DEV_INSECURE=true go run ./cmd/go_agent -conf ./configs    # HTTP :8000 · gRPC :9000 · 健康检查 /api/health
 ```
 
 前端（新终端）：
@@ -273,15 +274,32 @@ docker compose up -d --build
 | 项 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | 认证 | `AUTH_ENABLED` / `AUTH_JWT_SECRET` | `false` / 空 | 校验 `Authorization: Bearer <JWT HS256 或静态令牌>`，把用户/租户写进请求上下文；`/healthz`、`/metrics`、`/api/files/` 等白名单路径放行 |
+| JWT 校验 | `AUTH_JWT_ALLOW_NO_EXP` / `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` | 空（= 强制 exp） | 见下方「JWT 侧的校验规则」 |
+| 开发态逃生阀 | `AUTH_DEV_INSECURE` | `false` | 认证关闭时允许对外监听（仅本机开发/内网演示，启动 WARN） |
 | 限流 | `RATELIMIT_ENABLED` | `false` | 按「租户 × 路由」令牌桶，读写分开配额；超限返回 `429` + `Retry-After` |
 | 预算 | `BUDGET_MAX_TOKENS` / `BUDGET_MAX_CALLS` / `BUDGET_MAX_PARALLEL` | `400000` / `80` / `4` | 单任务树（含派生子任务）的 token 与调用次数上限，超限走「预算耗尽」收敛分支；并行波次并发上限防止宽 DAG 同时烧钱 |
 | 计价 | `PRICE_INPUT_PER_M` / `PRICE_OUTPUT_PER_M` | `1` / `2` | 元 / 百万 token，用于 `/metrics` 的成本估算 |
 
-**默认关闭认证是为了本地开箱即跑**。启动日志会显式告警：
+**认证关闭 + 对外监听 = 拒绝启动**（`server.CheckInsecureExposure`，在 `main` 里先于依赖装配执行）：
 
-```
-level=WARN msg="认证未启用：任何能访问本端口的人都可以读写全部会话/记忆/Agent 定义并消耗你的 token…"
-```
+| 组合 | 结果 |
+| --- | --- |
+| `AUTH_ENABLED=true` | 正常启动 |
+| `AUTH_ENABLED=false` + 只监听 `127.0.0.1` | 正常启动（本机开发） |
+| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / 具体网卡 + `AUTH_DEV_INSECURE=true` | 启动，日志 WARN |
+| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / 具体网卡 | **拒绝启动**，错误信息给出两条出路 |
+
+为什么是硬失败而不是告警：默认配置（认证关闭 + `0.0.0.0`）是最容易被整份搬上生产的一份，
+而告警在容器日志里滚两屏就没人看了。
+
+JWT 侧的校验规则（v1.8 加严）：
+
+- **强制 `exp`**：没有有效期的签名令牌等于永久后门，默认拒绝；历史签发体系可临时用
+  `AUTH_JWT_ALLOW_NO_EXP=true` 兼容（会打印 WARN）。
+- **`iss` / `aud`**：配置 `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` 后逐项比对（`aud` 支持字符串与数组）。
+- **`iat`**：晚于当前时间（超出 60s 时钟偏移）视为非法签发。
+- **`nbf`**：早于生效时间拒绝（原有）。
+- **算法**：只接受 `HS256`，显式拒绝 `none` / `RS256`（防算法混淆）。
 
 对外暴露端口前至少做这一步：
 
@@ -326,7 +344,10 @@ security:
 | 会话 `conversations` | `user_id`（默认 `'default'`，带索引） | `Create` 从请求上下文取 `identity.UserID` | `List` 按用户过滤；详情 / 改 / 删 / 发消息 / 辩论全部接口做归属校验，跨用户 `403` |
 | 任务 `agent_tasks` / `agent_task_history` | `user_id` | `SubmitTask` 取上下文；子任务与编排成员继承父任务归属；cron 走 `baseCtx` → 落 `default` | 列表按用户过滤；详情 / 事件流 / 取消 / 重试做归属校验 |
 | 知识库 `rag_documents` + Milvus 分块 | `user_id` | `Ingest` 固化归属，`doc_id` 被他人占用时直接拒绝覆盖 | 列表按用户过滤；检索用 MySQL 反查的 `doc_id` 白名单拼成 Milvus 表达式 `doc_id in [...]` 下推；图谱召回按 `chunk_refs` 前缀裁剪（无 refs 保守丢弃）；删除做归属校验 |
-| 长期记忆 `memories` / `recall_logs` | `user_id` | 召回命名空间 = 当前用户 | 记忆 API 在认证态强制用令牌身份，忽略请求体 `user_id`（防伪造） |
+| 长期记忆 `memories` / `recall_logs` | `user_id` | 召回命名空间 = 当前用户 | 记忆 API 在认证态强制用令牌身份，忽略请求体 `user_id`（防伪造）；单条读取 / 删除先查归属再动手（`GetLong` / `DeleteLong`） |
+| 短期会话 `mem:short:*` | Redis 键内嵌 `tenant:user` | 键 = `mem:short:{tenant}:{user}:{session}` | 伪造 `session_id` 只会落到自己的命名空间（读到空）；MySQL 回源按 `conversation.user_id` 校验 |
+| 记忆图谱（与 RAG 共用集合） | 引用前缀 `mem::{user}::{memoryID}#0` | 只与「同用户」的既有实体合并 | 召回按引用归属裁剪（实体/关系/扩展邻居），并裁掉其中的他人引用 |
+| 操作历史 `op_histories` / 调用记录 `llm_calls` | `tenant_id` + `user_id` | `history.Record` / `llm.Manager` 从 ctx 身份补齐 | 列表与统计按身份过滤；`prompt_text` / `reply_text` 非管理员只返回 240 字预览 |
 
 两个要点：
 

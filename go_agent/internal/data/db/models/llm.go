@@ -32,13 +32,16 @@ func (LLMProviderPO) TableName() string { return "llm_providers" }
 // LLMCallPO LLM 调用历史（llm_calls）：每次数据源尝试一条。
 // 输入/输出内容截断落库（详情展示用）；task_id=0 表示与任务无关的调用。
 type LLMCallPO struct {
-	ID               uint64    `gorm:"primaryKey;autoIncrement"`
-	Provider         string    `gorm:"column:provider;size:64;not null;default:'';index:idx_llm_calls_provider"`
-	Model            string    `gorm:"column:model;size:191;not null;default:'';index:idx_llm_calls_model"`
-	Scene            string    `gorm:"column:scene;size:32;not null;default:'general'"`
-	Purpose          string    `gorm:"column:purpose;size:64;not null;default:'';index:idx_llm_calls_purpose"`
-	TaskID           uint64    `gorm:"column:task_id;not null;default:0;index:idx_llm_calls_task"`
-	AgentKey         string    `gorm:"column:agent_key;size:64;not null;default:''"`
+	ID       uint64 `gorm:"primaryKey;autoIncrement"`
+	Provider string `gorm:"column:provider;size:64;not null;default:'';index:idx_llm_calls_provider"`
+	Model    string `gorm:"column:model;size:191;not null;default:'';index:idx_llm_calls_model"`
+	Scene    string `gorm:"column:scene;size:32;not null;default:'general'"`
+	Purpose  string `gorm:"column:purpose;size:64;not null;default:'';index:idx_llm_calls_purpose"`
+	TaskID   uint64 `gorm:"column:task_id;not null;default:0;index:idx_llm_calls_task"`
+	AgentKey string `gorm:"column:agent_key;size:64;not null;default:''"`
+	// 归属：prompt/reply 原文属于用户数据，必须能按人过滤
+	TenantID         string    `gorm:"column:tenant_id;size:64;not null;default:'';index:idx_llm_calls_tenant"`
+	UserID           string    `gorm:"column:user_id;size:64;not null;default:'';index:idx_llm_calls_user"`
 	Temperature      float64   `gorm:"column:temperature;not null;default:0"`
 	DurationMS       int64     `gorm:"column:duration_ms;not null;default:0"`
 	OK               bool      `gorm:"column:ok;not null;index:idx_llm_calls_ok"`

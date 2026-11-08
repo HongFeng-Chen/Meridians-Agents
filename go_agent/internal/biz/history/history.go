@@ -11,6 +11,8 @@ import (
 	"context"
 	"time"
 
+	"go_agent/internal/pkg/identity"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -100,6 +102,16 @@ func (u *UseCase) Record(ctx context.Context, rec *Record) {
 	if rec.ConvID == "" {
 		rec.ConvID = ConvFrom(ctx)
 	}
+	// 归属随写入定型：历史记录含查询词/参数/召回明细，事后无法可靠推断是谁产生的
+	if rec.UserID == "" || rec.TenantID == "" {
+		info := identity.From(ctx)
+		if rec.UserID == "" {
+			rec.UserID = info.UserID
+		}
+		if rec.TenantID == "" {
+			rec.TenantID = info.TenantID
+		}
+	}
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now()
 	}
@@ -122,9 +134,9 @@ func (u *UseCase) List(ctx context.Context, f Filter) ([]Record, int64, error) {
 	return u.repo.List(ctx, f)
 }
 
-// Stats 全局统计
-func (u *UseCase) Stats(ctx context.Context) (Stats, error) {
-	return u.repo.Stats(ctx)
+// Stats 统计：userID 非空时只统计该用户（服务层按登录身份传；管理员传空）
+func (u *UseCase) Stats(ctx context.Context, userID string) (Stats, error) {
+	return u.repo.Stats(ctx, userID)
 }
 
 // ErrInvalidKind 非法 kind

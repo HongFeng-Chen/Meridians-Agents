@@ -15,6 +15,7 @@ import (
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/egress"
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/server"
 	"go_agent/internal/service"
 
 	"github.com/go-kratos/kratos/contrib/otel/v3/tracing"
@@ -125,6 +126,12 @@ func main() {
 	defer cleanupConf()
 
 	logStartupInfo(bc)
+
+	// 启动闸门：认证关闭 + 对外监听时拒绝启动（见 server.CheckInsecureExposure）
+	if err := server.CheckInsecureExposure(bc.GetSecurity(),
+		bc.GetServer().GetHttp().GetAddr(), bc.GetServer().GetGrpc().GetAddr()); err != nil {
+		fatal("安全检查", err)
+	}
 
 	app, cleanup, err := wireApp(bc.GetServer(), bc.GetData(), bc.GetSecurity(), logger)
 	if err != nil {

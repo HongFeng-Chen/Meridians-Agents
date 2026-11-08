@@ -38,6 +38,19 @@ func ensureOwned(ctx context.Context, owner, what string) error {
 	return kerrors.Forbidden("FORBIDDEN", "无权访问他人的"+what+"（当前登录用户与资源归属不一致）")
 }
 
+// auditScope 历史/审计类查询的归属范围：
+//   - 管理员（含开发态回环）→ 空字符串，表示全平台（审计需要）
+//   - 普通用户 → 自己的 user_id（只读自己的记录）
+//
+// 历史记录里含查询词、工具参数、召回明细、LLM 原文，默认按人过滤是硬要求；
+// 「登录了就能看全平台调用历史」是这类系统最常见也最容易被忽略的越权面。
+func auditScope(ctx context.Context) string {
+	if identity.AdminAllowed(ctx) {
+		return ""
+	}
+	return scopeUser(ctx)
+}
+
 // scopedUserID 归属写入键：认证态（JWT / 静态令牌）强制用令牌身份，
 // 请求体里的 user_id 一律不认，避免伪造他人身份写数据；
 // 开发态（未启用认证）保留请求体参数，方便控制台为指定用户造数据。

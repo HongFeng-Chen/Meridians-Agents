@@ -8,8 +8,17 @@ server:
     timeout: 300s
 
 # 网关安全边界：认证 / 限流 / 预算。三项都可独立开关。
-# 默认全关是为了本地开发开箱即跑——一旦要对外暴露端口，至少把 auth 打开：
-#   AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串> ./go_agent -conf configs
+#
+# ⚠ 启动闸门：认证关闭 + 监听非回环地址（0.0.0.0 / 具体网卡）时**拒绝启动**。
+#   生产：AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串>
+#   本机开发二选一：
+#     AUTH_DEV_INSECURE=true ./go_agent -conf configs   # 显式声明这是开发环境
+#     或把 addr 改成 127.0.0.1:8000 / 127.0.0.1:9000（仅回环时不触发）
+#
+# JWT 附加校验（默认值即为安全值，一般不用改）：
+#   AUTH_JWT_ALLOW_NO_EXP=true   允许没有 exp 的令牌（默认 false = 强制有效期）
+#   AUTH_JWT_ISSUER=<iss>        非空时校验 iss
+#   AUTH_JWT_AUDIENCE=<aud>      非空时校验 aud
 #
 # ⚠ 管理面（MCP 服务配置、工具启停、连接管理等）另有硬性规则，与 auth 开关无关：
 #   - 只有携带 role=admin 的 JWT / 静态令牌（user:tenant:admin）才算管理员；

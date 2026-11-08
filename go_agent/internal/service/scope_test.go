@@ -61,3 +61,35 @@ func TestScopedUserID(t *testing.T) {
 		t.Fatalf("开发态未指定时回落 default，实际 %q", got)
 	}
 }
+
+// TestAuditScope 历史 / LLM 调用记录的查询范围（SEC-009 / SEC-010）：
+// 普通用户只能看自己的记录；管理员（或开发态本机）才拿到全平台视图。
+func TestAuditScope(t *testing.T) {
+	user := ctxWith("alice", "jwt")
+	if got := auditScope(user); got != "alice" {
+		t.Fatalf("普通用户应限定为本人，实际 %q", got)
+	}
+
+	admin := identity.With(context.Background(), identity.Info{
+		UserID: "ops", TenantID: "t1", Auth: "jwt", Admin: true,
+	})
+	if got := auditScope(admin); got != "" {
+		t.Fatalf("管理员应拿到全平台视图，实际 %q", got)
+	}
+
+	// 开发态 + 回环：单机开发时没有第二个身份，放开全平台（与 admin 闸门口径一致）
+	devLocal := identity.With(context.Background(), identity.Info{
+		UserID: "default", TenantID: "public", Auth: "dev", Local: true,
+	})
+	if got := auditScope(devLocal); got != "" {
+		t.Fatalf("开发态本机应放开，实际 %q", got)
+	}
+
+	// 开发态 + 远程：必须限定到身份，否则等于匿名可读全平台历史
+	devRemote := identity.With(context.Background(), identity.Info{
+		UserID: "default", TenantID: "public", Auth: "dev", Local: false,
+	})
+	if got := auditScope(devRemote); got != "default" {
+		t.Fatalf("开发态远程应限定身份，实际 %q", got)
+	}
+}

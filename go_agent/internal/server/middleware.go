@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -162,9 +164,67 @@ func (g *gate) middleware() middleware.Middleware {
 	}
 }
 
-// warnInsecureExposure 启动期安全检查：认证关闭 + 对外监听时给出明确告警。
-// 管理面已经做了回环限制（identity.AdminAllowed），但业务数据仍然可匿名读取，
-// 所以这不只是提示，而是对外部署前必须处理的配置项。
+// insecureExposure 判断「认证关闭 + 监听非回环地址」这一组合是否成立。
+//
+// 这是平台最危险的一种默认状态：任何能连上端口的人都能读全部会话/记忆/
+// Agent 定义，并消耗 token。管理面虽然另有回环闸门（identity.AdminAllowed），
+// 但业务数据面没有任何保护。
+func insecureExposure(addrs ...string) (string, bool) {
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		host := addr
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		ip := net.ParseIP(host)
+		if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
+			return addr, true
+		}
+	}
+	return "", false
+}
+
+// CheckInsecureExposure 启动闸门：认证关闭且对外监听时拒绝启动。
+//
+// 为什么是「拒绝」而不是「告警」：告警在容器日志里滚两屏就没人看了，
+// 而默认配置（AUTH_ENABLED=false + 0.0.0.0）恰恰是最容易被直接搬上生产的一份。
+// 明确要求二选一：要么打开认证，要么显式声明「我知道这是开发环境」。
+//
+// 开发态逃生阀：AUTH_DEV_INSECURE=true（与 AUTH_DEV_TRUST_ALL 同风格，
+// 走环境变量，启动打 WARN，仅用于本机/内网演示）。
+func CheckInsecureExposure(sec *conf.Security, addrs ...string) error {
+	if sec.GetAuth().GetEnabled() {
+		return nil
+	}
+	addr, exposed := insecureExposure(addrs...)
+	if !exposed {
+		return nil
+	}
+	if envFlag("AUTH_DEV_INSECURE") {
+		log.Warn("AUTH_DEV_INSECURE=true：认证关闭且监听对外地址，接口数据对任何能访问端口的人可读——仅限本机开发/内网演示",
+			"addr", addr)
+		return nil
+	}
+	return fmt.Errorf("拒绝启动：认证未启用（AUTH_ENABLED=false）且监听 %s（非回环）。"+
+		"二选一：① 生产/任何对外环境设置 AUTH_ENABLED=true 与 AUTH_JWT_SECRET；"+
+		"② 本机开发可显式设置 AUTH_DEV_INSECURE=true（只监听 127.0.0.1 也可以，此时不触发本检查）", addr)
+}
+
+// envFlag 读取布尔环境变量（1/true/yes/on）
+func envFlag(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// warnInsecureExposure 非致命的暴露告警（server 构造期调用）。
+// 真正的启动闸门在 CheckInsecureExposure（main 里最先执行）；这里保留告警，
+// 让走了逃生阀或只监听回环的场景也能在日志里看到当前状态。
 func warnInsecureExposure(sec *conf.Security, addrs ...string) {
 	if sec.GetAuth().GetEnabled() {
 		if identity.DevTrustAll() {
@@ -180,23 +240,12 @@ func warnInsecureExposure(sec *conf.Security, addrs ...string) {
 			"advice", "生产环境请设置 AUTH_ENABLED=true 并签发 role=admin 的令牌，然后关闭该开关",
 		)
 	}
-	for _, addr := range addrs {
-		if addr == "" {
-			continue
-		}
-		host := addr
-		if h, _, err := net.SplitHostPort(addr); err == nil {
-			host = h
-		}
-		host = strings.Trim(host, "[]")
-		ip := net.ParseIP(host)
-		exposed := host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback())
-		if exposed {
-			log.Warn("认证未启用且监听地址对外暴露：管理面仅允许本机回环操作，远程请求会被 403",
-				"addr", addr,
-				"hint", "对外提供服务前请设置 AUTH_ENABLED=true，并给管理员令牌签发 role=admin",
-			)
-		}
+	if addr, exposed := insecureExposure(addrs...); exposed {
+		// 能走到这里说明走了 AUTH_DEV_INSECURE 逃生阀（否则 main 里已经拒绝启动了）
+		log.Warn("认证未启用且监听地址对外暴露：业务数据可匿名读写，管理面仅允许本机回环操作",
+			"addr", addr,
+			"hint", "对外提供服务前请设置 AUTH_ENABLED=true，并给管理员令牌签发 role=admin",
+		)
 	}
 }
 

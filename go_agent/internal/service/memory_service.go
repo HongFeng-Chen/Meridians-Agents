@@ -138,16 +138,32 @@ func (s *MemoryService) ListLong(ctx context.Context, req *v1.ListLongRequest) (
 }
 
 // GetLong 单条长期记忆。
+//
+// 记忆 ID 是可枚举的（mem_xxx 带时间前缀），只按 ID 读取等于「知道 ID 就能看」。
+// 先取回再校验归属：不匹配返回 403，且不透露内容。
 func (s *MemoryService) GetLong(ctx context.Context, req *v1.GetLongRequest) (*v1.LongTermMemory, error) {
 	m, err := s.uc.Get(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMemoryErr(err)
 	}
+	if err := ensureOwned(ctx, m.UserID, "长期记忆"); err != nil {
+		return nil, err
+	}
 	return toLongTerm(m), nil
 }
 
 // DeleteLong 删除单条长期记忆（含向量与关联图谱）。
+//
+// 删除比读取更危险：先查归属，再执行级联删除（MySQL + Milvus + 图谱）。
+// 顺序不能反——删完再报 403，数据已经没了。
 func (s *MemoryService) DeleteLong(ctx context.Context, req *v1.DeleteLongRequest) (*v1.RememberResult, error) {
+	m, err := s.uc.Get(ctx, req.GetId())
+	if err != nil {
+		return nil, mapMemoryErr(err)
+	}
+	if err := ensureOwned(ctx, m.UserID, "长期记忆"); err != nil {
+		return nil, err
+	}
 	res, err := s.uc.Delete(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMemoryErr(err)
@@ -191,7 +207,9 @@ func (s *MemoryService) Answer(ctx context.Context, req *v1.AnswerRequest) (*v1.
 	if sessionID == "" {
 		sessionID = "default"
 	}
-	ans, err := s.uc.Answer(ctx, sessionID, req.GetUserId(), req.GetQuestion())
+	// 归属键必须走 scopedUserID：认证态忽略请求体 user_id，
+	// 否则「登录用户 + 别人的 user_id」就能读到对方的长期记忆
+	ans, err := s.uc.Answer(ctx, sessionID, scopedUserID(ctx, req.GetUserId()), req.GetQuestion())
 	if err != nil {
 		return nil, mapMemoryErr(err)
 	}
@@ -405,7 +423,8 @@ func toExtracted(m memory.ExtractedMemory) *v1.ExtractedMemory {
 
 // ExtractMemories 按规则从会话提取长期记忆
 func (s *MemoryService) ExtractMemories(ctx context.Context, req *v1.ExtractMemoriesRequest) (*v1.ExtractMemoriesReply, error) {
-	res, err := s.uc.ExtractMemories(ctx, req.GetSessionId(), req.GetUserId(), req.GetRuleIds(), int(req.GetLastN()))
+	// 提取会把长期记忆写到 user_id 名下：同样不能信请求体
+	res, err := s.uc.ExtractMemories(ctx, req.GetSessionId(), scopedUserID(ctx, req.GetUserId()), req.GetRuleIds(), int(req.GetLastN()))
 	if err != nil {
 		return nil, err
 	}

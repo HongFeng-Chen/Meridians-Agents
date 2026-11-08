@@ -36,6 +36,8 @@ func NewHistoryRepo(c *conf.Data, d *db.Data) (*HistoryRepo, error) {
 
 func (r *HistoryRepo) Insert(ctx context.Context, rec *history.Record) error {
 	row := models.OpHistoryPO{
+		TenantID:  rec.TenantID,
+		UserID:    rec.UserID,
 		Kind:      rec.Kind,
 		TaskID:    rec.TaskID,
 		AgentKey:  rec.AgentKey,
@@ -54,6 +56,12 @@ func (r *HistoryRepo) Insert(ctx context.Context, rec *history.Record) error {
 // List 历史查询（时间倒序 + 总数）
 func (r *HistoryRepo) List(ctx context.Context, f history.Filter) ([]history.Record, int64, error) {
 	q := r.db.WithContext(ctx).Model(&models.OpHistoryPO{})
+	if uid := strings.TrimSpace(f.UserID); uid != "" {
+		q = q.Where("user_id = ?", uid)
+	}
+	if tid := strings.TrimSpace(f.TenantID); tid != "" {
+		q = q.Where("tenant_id = ?", tid)
+	}
 	if f.Kind != "" {
 		q = q.Where("kind = ?", f.Kind)
 	}
@@ -90,17 +98,21 @@ func (r *HistoryRepo) List(ctx context.Context, f history.Filter) ([]history.Rec
 	return out, total, nil
 }
 
-// Stats 全局统计：总量 + 按 kind 聚合
-func (r *HistoryRepo) Stats(ctx context.Context) (history.Stats, error) {
+// Stats 统计：总量 + 按 kind 聚合。userID 非空时只统计该用户。
+func (r *HistoryRepo) Stats(ctx context.Context, userID string) (history.Stats, error) {
 	var out history.Stats
-	if err := r.db.WithContext(ctx).Model(&models.OpHistoryPO{}).Select("COUNT(*) AS total").Scan(&out.Total).Error; err != nil {
+	base := r.db.WithContext(ctx).Model(&models.OpHistoryPO{})
+	if uid := strings.TrimSpace(userID); uid != "" {
+		base = base.Where("user_id = ?", uid)
+	}
+	if err := base.Select("COUNT(*) AS total").Scan(&out.Total).Error; err != nil {
 		return out, err
 	}
 	var byKind []struct {
 		Kind  string `gorm:"column:kind"`
 		Count int64  `gorm:"column:count"`
 	}
-	if err := r.db.WithContext(ctx).Model(&models.OpHistoryPO{}).Select(
+	if err := base.Select(
 		"kind", "COUNT(*) AS count",
 	).Group("kind").Order("count DESC").Scan(&byKind).Error; err != nil {
 		return out, err
@@ -115,6 +127,8 @@ func (r *HistoryRepo) Stats(ctx context.Context) (history.Stats, error) {
 func historyToBiz(p models.OpHistoryPO) history.Record {
 	return history.Record{
 		ID:        p.ID,
+		TenantID:  p.TenantID,
+		UserID:    p.UserID,
 		Kind:      p.Kind,
 		TaskID:    p.TaskID,
 		AgentKey:  p.AgentKey,

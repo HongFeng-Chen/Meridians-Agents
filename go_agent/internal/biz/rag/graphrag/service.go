@@ -261,8 +261,8 @@ func (s *Service) Query(ctx context.Context, question string) (*GraphAnswer, err
 	if empty {
 		return &GraphAnswer{Question: question, Answer: "知识图谱中未找到相关实体，无法回答。"}, nil
 	}
-	// 组装子图上下文并生成
-	return s.generate(ctx, question, g, rels)
+	// 组装子图上下文并生成（无作用域：Query 由平台内部调用，不面向终端用户身份）
+	return s.generate(ctx, question, g, rels, nil)
 }
 
 // Recall 图谱召回（只检索不生成）：实体混合检索 + 关系多跳扩展，返回子图。
@@ -299,7 +299,7 @@ func (s *Service) QueryScoped(ctx context.Context, question string, docIDs []str
 	if len(g.entities) == 0 {
 		return &GraphAnswer{Question: question, Answer: "你的文档中未找到相关实体，无法回答。"}, nil
 	}
-	return s.generate(ctx, question, g, rels)
+	return s.generate(ctx, question, g, rels, docIDs)
 }
 
 // RecallScoped 按文档白名单隔离的图谱召回（只检索不生成）。
@@ -323,29 +323,67 @@ func (s *Service) RecallScoped(ctx context.Context, question string, docIDs []st
 }
 
 // scopeByDocs 按文档归属裁剪子图：实体/关系的 chunk_refs 形如 "doc_id#chunk_idx"。
-// refs 为空时保守丢弃（fail closed）——无归属的节点不跨用户共享，避免隐式泄漏。
+//
+// 两件事都必须做，少一件就等于没隔离：
+//
+//  1. 丢弃「没有任何自有引用」的实体/关系（fail closed，无归属节点不跨用户共享）；
+//  2. **把保留下来的实体/关系里的 ChunkRefs 也裁掉别人的部分**。
+//
+// 只做第 1 步是这个模块此前的实现，也是这个漏洞的由来：实体 Milvus 同时被
+// Alice 的 A-doc 和 Bob 的 B-doc 引用，Bob 查询时实体因 B-doc 被保留，
+// 但 ChunkRefs 里仍留着 A-doc#0 —— 后续 resolveEvidence 会按它去读原文，
+// 把 Alice 的文档内容拼进 Bob 的 Prompt。裁剪引用计数不解决这个问题，
+// 泄漏的是原文。
+//
+// 关系还有额外一关：源/目标实体不在保留集合里就不保留关系，
+// 否则会通过关系描述泄漏只属于他人文档的实体名。
 func scopeByDocs(g *graph, rels []Relation, docIDs []string) (*graph, []Relation) {
-	owned := func(refs []string) bool {
+	allowed := make(map[string]struct{}, len(docIDs))
+	for _, id := range docIDs {
+		allowed[id] = struct{}{}
+	}
+	// filterRefs 只保留自有文档的引用；顺序不变，便于证据按热度截断
+	filterRefs := func(refs []string) []string {
+		out := make([]string, 0, len(refs))
 		for _, ref := range refs {
-			for _, id := range docIDs {
-				if strings.HasPrefix(ref, id+"#") {
-					return true
-				}
+			i := strings.LastIndex(ref, "#")
+			if i <= 0 {
+				continue
+			}
+			if _, ok := allowed[ref[:i]]; ok {
+				out = append(out, ref)
 			}
 		}
-		return false
+		return out
 	}
+
 	out := newGraph()
 	for key, e := range g.entities {
-		if owned(e.ChunkRefs) {
-			out.entities[key] = e
+		refs := filterRefs(e.ChunkRefs)
+		if len(refs) == 0 {
+			continue
 		}
+		cp := *e
+		cp.ChunkRefs = refs
+		out.entities[key] = &cp
 	}
+
 	kept := make([]Relation, 0, len(rels))
 	for _, rel := range rels {
-		if owned(rel.ChunkRefs) {
-			kept = append(kept, rel)
+		refs := filterRefs(rel.ChunkRefs)
+		if len(refs) == 0 {
+			continue
 		}
+		// 两端实体都必须在保留集合内（否则关系本身就在描述别人的实体）
+		if _, ok := out.entities[normName(rel.Source)]; !ok {
+			continue
+		}
+		if _, ok := out.entities[normName(rel.Target)]; !ok {
+			continue
+		}
+		cp := rel
+		cp.ChunkRefs = refs
+		kept = append(kept, cp)
 	}
 	return out, kept
 }
@@ -408,7 +446,10 @@ func (s *Service) recall(ctx context.Context, question string) (*graph, []Relati
 }
 
 // generate 组装图谱上下文与证据，调用 LLM 生成
-func (s *Service) generate(ctx context.Context, question string, g *graph, rels []Relation) (*GraphAnswer, error) {
+// generate 生成答案。scope 为文档白名单：非空时证据解析再按它过滤一遍
+// （scopeByDocs 已裁过引用，这里是第二道闸——防止将来有人改动裁剪逻辑
+// 或从别的路径拼进未裁剪的实体）。
+func (s *Service) generate(ctx context.Context, question string, g *graph, rels []Relation, scope []string) (*GraphAnswer, error) {
 	ents := make([]Entity, 0, len(g.entities))
 	for _, e := range g.entities {
 		ents = append(ents, *e)
@@ -434,7 +475,7 @@ func (s *Service) generate(ctx context.Context, question string, g *graph, rels 
 	}
 
 	// 5. 解析实体/关系引用的原文证据
-	evidence := s.resolveEvidence(ctx, g, rels, 6)
+	evidence := s.resolveEvidence(ctx, g, rels, 6, scope)
 	if len(evidence) > 0 {
 		sb.WriteString("\n相关原文片段：\n")
 		for i, ev := range evidence {
@@ -462,16 +503,29 @@ func (s *Service) generate(ctx context.Context, question string, g *graph, rels 
 	}, nil
 }
 
-// resolveEvidence 解析 chunk 引用，取回原文片段（按 freq/weight 优先级截断）
-func (s *Service) resolveEvidence(ctx context.Context, g *graph, rels []Relation, max int) []string {
+// resolveEvidence 解析 chunk 引用，取回原文片段（按 freq/weight 优先级截断）。
+// scope 非空时只解析白名单内的文档引用。
+func (s *Service) resolveEvidence(ctx context.Context, g *graph, rels []Relation, max int, scope []string) []string {
 	if s.evidence == nil {
 		return nil
+	}
+	var allowed map[string]struct{}
+	if len(scope) > 0 {
+		allowed = make(map[string]struct{}, len(scope))
+		for _, id := range scope {
+			allowed[id] = struct{}{}
+		}
 	}
 	byDoc := make(map[string][]int64)
 	addRef := func(ref string) {
 		i := strings.LastIndex(ref, "#")
 		if i <= 0 || i == len(ref)-1 {
 			return
+		}
+		if allowed != nil {
+			if _, ok := allowed[ref[:i]]; !ok {
+				return
+			}
 		}
 		var idx int64
 		if _, err := fmt.Sscanf(ref[i+1:], "%d", &idx); err != nil {

@@ -5,6 +5,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go_agent/internal/biz/llm"
@@ -38,6 +39,8 @@ func (r *LLMCallRepo) Insert(ctx context.Context, rec llm.CallRecord) error {
 		rec.CreatedAt = time.Now()
 	}
 	row := models.LLMCallPO{
+		TenantID:         rec.TenantID,
+		UserID:           rec.UserID,
 		Provider:         rec.Provider,
 		Model:            rec.Model,
 		Scene:            rec.Scene,
@@ -63,6 +66,12 @@ func (r *LLMCallRepo) Insert(ctx context.Context, rec llm.CallRecord) error {
 // List 调用历史（时间倒序 + 总数）
 func (r *LLMCallRepo) List(ctx context.Context, f llm.CallFilter) ([]llm.CallRecord, int64, error) {
 	q := r.db.WithContext(ctx).Model(&models.LLMCallPO{})
+	if uid := strings.TrimSpace(f.UserID); uid != "" {
+		q = q.Where("user_id = ?", uid)
+	}
+	if tid := strings.TrimSpace(f.TenantID); tid != "" {
+		q = q.Where("tenant_id = ?", tid)
+	}
 	if f.TaskID > 0 {
 		q = q.Where("task_id = ?", f.TaskID)
 	}
@@ -112,8 +121,14 @@ func (r *LLMCallRepo) List(ctx context.Context, f llm.CallFilter) ([]llm.CallRec
 }
 
 // Stats 全局统计：总量 / token 三项 / 失败数 / 按模型聚合（TOP 10）
-func (r *LLMCallRepo) Stats(ctx context.Context) (llm.CallStats, error) {
+func (r *LLMCallRepo) Stats(ctx context.Context, userID string) (llm.CallStats, error) {
 	var out llm.CallStats
+	scope := func(q *gorm.DB) *gorm.DB {
+		if uid := strings.TrimSpace(userID); uid != "" {
+			return q.Where("user_id = ?", uid)
+		}
+		return q
+	}
 	var totals struct {
 		Calls            int64 `gorm:"column:calls"`
 		Failures         int64 `gorm:"column:failures"`
@@ -121,7 +136,7 @@ func (r *LLMCallRepo) Stats(ctx context.Context) (llm.CallStats, error) {
 		CompletionTokens int64 `gorm:"column:completion_tokens"`
 		TotalTokens      int64 `gorm:"column:total_tokens"`
 	}
-	if err := r.db.WithContext(ctx).Model(&models.LLMCallPO{}).Select(
+	if err := scope(r.db.WithContext(ctx).Model(&models.LLMCallPO{})).Select(
 		"COUNT(*) AS calls",
 		"COALESCE(SUM(ok = false), 0) AS failures",
 		"COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens",
@@ -142,7 +157,7 @@ func (r *LLMCallRepo) Stats(ctx context.Context) (llm.CallStats, error) {
 		PromptTokens     int64  `gorm:"column:prompt_tokens"`
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 	}
-	if err := r.db.WithContext(ctx).Model(&models.LLMCallPO{}).Select(
+	if err := scope(r.db.WithContext(ctx).Model(&models.LLMCallPO{})).Select(
 		"model",
 		"COUNT(*) AS calls",
 		"COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens",
@@ -165,6 +180,8 @@ func (r *LLMCallRepo) Stats(ctx context.Context) (llm.CallStats, error) {
 func callToBiz(p models.LLMCallPO) llm.CallRecord {
 	return llm.CallRecord{
 		ID:          p.ID,
+		TenantID:    p.TenantID,
+		UserID:      p.UserID,
 		Provider:    p.Provider,
 		Model:       p.Model,
 		Scene:       p.Scene,

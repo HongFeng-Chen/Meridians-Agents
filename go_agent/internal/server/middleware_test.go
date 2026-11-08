@@ -157,3 +157,31 @@ func TestStaticTokenAdminSegment(t *testing.T) {
 		t.Fatalf("user-tok 不应为管理员: %+v", got)
 	}
 }
+
+// 启动闸门：认证关闭 + 对外监听 → 拒绝启动；回环监听或显式开发模式 → 放行
+func TestCheckInsecureExposure(t *testing.T) {
+	off := &conf.Security{Auth: &conf.Auth{Enabled: false}}
+	on := &conf.Security{Auth: &conf.Auth{Enabled: true, JwtSecret: "s"}}
+
+	// 认证关闭 + 0.0.0.0：默认拒绝（这是最容易被搬上生产的默认配置）
+	if err := CheckInsecureExposure(off, "0.0.0.0:8000"); err == nil {
+		t.Fatal("认证关闭且监听 0.0.0.0 必须拒绝启动")
+	}
+	// 认证关闭 + 具体公网地址：同样拒绝
+	if err := CheckInsecureExposure(off, "10.1.2.3:8000"); err == nil {
+		t.Fatal("认证关闭且监听对外地址必须拒绝启动")
+	}
+	// 认证关闭 + 仅回环：本机开发，放行
+	if err := CheckInsecureExposure(off, "127.0.0.1:8000", "127.0.0.1:9000"); err != nil {
+		t.Fatalf("仅回环监听应放行: %v", err)
+	}
+	// 认证开启：放行
+	if err := CheckInsecureExposure(on, "0.0.0.0:8000"); err != nil {
+		t.Fatalf("认证开启应放行: %v", err)
+	}
+	// 显式开发模式：放行（逃生阀）
+	t.Setenv("AUTH_DEV_INSECURE", "true")
+	if err := CheckInsecureExposure(off, "0.0.0.0:8000"); err != nil {
+		t.Fatalf("AUTH_DEV_INSECURE=true 应放行: %v", err)
+	}
+}

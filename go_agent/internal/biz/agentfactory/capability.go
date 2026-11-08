@@ -117,9 +117,17 @@ func (c *Catalog) Known(ctx context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-// InvokeDispatch 能力调用分发：解析能力名 → 路由到对应实现。
-// rec 用于 trace（delegate 事件需要落子任务链路）。
+// InvokeDispatch 能力调用分发：授权 → 解析能力名 → 路由到对应实现。
+//
+// 授权是第一步，不是最后一步的装饰：模型输出的 action.name 完全不可信，
+// 白名单必须在分发入口强制生效（见 authorize.go），否则「只读 Agent」只是
+// 提示词上的一个说法。
+//
+// rec 用于 trace（delegate 事件需要落子任务链路），同时是授权依据（rec.def）。
 func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[string]any, rec *Recorder) (string, error) {
+	if err := u.authorizeCapability(ctx, rec, name); err != nil {
+		return "", err
+	}
 	switch {
 	case name == CapFactory:
 		return u.factoryCapability(ctx, args)

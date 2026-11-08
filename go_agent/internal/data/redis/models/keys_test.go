@@ -43,3 +43,30 @@ func TestMaxSessionMessages(t *testing.T) {
 		t.Fatalf("MaxSessionMessages = %d，必须为正数", MaxSessionMessages)
 	}
 }
+
+// TestScopedSessionKey 短期记忆键必须带租户 + 用户作用域：
+// 同一个 session_id 在不同身份下必须是不同的键（否则知道 ID 就能读别人的对话）。
+func TestScopedSessionKey(t *testing.T) {
+	alice := ScopedSessionKey("t1", "alice", "s-1")
+	bob := ScopedSessionKey("t1", "bob", "s-1")
+	otherTenant := ScopedSessionKey("t2", "alice", "s-1")
+
+	if alice == bob || alice == otherTenant {
+		t.Fatalf("不同身份不能共用会话键: alice=%q bob=%q otherTenant=%q", alice, bob, otherTenant)
+	}
+	if got, want := alice, "mem:short:t1:alice:s-1"; got != want {
+		t.Errorf("ScopedSessionKey = %q, want %q", got, want)
+	}
+	// 仍要落在 SCAN 模式内，管理端枚举才看得到
+	if !strings.HasPrefix(alice, strings.TrimSuffix(ShortSessionScanPattern(), "*")) {
+		t.Error("带作用域的会话键不在 SCAN 模式覆盖范围内")
+	}
+	// 空归属不能塌成 mem:short:::s-1（会与另一个空归属用户撞键）
+	empty := ScopedSessionKey("", "", "s-1")
+	if strings.Contains(empty, ":::") {
+		t.Errorf("空归属应使用占位符，实际 %q", empty)
+	}
+	if empty == ScopedSessionKey("", "alice", "s-1") {
+		t.Error("空归属与具名用户不能共用会话键")
+	}
+}

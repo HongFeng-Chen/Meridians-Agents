@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,13 @@ type Verifier struct {
 	TenantClaim string
 	// RoleClaim 角色 claim 名（默认 role；同时兼容 roles 数组与 is_admin 布尔）
 	RoleClaim string
+	// RequireExp 强制要求 exp（默认 true）。
+	// 没有 exp 的签名令牌永不过期——一旦泄露就是永久后门，而「忘记加 exp」
+	// 在自建签发的场景里非常常见，所以默认拒绝而不是默认放行。
+	RequireExp bool
+	// Issuer / Audience 非空时校验 iss / aud（多系统共用密钥时的基本隔离）
+	Issuer   string
+	Audience string
 	// Static 静态 Token → 身份（可选）
 	Static map[string]identity.Info
 	// Now 可注入时钟（单测用），为零值时用 time.Now
@@ -53,8 +61,20 @@ func New(secret string, static map[string]identity.Info) *Verifier {
 		UserClaim:   "sub",
 		TenantClaim: "tenant_id",
 		RoleClaim:   "role",
+		RequireExp:  !envBool("AUTH_JWT_ALLOW_NO_EXP"),
+		Issuer:      strings.TrimSpace(os.Getenv("AUTH_JWT_ISSUER")),
+		Audience:    strings.TrimSpace(os.Getenv("AUTH_JWT_AUDIENCE")),
 		Static:      static,
 	}
+}
+
+// envBool 读取布尔环境变量（1/true/yes/on）
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func (v *Verifier) now() time.Time {
@@ -126,14 +146,33 @@ func (v *Verifier) verifyHS256(token string) (identity.Info, error) {
 	}
 
 	now := v.now()
-	if exp, ok := numberClaim(claims, "exp"); ok {
-		if now.After(time.Unix(exp, 0).Add(maxClockSkew)) {
-			return identity.Info{}, ErrExpiredToken
+	exp, hasExp := numberClaim(claims, "exp")
+	if !hasExp {
+		if v.RequireExp {
+			return identity.Info{}, fmt.Errorf("%w: 令牌缺少 exp（有效期），拒绝接受长期有效令牌", ErrInvalidToken)
 		}
+	} else if now.After(time.Unix(exp, 0).Add(maxClockSkew)) {
+		return identity.Info{}, ErrExpiredToken
 	}
 	if nbf, ok := numberClaim(claims, "nbf"); ok {
 		if now.Add(maxClockSkew).Before(time.Unix(nbf, 0)) {
 			return identity.Info{}, ErrInvalidToken
+		}
+	}
+	// iat 在未来（超出时钟偏移）：签发时间不合理，按无效处理
+	if iat, ok := numberClaim(claims, "iat"); ok {
+		if now.Add(maxClockSkew).Before(time.Unix(iat, 0)) {
+			return identity.Info{}, fmt.Errorf("%w: iat 晚于当前时间", ErrInvalidToken)
+		}
+	}
+	if v.Issuer != "" {
+		if got := stringClaim(claims, "iss"); got != v.Issuer {
+			return identity.Info{}, fmt.Errorf("%w: iss 不匹配", ErrInvalidToken)
+		}
+	}
+	if v.Audience != "" {
+		if !audienceMatch(claims["aud"], v.Audience) {
+			return identity.Info{}, fmt.Errorf("%w: aud 不匹配", ErrInvalidToken)
 		}
 	}
 
@@ -192,6 +231,21 @@ func numberClaim(claims map[string]any, key string) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// audienceMatch aud 可能是字符串或字符串数组，任一命中即通过
+func audienceMatch(claim any, want string) bool {
+	switch v := claim.(type) {
+	case string:
+		return strings.TrimSpace(v) == want
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TokenFromHeader 从 Authorization 头取令牌，兼容 "Bearer xxx" 与裸 token。

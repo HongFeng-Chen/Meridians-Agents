@@ -6,5 +6,6 @@ import "context"
 type Repo interface {
 	Insert(ctx context.Context, rec *Record) error
 	List(ctx context.Context, f Filter) ([]Record, int64, error)
-	Stats(ctx context.Context) (Stats, error)
+	// Stats userID 非空时只统计该用户（空 = 全平台，管理员视图）
+	Stats(ctx context.Context, userID string) (Stats, error)
 }

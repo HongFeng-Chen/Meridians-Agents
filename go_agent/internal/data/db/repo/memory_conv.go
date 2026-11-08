@@ -19,9 +19,22 @@ func NewMemoryConvSource(conv *ConversationRepo) *MemoryConvSource {
 }
 
 // ListRecent 取会话最近 limit 条消息（时间正序），投影为记忆模块的最小结构。
-func (s *MemoryConvSource) ListRecent(ctx context.Context, conversationID string, limit int) ([]memory.ShortMessage, error) {
+//
+// userID 非空时校验会话归属：不匹配直接返回空，而不是「先取再筛」——
+// 后者一旦有人把校验删掉或改坏，泄漏是静默的。这里的语义是
+// 「不属于你的会话，等于不存在」。
+func (s *MemoryConvSource) ListRecent(ctx context.Context, conversationID, userID string, limit int) ([]memory.ShortMessage, error) {
 	if s == nil || s.conv == nil || conversationID == "" {
 		return nil, nil
+	}
+	if userID != "" {
+		c, err := s.conv.Get(ctx, conversationID)
+		if err != nil || c == nil {
+			return nil, nil // 会话不存在：按空历史处理
+		}
+		if c.UserID != "" && c.UserID != userID {
+			return nil, nil
+		}
 	}
 	msgs, err := s.conv.ListMessages(ctx, conversationID)
 	if err != nil {

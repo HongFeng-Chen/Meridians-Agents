@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/metrics"
 
 	"github.com/go-kratos/kratos/v3/log"
@@ -369,7 +370,11 @@ func (m *Manager) record(ctx context.Context, provider, model, scene string, tem
 	}
 	meta := MetaFrom(ctx)
 	fullPrompt := PromptFull(system, user)
+	// 归属随写入定型：prompt/reply 原文属于用户数据，事后无法可靠反推
+	info := identity.From(ctx)
 	rec := CallRecord{
+		TenantID:    info.TenantID,
+		UserID:      info.UserID,
 		Provider:    provider,
 		Model:       model,
 		Scene:       sceneOr(scene),
@@ -737,11 +742,11 @@ func (m *Manager) ListCalls(ctx context.Context, f CallFilter) ([]CallRecord, in
 }
 
 // CallStats 调用历史统计（含按模型聚合）
-func (m *Manager) CallStats(ctx context.Context) (CallStats, error) {
+func (m *Manager) CallStats(ctx context.Context, userID string) (CallStats, error) {
 	if m.calls == nil {
 		return CallStats{}, nil
 	}
-	return m.calls.Stats(ctx)
+	return m.calls.Stats(ctx, userID)
 }
 
 // UsageBreakdown token 用量下钻（按 agent/scene/purpose/model 维度排行）

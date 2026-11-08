@@ -204,7 +204,7 @@ func (u *UseCase) ExtractMemories(ctx context.Context, sessionID, userID string,
 	}
 
 	// 1. 会话消息：优先平台会话（MySQL），否则短期记忆（Redis）
-	msgs, err := u.extractMessages(ctx, sessionID, lastN)
+	msgs, err := u.extractMessages(ctx, sessionID, userID, lastN)
 	if err != nil {
 		return nil, err
 	}
@@ -253,10 +253,13 @@ func (u *UseCase) ExtractMemories(ctx context.Context, sessionID, userID string,
 	return res, nil
 }
 
-// extractMessages 提取会话消息：先平台会话（conv），空则回源短期记忆
-func (u *UseCase) extractMessages(ctx context.Context, sessionID string, lastN int) ([]Message, error) {
+// extractMessages 提取会话消息：先平台会话（conv），空则回源短期记忆。
+//
+// userID 同时是「要提取到谁名下」和「这个会话是谁的」：把别人的会话提取到
+// 自己名下，等价于把对方对话内容搬进自己的长期记忆。
+func (u *UseCase) extractMessages(ctx context.Context, sessionID, userID string, lastN int) ([]Message, error) {
 	if u.conv != nil {
-		if sms, err := u.conv.ListRecent(ctx, sessionID, lastN); err == nil && len(sms) > 0 {
+		if sms, err := u.conv.ListRecent(ctx, sessionID, userID, lastN); err == nil && len(sms) > 0 {
 			msgs := make([]Message, 0, len(sms))
 			for _, m := range sms {
 				msgs = append(msgs, Message{Role: m.Role, Content: m.Content, At: m.At})

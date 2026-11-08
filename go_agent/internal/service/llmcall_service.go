@@ -10,7 +10,20 @@ import (
 
 	v1 "go_agent/api/llm/v1"
 	"go_agent/internal/biz/llm"
+	"go_agent/internal/pkg/identity"
 )
+
+// clipRunes 按字符截断并追加省略标记（中文按 rune 切，避免半个字符）
+func clipRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…（已脱敏，仅管理员可查看全文）"
+}
 
 // parseTimeArg 解析查询时间参数：RFC3339 全格式，或日期形式（当天起止）。
 // 解析失败返回 ok=false（按未传处理，不让脏参数 500）。
@@ -51,6 +64,7 @@ func NewLLMCallQueryService(uc *llm.Manager) *LLMCallQueryService {
 // ListLLMCalls 调用历史。
 func (s *LLMCallQueryService) ListLLMCalls(ctx context.Context, req *v1.ListLLMCallsRequest) (*v1.ListLLMCallsReply, error) {
 	f := llm.CallFilter{
+		UserID:   auditScope(ctx), // 普通用户只看自己的调用记录；管理员可看全平台
 		TaskID:   req.GetTaskId(),
 		Model:    req.GetModel(),
 		Models:   req.GetModels(),
@@ -78,16 +92,19 @@ func (s *LLMCallQueryService) ListLLMCalls(ctx context.Context, req *v1.ListLLMC
 	if err != nil {
 		return nil, mapLLMErr(err)
 	}
+	// 列表只给摘要：prompt/reply 原文是用户数据，默认截断；
+	// 管理员（审计视角）与记录归属人之外的场景不再提供全文
+	reveal := identity.AdminAllowed(ctx)
 	out := &v1.ListLLMCallsReply{Calls: make([]*v1.LLMCall, 0, len(list)), Total: total}
 	for _, c := range list {
-		out.Calls = append(out.Calls, toLLMCall(c))
+		out.Calls = append(out.Calls, toLLMCall(c, reveal))
 	}
 	return out, nil
 }
 
 // GetLLMCallStats 调用统计。
 func (s *LLMCallQueryService) GetLLMCallStats(ctx context.Context, _ *v1.GetLLMCallStatsRequest) (*v1.LLMCallStats, error) {
-	st, err := s.uc.CallStats(ctx)
+	st, err := s.uc.CallStats(ctx, auditScope(ctx))
 	if err != nil {
 		return nil, mapLLMErr(err)
 	}
@@ -134,7 +151,16 @@ func (s *LLMCallQueryService) BreakdownTokens(ctx context.Context, req *v1.Break
 	return out, nil
 }
 
-func toLLMCall(c llm.CallRecord) *v1.LLMCall {
+// previewChars 非审计视角下列表返回的原文预览长度
+const previewChars = 240
+
+// toLLMCall 投影调用记录；reveal=false 时 prompt/reply 只给预览
+func toLLMCall(c llm.CallRecord, reveal bool) *v1.LLMCall {
+	prompt, reply := c.PromptText, c.ReplyText
+	if !reveal {
+		prompt = clipRunes(prompt, previewChars)
+		reply = clipRunes(reply, previewChars)
+	}
 	return &v1.LLMCall{
 		Id:               c.ID,
 		Provider:         c.Provider,
@@ -152,8 +178,8 @@ func toLLMCall(c llm.CallRecord) *v1.LLMCall {
 		PromptTokens:     int32(c.PromptTokens),
 		CompletionTokens: int32(c.CompletionTokens),
 		TotalTokens:      int32(c.TotalTokens),
-		PromptText:       c.PromptText,
-		ReplyText:        c.ReplyText,
+		PromptText:       prompt,
+		ReplyText:        reply,
 		CreatedAt:        formatTS(c.CreatedAt),
 	}
 }

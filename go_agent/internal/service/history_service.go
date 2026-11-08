@@ -30,6 +30,7 @@ func NewHistoryService(uc *history.UseCase) *HistoryService {
 // ListHistories 操作历史列表。
 func (s *HistoryService) ListHistories(ctx context.Context, req *v1.ListHistoriesRequest) (*v1.ListHistoriesReply, error) {
 	f := history.Filter{
+		UserID: auditScope(ctx), // 普通用户只看自己的记录；管理员可看全平台
 		Kind:   req.GetKind(),
 		TaskID: req.GetTaskId(),
 		ConvID: req.GetConvId(),
@@ -58,7 +59,7 @@ func (s *HistoryService) ListHistories(ctx context.Context, req *v1.ListHistorie
 
 // GetHistoryStats 操作历史统计。
 func (s *HistoryService) GetHistoryStats(ctx context.Context, _ *v1.GetHistoryStatsRequest) (*v1.HistoryStats, error) {
-	st, err := s.uc.Stats(ctx)
+	st, err := s.uc.Stats(ctx, auditScope(ctx))
 	if err != nil {
 		return nil, err
 	}

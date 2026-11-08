@@ -10,6 +10,10 @@ type OpHistoryPO struct {
 	Kind     string `gorm:"column:kind;size:32;not null;index:idx_op_histories_kind"`
 	TaskID   uint64 `gorm:"column:task_id;not null;default:0;index:idx_op_histories_task"`
 	AgentKey string `gorm:"column:agent_key;size:64;not null;default:''"`
+	// TenantID / UserID 归属：写入时从 ctx 身份取值。
+	// 历史记录里有查询词、参数、召回明细，不按归属过滤就等于全平台可读。
+	TenantID string `gorm:"column:tenant_id;size:64;not null;default:'';index:idx_op_histories_tenant"`
+	UserID   string `gorm:"column:user_id;size:64;not null;default:'';index:idx_op_histories_user"`
 	// ConvID 来源会话（会话编排内的调用/召回自动写入；会话链路时间线查询用）
 	ConvID  string `gorm:"column:conv_id;size:64;not null;default:'';index:idx_op_histories_conv"`
 	Ref     string `gorm:"column:ref;size:191;not null;default:'';index:idx_op_histories_ref"`

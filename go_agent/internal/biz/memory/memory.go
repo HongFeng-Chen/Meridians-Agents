@@ -15,6 +15,7 @@ import (
 	"go_agent/internal/biz/rag"
 	"go_agent/internal/biz/rag/graphrag"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/identity"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -228,15 +229,18 @@ func (u *UseCase) logRecall(ctx context.Context, source, query, userID string, t
 }
 
 // ingestGraph 记忆内容 -> 实体/关系抽取 -> 与库中已有实体合并 -> 向量化入图集合。
-// 记忆是短文本（单块），引用统一为 "memoryID#0"，删除时按此前缀清理孤儿节点。
+// 记忆是短文本（单块），引用为 "mem::<user>::<memoryID>#0"，删除时按此前缀清理孤儿节点。
+//
+// 合并只发生在**同一个用户**的既有实体之间：图谱集合与 RAG 文档共用，
+// 跨用户合并会把 A 的描述、频率、引用并进 B 也能搜到的节点（见 graph_scope.go）。
 func (u *UseCase) ingestGraph(ctx context.Context, m *LongTermMemory) (int, int, error) {
 	ex, err := u.extractor.Extract(ctx, m.Content)
 	if err != nil {
 		return 0, 0, fmt.Errorf("抽取实体关系: %w", err)
 	}
-	ref := m.ID + "#0"
+	ref := memoryRef(m.UserID, m.ID)
 
-	// 与库中已有实体合并（跨记忆/文档去重，频率累加）
+	// 与库中已有实体合并（同用户跨记忆去重，频率累加）
 	names := make([]string, 0, len(ex.Entities))
 	for _, e := range ex.Entities {
 		names = append(names, e.Name)
@@ -248,13 +252,16 @@ func (u *UseCase) ingestGraph(ctx context.Context, m *LongTermMemory) (int, int,
 	ents := make([]graphrag.Entity, 0, len(ex.Entities))
 	entMap := make(map[string]graphrag.Entity, len(ex.Entities))
 	for _, e := range ex.Entities {
-		if old, ok := existing[normName(e.Name)]; ok {
-			e.Freq = 1 + old.Freq
+		if old, ok := existing[normName(e.Name)]; ok && refsOwnedBy(old.ChunkRefs, m.UserID) {
+			owned := pruneRefs(old.ChunkRefs, m.UserID)
+			// 频率只累计本人记忆出现次数：old.Freq 含他人贡献，直接用会泄漏他人规模
+			e.Freq = 1 + len(owned)
 			if len(old.Description) > len(e.Description) {
 				e.Description = old.Description
 			}
-			e.ChunkRefs = mergeRefs([]string{ref}, old.ChunkRefs)
+			e.ChunkRefs = mergeRefs([]string{ref}, owned)
 		} else {
+			// 他人实体（或全新）：独立成节点，不继承任何描述/频率/引用
 			e.Freq = 1
 			e.ChunkRefs = []string{ref}
 		}
@@ -389,8 +396,21 @@ func (u *UseCase) Recall(ctx context.Context, query, userID string, topK int, wi
 	}
 
 	// 2. 图谱召回：实体混合检索 -> 关系多跳扩展 -> 子图
+	//
+	// 图谱与 RAG 文档共用，检索本身没有用户维度，所以召回结果必须在这里
+	// 按引用归属裁剪：只留含本人引用的实体/关系，并裁掉其中的他人引用
+	// （与 graphrag.scopeByDocs 同一套口径，见 graph_scope.go）。
 	if withGraph && u.graph != nil {
-		seeds, err := u.graph.SearchEntities(ctx, query, qvec, 6)
+		rawSeeds, err := u.graph.SearchEntities(ctx, query, qvec, 6)
+		seeds := make([]graphrag.Entity, 0, len(rawSeeds))
+		for _, e := range rawSeeds {
+			if !refsOwnedBy(e.ChunkRefs, userID) {
+				continue // 只有他人引用：不属于本次召回范围
+			}
+			cp := e
+			cp.ChunkRefs = pruneRefs(e.ChunkRefs, userID)
+			seeds = append(seeds, cp)
+		}
 		if err != nil {
 			log.Warn("memory: 图谱实体检索失败（跳过图谱召回）", "err", err)
 		} else if len(seeds) > 0 {
@@ -409,11 +429,15 @@ func (u *UseCase) Recall(ctx context.Context, query, userID string, topK int, wi
 				}
 				frontier = frontier[:0]
 				for _, r := range rels {
+					if !refsOwnedBy(r.ChunkRefs, userID) {
+						continue // 他人记忆里抽出的关系，不参与本人的图谱上下文
+					}
 					relKey := normName(r.Source) + "|" + normName(r.Target) + "|" + normName(r.Relation)
 					if _, dup := seenRels[relKey]; dup {
 						continue
 					}
 					seenRels[relKey] = struct{}{}
+					r.ChunkRefs = pruneRefs(r.ChunkRefs, userID)
 					gc.Relations = append(gc.Relations, r)
 					for _, name := range []string{r.Source, r.Target} {
 						if _, ok := seen[normName(name)]; !ok {
@@ -425,7 +449,14 @@ func (u *UseCase) Recall(ctx context.Context, query, userID string, topK int, wi
 			}
 			if extras := extraNames(seen, seeds); len(extras) > 0 {
 				if more, err := u.graph.EntitiesByNames(ctx, extras); err == nil {
-					gc.Entities = append(gc.Entities, more...)
+					for _, e := range more {
+						if !refsOwnedBy(e.ChunkRefs, userID) {
+							continue // 扩展出来的邻居可能只属于他人
+						}
+						cp := e
+						cp.ChunkRefs = pruneRefs(e.ChunkRefs, userID)
+						gc.Entities = append(gc.Entities, cp)
+					}
 				}
 			}
 			sort.SliceStable(gc.Relations, func(i, j int) bool { return gc.Relations[i].Weight > gc.Relations[j].Weight })
@@ -518,7 +549,9 @@ func (u *UseCase) History(ctx context.Context, sessionID string, limit int) ([]M
 		return msgs, err
 	}
 	// Redis 无数据：从会话消息表回源最近 limit 条
-	src, serr := u.conv.ListRecent(ctx, sessionID, limit)
+	// 带上当前身份：会话历史是用户数据，按会话 ID 直接取等于「知道 ID 就能读」，
+	// 归属过滤必须落到 SQL 条件上（repo 层校验 conversation.user_id）
+	src, serr := u.conv.ListRecent(ctx, sessionID, identity.UserID(ctx), limit)
 	if serr != nil || len(src) == 0 {
 		return msgs, err
 	}
@@ -545,8 +578,9 @@ type ShortMessage struct {
 // ConversationSource 会话消息来源（由 data 层适配 conversation 仓库提供）。
 // 可为 nil：未注入时短期窗口为空就是空，不回源。
 type ConversationSource interface {
-	// ListRecent 取会话最近 limit 条消息（按时间正序返回）
-	ListRecent(ctx context.Context, conversationID string, limit int) ([]ShortMessage, error)
+	// ListRecent 取会话最近 limit 条消息（按时间正序返回）。
+	// userID 非空时只返回归属该用户的会话消息（不匹配则返回空）。
+	ListRecent(ctx context.Context, conversationID, userID string, limit int) ([]ShortMessage, error)
 }
 
 // SetConversationSource 注入会话消息来源（wire 装配后调用；仅启动期使用，无并发）。
@@ -609,7 +643,7 @@ func (u *UseCase) Delete(ctx context.Context, id string) (*RememberResult, error
 	} else {
 		_ = n
 	}
-	if ents, rels, err := u.graph.DeleteOrphanNodes(ctx, id+"#"); err != nil {
+	if ents, rels, err := u.graph.DeleteOrphanNodes(ctx, memoryRefDocPrefix(m.UserID, id)); err != nil {
 		res.GraphWarning = err.Error()
 	} else {
 		res.Entities, res.Relations = ents, rels
@@ -632,7 +666,7 @@ func (u *UseCase) PurgeExpired(ctx context.Context, limit int) (int, error) {
 	n := 0
 	for _, m := range expired {
 		_, _ = u.vec.DeleteByMemory(ctx, m.ID)
-		if _, _, gerr := u.graph.DeleteOrphanNodes(ctx, m.ID+"#"); gerr != nil {
+		if _, _, gerr := u.graph.DeleteOrphanNodes(ctx, memoryRefDocPrefix(m.UserID, m.ID)); gerr != nil {
 			log.Warn("memory: 清理图谱孤儿节点失败", "id", m.ID, "err", gerr)
 		}
 		if err := u.repo.Delete(ctx, m.ID); err != nil {
