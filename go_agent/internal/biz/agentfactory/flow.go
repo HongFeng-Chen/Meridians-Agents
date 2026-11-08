@@ -67,7 +67,15 @@ type FlowNode struct {
 	Cond     *FlowCond `json:"cond,omitempty"`
 }
 
-// FlowEdge 有向边；When 仅条件节点出边使用（true / false）
+// FlowEdge 有向边。When 决定这条边在源节点什么状态下放行：
+//
+//	""/"success"  源节点成功（默认）
+//	"true"/"false" 条件节点的命中 / 未命中分支
+//	"failure"     源节点失败（on_error 分支）
+//	"always"      无论成功失败都放行
+//
+// 失败不会默认流向下游：Agent 失败的产出是 "[执行失败] …" 文本，
+// 让它继续流下去等于下游拿着报错当输入干活。
 type FlowEdge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
@@ -154,8 +162,18 @@ func (g *FlowGraph) Validate() error {
 		if e.From == e.To {
 			return fmt.Errorf("%w: 不允许自连（%s）", ErrInvalidDef, e.From)
 		}
-		if e.When != "" && e.When != "true" && e.When != "false" {
-			return fmt.Errorf("%w: 分支标记只能是 true/false", ErrInvalidDef)
+		if e.When = strings.ToLower(strings.TrimSpace(e.When)); e.When != "" {
+			switch e.When {
+			case "true", "false":
+				// 条件分支：只允许出现在条件节点的出边
+				if byID[e.From].Kind != FlowNodeCondition {
+					return fmt.Errorf("%w: 节点 %s 不是条件节点，出边不能标 true/false", ErrInvalidDef, e.From)
+				}
+			case "success", "failure", "always":
+				// 状态边：见 FlowEdge 注释
+			default:
+				return fmt.Errorf("%w: 出边 when 只能是 success / failure / always / true / false", ErrInvalidDef)
+			}
 		}
 		key := e.From + "->" + e.To + "#" + e.When
 		if seen[key] {

@@ -109,7 +109,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				continue
 			}
 			r.nodeSt[i] = nodeSkipped
-			r.resolveEdges(i, nil)
+			r.resolveEdges(i, outSkipped, nil)
 			remaining--
 			rec.event(EventNode, rec.turn, map[string]any{"node": g.Nodes[i].ID, "kind": g.Nodes[i].Kind, "status": "skipped"})
 		}
@@ -168,10 +168,15 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			i := p.idx
 			node := g.Nodes[i]
 			if p.create != nil {
+				// 子任务都没建起来：节点失败，出边只放行显式声明的 failure/always
 				r.outputs[node.ID] = "[执行失败] " + p.create.Error()
-				r.nodeSt[i] = nodeDone
-				r.resolveEdges(i, nil)
+				r.nodeSt[i] = nodeFailed
+				r.resolveEdges(i, outFailed, nil)
 				remaining--
+				rec.event(EventNode, rec.turn, map[string]any{
+					"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
+					"status": "error", "error": p.create.Error(),
+				})
 				continue
 			}
 			ans := answers[k]
@@ -188,8 +193,25 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 					})
 					return nil, childApprovalError(p.task, node.AgentKey)
 				}
+				// 普通失败：节点标 failed（不是 done），默认出边全部置死。
+				// 旧实现把失败伪装成「节点完成 + 失败文本」并激活所有下游，
+				// 下游 Agent 会把上一跳的报错当成正常输入继续干活（甚至产生副作用）。
 				ans = "[执行失败] " + errs[k].Error()
-			} else if sup != nil {
+				r.outputs[node.ID] = ans
+				if p.task != nil {
+					r.taskIDs[node.ID] = p.task.ID
+				}
+				r.nodeSt[i] = nodeFailed
+				r.resolveEdges(i, outFailed, nil)
+				remaining--
+				rec.event(EventNode, rec.turn, map[string]any{
+					"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
+					"child_task_id": p.task.ID, "status": "error",
+					"error": truncateRunes(errs[k].Error(), 400),
+				})
+				continue
+			}
+			if sup != nil {
 				if v := u.superviseMember(ctx, rec.task, sup, node.AgentKey, p.input, ans, rec); v != nil {
 					if v.Passed {
 						ans += "\n[监察] 通过"
@@ -202,7 +224,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			r.taskIDs[node.ID] = p.task.ID
 			r.turns++
 			r.nodeSt[i] = nodeDone
-			r.resolveEdges(i, nil)
+			r.resolveEdges(i, outSuccess, nil)
 			remaining--
 			rec.event(EventNode, rec.turn, map[string]any{
 				"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
@@ -224,7 +246,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				}
 				r.outputs[node.ID] = in // 条件节点透传上游，供分支下游使用
 				r.nodeSt[i] = nodeDone
-				r.resolveEdges(i, &pass)
+				r.resolveEdges(i, outSuccess, &pass)
 				rec.event(EventNode, rec.turn, map[string]any{
 					"node": node.ID, "kind": node.Kind, "status": "condition",
 					"branch": branch, "input": truncateRunes(in, 400),
@@ -236,12 +258,12 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				}
 				r.outputs[node.ID] = ans
 				r.nodeSt[i] = nodeDone
-				r.resolveEdges(i, nil)
+				r.resolveEdges(i, outSuccess, nil)
 				r.turns++
 				rec.event(EventNode, rec.turn, map[string]any{"node": node.ID, "kind": node.Kind, "status": "done"})
 			default:
 				r.nodeSt[i] = nodeSkipped
-				r.resolveEdges(i, nil)
+				r.resolveEdges(i, outSkipped, nil)
 			}
 			remaining--
 		}
@@ -318,20 +340,56 @@ func (r *graphRun) nodeInput(i int, input string) string {
 	return b.String()
 }
 
-// resolveEdges 出边放行：nil = 全部激活；条件节点按命中分支放行
-func (r *graphRun) resolveEdges(i int, branch *bool) {
+// nodeOutcome 节点结束状态：决定出边怎么决断
+type nodeOutcome int
+
+const (
+	outSuccess nodeOutcome = iota
+	outFailed
+	outSkipped
+)
+
+// resolveEdges 出边决断。
+//
+// 语义刻意收紧（P1-06）：只有「成功」才默认放行下游。旧实现无论节点是
+// 完成、失败还是跳过，都调用 resolveEdges(i, nil) 把全部出边置为激活——
+// 于是一个 Agent 失败后，下游 Agent 会把 "[执行失败] ..." 这段文本当成
+// 正常上游输入继续干活，失败因此被静默吞掉。
+//
+//	成功        When 为空 / success / always → 放行；条件节点按 true/false 分支
+//	失败        只放行显式声明的 failure / always 边，其余置死
+//	跳过        全部置死（未命中的分支整段不执行）
+//
+// 「失败也要继续」必须写成 when: "failure" 或 "always"，把意图显式化。
+func (r *graphRun) resolveEdges(i int, outcome nodeOutcome, branch *bool) {
 	node := r.g.Nodes[i]
 	for _, ei := range r.outEdges[node.ID] {
 		e := r.g.Edges[ei]
-		if branch == nil {
-			r.edgeSt[ei] = edgeActive
-			continue
+		when := strings.ToLower(strings.TrimSpace(e.When))
+		if when == "" {
+			if branch != nil {
+				when = "true" // 条件节点的默认出边算「命中分支」
+			} else {
+				when = "success"
+			}
 		}
-		want := e.When
-		if want == "" {
-			want = "true"
+		active := false
+		switch outcome {
+		case outSuccess:
+			switch when {
+			case "success", "always":
+				active = true
+			case "true":
+				active = branch == nil || *branch
+			case "false":
+				active = branch != nil && !*branch
+			}
+		case outFailed:
+			active = when == "failure" || when == "always"
+		case outSkipped:
+			active = false
 		}
-		if (*branch && want == "true") || (!*branch && want == "false") {
+		if active {
 			r.edgeSt[ei] = edgeActive
 		} else {
 			r.edgeSt[ei] = edgeDead
