@@ -18,10 +18,18 @@ package agentfactory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 )
+
+// hardDispatchErr 分发错误是否属于「必须停下」的状态。
+// 审批挂起（本任务 / 子任务）不能折成观察文本喂回模型：模型会顺手换个
+// 参数或换个工具重试，等于用一条没被批准的路把事做掉。
+func hardDispatchErr(err error) bool {
+	return errors.Is(err, ErrApprovalNeeded) || errors.Is(err, ErrChildApprovalPending)
+}
 
 // planStep 计划中的一步；Agent 为空表示由当前 Agent 自己执行
 type planStep struct {
@@ -330,6 +338,24 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 		}
 		wg.Wait()
 
+		// 审批挂起不是步骤失败：不能走重规划（换条路绕开审批比停下更危险），
+		// 也不能推进 StepIdx（那会把没执行的步标记成完成）。直接上抛挂起状态，
+		// 任务置 paused，批准后从这一步续跑。
+		for k := range ready {
+			if errors.Is(errs[k], ErrApprovalNeeded) {
+				rec.event(EventPaused, rec.turn, map[string]any{
+					"step":   ready[k] + 1,
+					"goal":   truncateRunes(st.Steps[ready[k]].Goal, 200),
+					"reason": "approval_required",
+				})
+				return nil, errs[k]
+			}
+			if errors.Is(errs[k], ErrChildApprovalPending) {
+				// 子 Agent 在等审批：父任务同样不能继续（下游步骤会缺上下文）
+				return nil, errs[k]
+			}
+		}
+
 		// 失败处理：取最早的失败步骤触发重规划（只重排该步之后的剩余部分；
 		// 乱序完成的后续步骤产出丢弃，重跑代价 < 状态错乱的代价）
 		failK, failIdx := -1, -1
@@ -614,6 +640,9 @@ func (u *UseCase) runRouter(ctx context.Context, def *AgentDef, input string, re
 	rec.event(EventToolCall, rec.turn, map[string]any{"name": target, "args": args})
 	obs, callErr := u.InvokeDispatch(ctx, target, args, rec)
 	if callErr != nil {
+		if hardDispatchErr(callErr) {
+			return nil, callErr
+		}
 		obs = "[路由技能调用失败] " + callErr.Error()
 	}
 	rec.event(EventToolResult, rec.turn, map[string]any{"name": target, "result": truncateRunes(obs, 4000), "is_error": callErr != nil})
@@ -770,6 +799,9 @@ func (u *UseCase) runFunctionCall(ctx context.Context, def *AgentDef, input stri
 	rec.event(EventToolCall, rec.turn, map[string]any{"name": tool, "args": args})
 	obs, callErr := u.InvokeDispatch(ctx, tool, args, rec)
 	if callErr != nil {
+		if hardDispatchErr(callErr) {
+			return nil, callErr
+		}
 		obs = "[工具调用失败] " + callErr.Error()
 	}
 	rec.event(EventToolResult, rec.turn, map[string]any{"name": tool, "result": truncateRunes(obs, 4000), "is_error": callErr != nil})

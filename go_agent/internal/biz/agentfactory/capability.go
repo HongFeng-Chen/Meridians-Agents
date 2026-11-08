@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/skill"
 )
@@ -117,15 +118,18 @@ func (c *Catalog) Known(ctx context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-// InvokeDispatch 能力调用分发：授权 → 解析能力名 → 路由到对应实现。
+// InvokeDispatch 能力调用分发：授权 → 审批闸门 → 解析能力名 → 路由到对应实现。
 //
-// 授权是第一步，不是最后一步的装饰：模型输出的 action.name 完全不可信，
-// 白名单必须在分发入口强制生效（见 authorize.go），否则「只读 Agent」只是
-// 提示词上的一个说法。
+// 授权与审批都是入口处的强制步骤，不是最后一步的装饰：模型输出的 action.name
+// 完全不可信，白名单必须在分发入口强制生效（见 authorize.go），否则「只读 Agent」
+// 只是提示词上的一个说法；审批同理，挂在入口才是三条执行路径的公共必经点。
 //
 // rec 用于 trace（delegate 事件需要落子任务链路），同时是授权依据（rec.def）。
 func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[string]any, rec *Recorder) (string, error) {
 	if err := u.authorizeCapability(ctx, rec, name); err != nil {
+		return "", err
+	}
+	if err := u.gateApproval(ctx, rec, name, args); err != nil {
 		return "", err
 	}
 	switch {
@@ -146,33 +150,40 @@ func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[stri
 // 配置了风险评估 Agent 时，调用前先评估风险：high 直接拦截（不执行副作用），
 // medium 放行但把风险提示带回观察结果，low 正常放行。
 // Agent 配置 risk_pause_level=high 时，高危操作不拦截而是转人工：任务挂起（paused），
-// 批准后从 checkpoint 续跑（已批准能力不再重复评估）。
+// 批准后从 checkpoint 续跑（已批准这一次具体调用不再重复评估）。
 func (u *UseCase) toolCapability(ctx context.Context, uniqueName string, args map[string]any, rec *Recorder) (string, error) {
 	if u.tools == nil {
 		return "", fmt.Errorf("MCP 工具供给未接线")
 	}
 	ability := CapToolPrefix + uniqueName
 	riskNote := ""
-	alreadyApproved := rec != nil && rec.st != nil && rec.st.approved(ability)
+	alreadyApproved := false
+	if rec != nil {
+		_, alreadyApproved = rec.st.approvedCall(ability, args)
+	}
 	if !alreadyApproved && rec != nil && rec.def != nil && rec.def.RiskAgentKey != "" {
 		if riskDef := u.loadRiskDef(ctx, rec.def.RiskAgentKey); riskDef != nil {
-			if v := u.assessRisk(ctx, rec.task, riskDef, uniqueName, args, rec); v != nil {
-				if !v.Allow {
-					// 高危转人工（O3）：落 checkpoint + paused 事件，以哨兵错误上抛
-					if strings.EqualFold(rec.def.RiskPauseLevel, "high") && v.Level == "high" && rec.st != nil {
-						rec.st.Cursor = approvalCursor(ability)
-						rec.checkpoint(rec.st.Cursor)
-						rec.event(EventPaused, rec.turn, map[string]any{
-							"ability": ability, "args": args,
-							"reason": "risk_assess_high", "risk_reason": truncateRunes(v.Reason, 300),
-						})
-						return "", ErrApprovalNeeded
-					}
-					return "", fmt.Errorf("操作被风险评估拦截（%s）：%s。请改用更安全的只读方式，或交由人工处理", v.Level, truncateRunes(v.Reason, 200))
+			v, rerr := u.assessRisk(ctx, rec.task, riskDef, uniqueName, args, rec)
+			switch {
+			case rerr != nil:
+				// 评估器不可用 ≠ 没有风险结论。旧实现返回 nil，调用方按「未启用评估」
+				// 处理 → 评估服务一挂，全部高危调用直接放行（fail-open）。
+				// 现在：有闸门配置就转人工；没有闸门就只能阻止本次调用。
+				audit.Denied(ctx, "agentfactory.risk.assess_failed", "capability", ability, rerr.Error())
+				rec.event(EventRiskAssess, rec.turn, map[string]any{"tool": uniqueName, "unavailable": true, "error": rerr.Error()})
+				if humanGate(rec.def) {
+					return "", u.pauseForApproval(ctx, rec, ability, args, "risk_assess_failed", toolHighRisk(ability))
 				}
-				if v.Level == "medium" {
-					riskNote = fmt.Sprintf("[风险提示] 本次操作评估为 medium：%s\n", truncateRunes(v.Reason, 200))
+				return "", fmt.Errorf("风险评估服务不可用（%s），本次调用已阻止：该 Agent 未配置人工审批（risk_pause_level=high 或 require_approval），无法转人工。请稍后重试或改用只读方式",
+					truncateRunes(rerr.Error(), 200))
+			case v != nil && !v.Allow:
+				// 高危转人工（O3）：落 checkpoint + paused 事件，以哨兵错误上抛
+				if strings.EqualFold(rec.def.RiskPauseLevel, "high") {
+					return "", u.pauseForApproval(ctx, rec, ability, args, "risk_assess_high", true)
 				}
+				return "", fmt.Errorf("操作被风险评估拦截（%s）：%s。请改用更安全的只读方式，或交由人工处理", v.Level, truncateRunes(v.Reason, 200))
+			case v != nil && v.Level == "medium":
+				riskNote = fmt.Sprintf("[风险提示] 本次操作评估为 medium：%s\n", truncateRunes(v.Reason, 200))
 			}
 		}
 	}

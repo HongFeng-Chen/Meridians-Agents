@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_agent/internal/biz/audit"
 	"go_agent/internal/pkg/budget"
 	"go_agent/internal/pkg/identity"
 
@@ -535,7 +536,7 @@ func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note str
 		return t, nil
 	}
 
-	// approve：把挂起点的能力记入 Approved，任务置回 pending 重新入队
+	// approve：把「这一次具体调用」记入凭据，任务置回 pending 重新入队
 	cp, _ := u.repo.LatestCheckpoint(ctx, id)
 	var st *RunState
 	if cp != nil {
@@ -544,10 +545,52 @@ func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note str
 	if st == nil {
 		st = newState(t.Input)
 	}
+	req, hasReq := approvalRequest{}, false
 	if cp != nil {
-		if ability := cursorAbility(cp.Cursor); ability != "" {
-			st.markApproved(ability)
+		req, hasReq = decodeApprovalCursor(cp.Cursor)
+	}
+	if hasReq {
+		// 审批人资格：请求人自批高危一律拒绝；跨用户审批需要管理员
+		selfApproved, aerr := u.checkApprover(ctx, t, req)
+		if aerr != nil {
+			return nil, aerr
 		}
+		grant := ApprovalGrant{
+			Ability:       req.Ability,
+			ArgsHash:      req.ArgsHash,
+			PolicyVersion: req.PolicyVersion,
+			Requester:     t.UserID,
+			Approver:      by,
+			Decision:      "approve",
+			Reason:        truncateRunes(note, 500),
+			HighRisk:      req.HighRisk,
+			CreatedAt:     time.Now(),
+			ExpiresAt:     time.Now().Add(defaultApprovalTTL),
+			SelfApproved:  selfApproved,
+		}
+		st.grant(grant)
+		payload["ability"] = req.Ability
+		payload["args_hash"] = req.ArgsHash
+		payload["requester"] = t.UserID
+		payload["policy_version"] = req.PolicyVersion
+		payload["expires_at"] = grant.ExpiresAt.Format(time.RFC3339)
+		payload["high_risk"] = req.HighRisk
+		if selfApproved {
+			payload["self_approved"] = true
+		}
+		audit.Info(ctx, "agentfactory.task.approve", "task", fmt.Sprint(id), map[string]any{
+			"ability": req.Ability, "args_hash": req.ArgsHash, "requester": t.UserID,
+			"approver": by, "high_risk": req.HighRisk, "self_approved": selfApproved,
+			"policy_version": req.PolicyVersion,
+		})
+	} else {
+		// 老格式 / 损坏的挂起点：不补发凭据。续跑时会重新命中闸门并生成新的
+		// 挂起点——多问一次人，好过按能力名补一张永久通行证。
+		audit.Info(ctx, "agentfactory.task.approve", "task", fmt.Sprint(id), map[string]any{
+			"approver": by, "note": "无可解析的审批挂起点，续跑将重新申请",
+		})
+	}
+	if cp != nil {
 		st.Cursor = ""
 		_ = u.repo.SaveCheckpoint(ctx, &TaskCheckpoint{
 			TaskID:    id,

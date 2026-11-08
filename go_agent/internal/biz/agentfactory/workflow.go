@@ -11,6 +11,7 @@ package agentfactory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,6 +44,14 @@ func (u *UseCase) runWorkflow(ctx context.Context, def *AgentDef, input string, 
 		results = u.runMembersParallel(ctx, def, input, rec, st)
 	} else {
 		results = u.runMembersSerial(ctx, def, input, rec, st)
+	}
+
+	// 成员挂起等审批：整条编排停下（不能带着缺失的成员产出继续汇总——
+	// 汇总结果看起来"完成"，实际上最关键的那一步还没获批执行）
+	for _, r := range results {
+		if errors.Is(r.Err, ErrChildApprovalPending) {
+			return nil, r.Err
+		}
 	}
 
 	// 监察：按监察范围逐个审查（LLM 调用串行，避免并发打爆配额）

@@ -456,9 +456,38 @@ curl -s -X POST http://localhost:8000/api/mcp/tools/12/call   -H 'Content-Type: 
 审批遵循四眼原则（不能批自己发起的）；**只在认证关闭的开发态**允许自批，且在审计里标注
 `self_approved=true`——单机开发时系统里只有一个身份，坚持四眼原则只会让流程不可用。
 
-Agent 运行期同一套口径：`needApproval` 对 `mcp:` 能力先做静态风险判定——高危工具即便没写进
+Agent 运行期同一套口径：`approvalReason` 对 `mcp:` 能力先做静态风险判定——高危工具即便没写进
 `require_approval` 也会挂起等审批（LLM 生成定义时漏写是常态，漏写的代价是一条 `DELETE` 直接打到生产库）。
 任务挂起后走既有的 O3 流程：`paused` → `POST /api/agentfactory/tasks/{id}/approve` → 从 checkpoint 续跑。
+
+审批凭据的粒度（`internal/biz/agentfactory/approval.go`）：
+
+| 维度 | 取值 | 为什么 |
+| --- | --- | --- |
+| `ability` | `mcp:db__delete` / `agent:xxx` … | 批准的是哪个能力 |
+| `canonical_args_hash` | 参数的 JSON 规范化 sha256 | **只批准这一次参数**：同一工具换 `id=999999` 必须重新问人 |
+| `policy_version` | `approval/v2` | 改了「什么需要审批」的规则，旧凭据自动失效 |
+
+`task_id` / 用户 / 租户由凭据的载体（`task_checkpoints` 按任务存、任务自带归属）隐含，
+默认 24h 过期；凭据本身带 `requester` / `approver` / `decision` / `reason` / `created_at` / `expires_at`，
+写进 checkpoint 与 `approval` 事件，审计里能还原「谁批了谁的哪一次调用」。
+
+审批人资格：
+
+- 请求人自批 **高危** 操作 → 拒绝（`403 APPROVAL_SELF_APPROVE`，四眼原则）；非高危允许，
+  否则单机 / 小团队场景没人能批；
+- 跨用户审批 → 需要管理员（`AUTH_*` 里的 `role=admin`，或认证关闭 + 本机）；
+- 开发态（认证关闭 + 回环地址）自批放行，凭据标 `self_approved=true`，审计单独可见。
+
+风险评估是「增强判断」而不是「唯一控制」：`risk_assess` 服务不可用时**不再当成没风险**
+（旧实现返回 `nil`，调用方按「未启用评估」处理，等于评估器一挂就全放行）——配了
+`risk_pause_level=high` / `require_approval` 的 Agent 转人工，没配的直接阻止本次调用并如实告知模型。
+
+复合执行图里的挂起：`plan_execute` 就地挂起（不重规划、不推进步骤，批准后从该步续跑）；
+`delegate` / 编排成员 / DAG 节点的子任务挂起时，父任务**显式失败**并带上子任务 id，
+下游节点不激活。父任务之所以不跟着挂起，是因为父任务续跑会重建子任务（DAG 无节点级断点），
+拿不到子任务那张凭据，会陷入「批准父任务 → 新子任务又要审批」的循环。
+审批子任务后它会自行续跑完成，需要的话再提交一次父任务。
 
 ### 审计事件（`audit_events`）
 

@@ -11,9 +11,6 @@ package agentfactory
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-
-	"go_agent/internal/biz/mcp"
 )
 
 // RunState 一次任务执行的显式状态
@@ -59,9 +56,11 @@ type RunState struct {
 	// MemberOut 成员产出（workflow / flow：agent_key → 最终答案，续跑时复用）
 	MemberOut map[string]string `json:"member_out,omitempty"`
 
-	// —— 人工审批（O3）——
-	// Approved 已批准的能力集合：审批通过后写入，续跑时跳过闸门
-	Approved map[string]bool `json:"approved,omitempty"`
+	// —— 人工审批（O3 / P1-04）——
+	// Approvals 已批准的「一次具体调用」：键 = ability + 参数指纹 + 策略版本，
+	// 值为完整凭据（谁申请、谁批准、何时过期）。只按能力名放行会把一次审批
+	// 变成整个工具的永久通行证，见 approval.go 的说明。
+	Approvals map[string]ApprovalGrant `json:"approvals,omitempty"`
 
 	// Cursor 最近一次 checkpoint 的恢复点描述（JSON 原文，路由恢复用）
 	Cursor string `json:"cursor,omitempty"`
@@ -69,7 +68,7 @@ type RunState struct {
 
 // newState 全新任务状态
 func newState(goal string) *RunState {
-	return &RunState{Goal: goal, Seen: map[string]string{}, Approved: map[string]bool{}, MemberOut: map[string]string{}}
+	return &RunState{Goal: goal, Seen: map[string]string{}, Approvals: map[string]ApprovalGrant{}, MemberOut: map[string]string{}}
 }
 
 // cursorKind 恢复点类型：plan_step | wave | round | loop | approval | ""
@@ -81,19 +80,6 @@ func (st *RunState) cursorKind() string {
 		return ""
 	}
 	return c.Kind
-}
-
-// approved 某能力是否已人工批准
-func (st *RunState) approved(ability string) bool {
-	return st.Approved[ability]
-}
-
-// markApproved 记录一次人工批准
-func (st *RunState) markApproved(ability string) {
-	if st.Approved == nil {
-		st.Approved = map[string]bool{}
-	}
-	st.Approved[ability] = true
 }
 
 // drainStepOutputs 续跑对齐：把乱序完成的步骤产出（MemberOut["step:<idx>"]）
@@ -141,8 +127,8 @@ func decodeState(s string) *RunState {
 	if st.Seen == nil {
 		st.Seen = map[string]string{}
 	}
-	if st.Approved == nil {
-		st.Approved = map[string]bool{}
+	if st.Approvals == nil {
+		st.Approvals = map[string]ApprovalGrant{}
 	}
 	if st.MemberOut == nil {
 		st.MemberOut = map[string]string{}
@@ -152,69 +138,11 @@ func decodeState(s string) *RunState {
 
 // gatedDef 该 Agent 是否受审批闸门管辖（决定工具循环是否逐轮落 checkpoint）
 func gatedDef(def *AgentDef) bool {
-	return len(def.RequireApproval) > 0 || strings.EqualFold(def.RiskPauseLevel, "high")
-}
-
-// needApproval 能力是否需要人工审批，两条规则叠加：
-//
-//  1. require_approval 前缀匹配（尾部 * 通配）——人显式声明的清单；
-//  2. **静态风险闸门**：mcp: 前缀的能力若按工具名判定为高危（delete/drop/exec…），
-//     即便没写进 require_approval 也要审批。理由：Agent 的定义由 LLM 生成，
-//     指望它主动把每个高危工具都列进审批清单不现实；漏写的代价是一条 DELETE
-//     直接打到生产库。这条规则让「没声明」变成「默认需要人点一下」，
-//     误判的代价只是多点一次审批。
-//
-// 已批准过的能力直接放行（审批结果持久化在 RunState，续跑不重复问）。
-func needApproval(def *AgentDef, st *RunState, ability string) bool {
-	if st != nil && st.approved(ability) {
-		return false
-	}
-	if strings.HasPrefix(ability, CapToolPrefix) {
-		tool := strings.TrimPrefix(ability, CapToolPrefix)
-		if mcp.ClassifyToolRisk(mcp.Tool{ToolName: tool}) == mcp.RiskDestructive {
-			return true
-		}
-	}
-	if def == nil || len(def.RequireApproval) == 0 {
-		return false
-	}
-	for _, p := range def.RequireApproval {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.HasSuffix(p, "*") {
-			if strings.HasPrefix(ability, strings.TrimSuffix(p, "*")) {
-				return true
-			}
-			continue
-		}
-		if p == ability {
-			return true
-		}
-	}
-	return false
-}
-
-// approvalCursor 审批挂起点的恢复游标
-func approvalCursor(ability string) string {
-	b, _ := json.Marshal(map[string]string{"kind": "approval", "ability": ability})
-	return string(b)
-}
-
-// cursorAbility 从恢复游标中取审批能力名（非 approval 游标返回空）
-func cursorAbility(cursor string) string {
-	var c struct {
-		Ability string `json:"ability"`
-	}
-	if err := json.Unmarshal([]byte(cursor), &c); err != nil {
-		return ""
-	}
-	return c.Ability
+	return humanGate(def)
 }
 
 // cloneForStep 计划步骤并发执行前的状态克隆：
-// 保留计划级字段（Steps/Done/StepIdx/Approved），工具循环级字段重置
+// 保留计划级字段（Steps/Done/StepIdx/Approvals 深拷贝），工具循环级字段重置
 // （每个步骤的循环从零开始，与重构前"每次 runToolLoop 全新局部变量"行为一致）
 func (st *RunState) cloneForStep() *RunState {
 	c := *st
@@ -224,5 +152,7 @@ func (st *RunState) cloneForStep() *RunState {
 	c.InvalidCount = 0
 	c.LoopTurn = 0
 	c.Cursor = ""
+	// 并发步骤各有独立的凭据表：共用同一 map 会在并发写入时直接 panic
+	c.Approvals = copyApprovals(st.Approvals)
 	return &c
 }

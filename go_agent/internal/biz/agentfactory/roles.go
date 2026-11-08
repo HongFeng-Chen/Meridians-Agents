@@ -158,11 +158,16 @@ type RiskVerdict struct {
 }
 
 // assessRisk 让风险评估 Agent 评估一次 MCP 工具调用的风险。
-// 返回 nil 表示未启用风险评估（无 risk Agent / 未配置）。
-// high 风险默认拦截；medium 放行并附带提示。
-func (u *UseCase) assessRisk(ctx context.Context, parent *Task, riskDef *AgentDef, toolName string, args map[string]any, rec *Recorder) *RiskVerdict {
+//
+// 返回值语义严格区分三种情况，调用方必须分别处理（旧实现把「评估失败」和
+// 「没配评估」都压成 nil，等于评估器一挂就全放行）：
+//
+//	(v, nil)      评估完成，按 v.Allow / v.Level 决策
+//	(nil, nil)    未启用风险评估（没有 risk Agent 或未配置）——由静态闸门兜底
+//	(nil, err)    评估服务不可用——风险未知，必须阻止或转人工
+func (u *UseCase) assessRisk(ctx context.Context, parent *Task, riskDef *AgentDef, toolName string, args map[string]any, rec *Recorder) (*RiskVerdict, error) {
 	if riskDef == nil || u.chat == nil {
-		return nil
+		return nil, nil
 	}
 	system := riskDef.System
 	if system == "" {
@@ -186,19 +191,31 @@ func (u *UseCase) assessRisk(ctx context.Context, parent *Task, riskDef *AgentDe
 		if rec != nil {
 			rec.event(EventRiskAssess, rec.turn, map[string]any{"tool": toolName, "error": err.Error()})
 		}
-		return nil
+		// 明确告诉调用方「评估没做成」，而不是返回 nil 让它当成「无风险」
+		return nil, fmt.Errorf("风险评估 Agent「%s」调用失败: %w", riskDef.AgentKey, err)
 	}
 	v := &RiskVerdict{Level: "medium", Allow: true}
 	if act := strings.Index(out, "{"); act >= 0 {
 		if end := strings.LastIndex(out, "}"); end > act {
-			_ = json.Unmarshal([]byte(out[act:end+1]), v)
+			// 输出不可解析时不能默认「medium 放行」：按未知风险处理
+			if uerr := json.Unmarshal([]byte(out[act:end+1]), v); uerr != nil || v.Level == "" {
+				if rec != nil {
+					rec.event(EventRiskAssess, rec.turn, map[string]any{"tool": toolName, "error": "评估输出不合规", "raw": truncateRunes(out, 200)})
+				}
+				return nil, fmt.Errorf("风险评估输出不合规，无法判定风险等级")
+			}
+		} else {
+			return nil, fmt.Errorf("风险评估输出不合规（缺少 JSON 对象）")
 		}
+	} else {
+		return nil, fmt.Errorf("风险评估输出不合规（没有 JSON 对象）")
 	}
 	switch strings.ToLower(strings.TrimSpace(v.Level)) {
 	case "low", "medium", "high":
 		v.Level = strings.ToLower(strings.TrimSpace(v.Level))
 	default:
-		v.Level = "medium"
+		// 等级不认识 = 判定不了 = 未知风险，不能顺手按 medium 放行
+		return nil, fmt.Errorf("风险评估给出未知等级 %q", truncateRunes(v.Level, 40))
 	}
 	// high 一律拦截（即使模型给了 allow=true，以等级为准）
 	v.Allow = v.Level != "high"
@@ -211,7 +228,7 @@ func (u *UseCase) assessRisk(ctx context.Context, parent *Task, riskDef *AgentDe
 			"assessor": riskDef.AgentKey,
 		})
 	}
-	return v
+	return v, nil
 }
 
 // loadSupervisor / loadRiskDef 按 key 取角色定义（不存在或角色不符返回 nil）

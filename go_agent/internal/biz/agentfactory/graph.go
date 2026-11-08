@@ -15,6 +15,7 @@ package agentfactory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,8 @@ const (
 	nodeWait = iota
 	nodeDone
 	nodeSkipped
+	// nodeFailed 节点失败 / 挂起：不再就绪，出边不放行（下游整段不执行）
+	nodeFailed
 )
 
 type graphRun struct {
@@ -173,6 +176,18 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			}
 			ans := answers[k]
 			if errs[k] != nil {
+				// 子任务挂起等审批：节点既不算完成也不出边（下游不激活），
+				// 整张图立刻停下。把它写成「节点完成 + [执行失败] 文本」会让
+				// 下游带着残缺上下文继续跑，等于审批没批就把后续动作做了。
+				if errors.Is(errs[k], ErrApprovalNeeded) {
+					r.nodeSt[i] = nodeFailed
+					rec.event(EventNode, rec.turn, map[string]any{
+						"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
+						"child_task_id": p.task.ID, "status": "paused",
+						"error": "等待人工审批",
+					})
+					return nil, childApprovalError(p.task, node.AgentKey)
+				}
 				ans = "[执行失败] " + errs[k].Error()
 			} else if sup != nil {
 				if v := u.superviseMember(ctx, rec.task, sup, node.AgentKey, p.input, ans, rec); v != nil {

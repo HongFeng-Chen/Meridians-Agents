@@ -221,6 +221,14 @@ var (
 	// ErrApprovalNeeded 哨兵错误：能力调用命中人工审批闸门，任务转入 paused。
 	// 上层（worker / 父任务）必须用 errors.Is 识别，不得当作普通失败处理。
 	ErrApprovalNeeded = fmt.Errorf("等待人工审批")
+	// ErrChildApprovalPending 子任务（委派 / 编排成员 / 图节点）挂起等待审批。
+	// 父任务不能继续执行（下游节点会带着缺失的上下文跑），也不能假装节点完成；
+	// 错误信息里带子任务 id，运营批准该子任务后它自行续跑。
+	ErrChildApprovalPending = fmt.Errorf("子任务等待人工审批")
+	// ErrApprovalSelfApprove 请求人自批高风险操作（违反四眼原则）
+	ErrApprovalSelfApprove = fmt.Errorf("不能批准自己发起的高风险操作（四眼原则）")
+	// ErrApprovalForbidden 非请求人且非管理员，无权审批
+	ErrApprovalForbidden = fmt.Errorf("无权审批该任务（需要管理员或请求人本人）")
 )
 
 // —— Agent 定义（DO） ——

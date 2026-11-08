@@ -9,6 +9,7 @@ import (
 
 	v1 "go_agent/api/agentfactory/v1"
 	"go_agent/internal/biz/agentfactory"
+	"go_agent/internal/pkg/identity"
 )
 
 type AgentFactoryService struct {
@@ -269,7 +270,13 @@ func (s *AgentFactoryService) RetryTask(ctx context.Context, req *v1.RetryTaskRe
 }
 
 func (s *AgentFactoryService) ApproveTask(ctx context.Context, req *v1.ApproveTaskRequest) (*v1.AgentTask, error) {
-	if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
+	// 审批是「独立审批人」的职责：管理员可跨用户审批；非管理员只能看到自己的任务，
+	// 且高风险操作不能自批（四眼原则在 biz 层强制，这里只做可见范围）。
+	if identity.AdminAllowed(ctx) {
+		if _, err := s.uc.GetTask(ctx, req.GetId()); err != nil {
+			return nil, mapAgentFactoryErr(err)
+		}
+	} else if _, err := s.ensureTaskOwned(ctx, req.GetId()); err != nil {
 		return nil, err
 	}
 	decision := strings.ToLower(strings.TrimSpace(req.GetDecision()))

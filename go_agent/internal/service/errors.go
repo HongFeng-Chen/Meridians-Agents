@@ -46,6 +46,11 @@ func upstreamErr(msg string) error {
 	return kerrors.New(502, "BAD_GATEWAY", msg)
 }
 
+// forbidden 无权限（403）：身份可信但这个人不该做这件事
+func forbidden(reason, msg string) error {
+	return kerrors.New(403, reason, msg)
+}
+
 // internalErr 兜底（500）。已经是带 code 的 kratos 错误时原样返回，
 // 避免把 400 包成 500。
 func internalErr(err error) error {
@@ -161,6 +166,10 @@ func mapAgentFactoryErr(err error) error {
 		return notFound(err.Error())
 	case errors.Is(err, agentfactory.ErrDefExists):
 		return conflict(err.Error())
+	case errors.Is(err, agentfactory.ErrApprovalSelfApprove):
+		return forbidden("APPROVAL_SELF_APPROVE", err.Error())
+	case errors.Is(err, agentfactory.ErrApprovalForbidden):
+		return forbidden("APPROVAL_FORBIDDEN", err.Error())
 	case errors.Is(err, agentfactory.ErrInvalidDef), errors.Is(err, agentfactory.ErrInvalidTask),
 		errors.Is(err, agentfactory.ErrCapabilityDeny), errors.Is(err, agentfactory.ErrBootStrapDeny),
 		errors.Is(err, agentfactory.ErrQuotaExceeded), errors.Is(err, agentfactory.ErrTaskStateDeny),

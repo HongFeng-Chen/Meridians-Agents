@@ -437,7 +437,7 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 		maxTurns = 8
 	}
 	if st == nil {
-		st = &RunState{Seen: map[string]string{}, Approved: map[string]bool{}}
+		st = &RunState{Seen: map[string]string{}, Approvals: map[string]ApprovalGrant{}}
 	}
 	rec.st = st
 	// promptChars 每轮现算：与逐轮累加等价（累加的就是 system+seed+各段），
@@ -524,15 +524,9 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 		}
 		rec.event(EventToolCall, t, map[string]any{"name": name, "args": args})
 
-		// 人工审批闸门（O3）：命中 require_approval 且未批准 → 落 checkpoint + paused 事件，
-		// 以哨兵错误上抛（executeTaskNow 置 paused，批准后续跑）
-		if needApproval(def, st, name) {
-			st.Cursor = approvalCursor(name)
-			rec.checkpoint(st.Cursor)
-			rec.event(EventPaused, t, map[string]any{"ability": name, "args": args, "reason": "require_approval"})
-			return nil, ErrApprovalNeeded
-		}
-
+		// 人工审批闸门（O3 / P1-04）：统一在 InvokeDispatch 里判定（authorize 之后、
+		// 执行之前），这里不再单独拦截——放在循环里会让 router / function_call
+		// 这两条不经过 runToolLoop 的路径绕过闸门。
 		// 同任务内去重：完全相同的能力 + 参数直接复用结果，提示模型别重复调用
 		var section string
 		key := name + "|" + argsKey(args)
@@ -542,8 +536,10 @@ func (u *UseCase) runToolLoop(ctx context.Context, def *AgentDef, system, seed s
 		} else {
 			observation, callErr := u.InvokeDispatch(ctx, name, args, rec)
 			if callErr != nil {
-				if errors.Is(callErr, ErrApprovalNeeded) {
+				if errors.Is(callErr, ErrApprovalNeeded) || errors.Is(callErr, ErrChildApprovalPending) {
 					// 审批挂起是硬状态：不能当观察结果喂回模型，原样上抛
+					// （子任务挂起同理——父任务不能一边等审批一边"继续想办法"，
+					// 那等于绕开审批拿别的路径把事做了）
 					return nil, callErr
 				}
 				observation = "[能力调用失败] " + callErr.Error()
@@ -654,6 +650,11 @@ func (u *UseCase) runChildTask(ctx context.Context, parent *Task, agentKey, inpu
 
 	answer, err := u.executeTaskNow(ctx, child, def)
 	if err != nil {
+		// 子任务挂起等审批：不能折成「普通失败」往上抛——父任务会把它当成
+		// 一次失败继续推理，等于用别的路径把被审批挡住的事做掉。
+		if errors.Is(err, ErrApprovalNeeded) {
+			return child, "", childApprovalError(child, agentKey)
+		}
 		return child, "", err
 	}
 	return child, answer, nil
