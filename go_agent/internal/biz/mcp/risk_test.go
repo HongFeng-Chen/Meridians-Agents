@@ -98,12 +98,12 @@ func TestToolApprovalFlow(t *testing.T) {
 	}
 
 	// 自己批自己 → 拒绝（四眼原则）
-	if _, err := DecideToolApproval(a.ID, "alice", true, "自己批"); !errors.Is(err, ErrApprovalSelfApprove) {
+	if _, err := DecideToolApproval(a.ID, "alice", true, "自己批", false); !errors.Is(err, ErrApprovalSelfApprove) {
 		t.Fatalf("自批应被拒绝，实际 %v", err)
 	}
 
 	// 管理员批准
-	if _, err := DecideToolApproval(a.ID, "admin", true, "确认删除测试库"); err != nil {
+	if _, err := DecideToolApproval(a.ID, "admin", true, "确认删除测试库", false); err != nil {
 		t.Fatalf("批准失败: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestToolApprovalDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("申请审批失败: %v", err)
 	}
-	if _, err := DecideToolApproval(a.ID, "admin", false, "不允许"); err != nil {
+	if _, err := DecideToolApproval(a.ID, "admin", false, "不允许", false); err != nil {
 		t.Fatalf("驳回失败: %v", err)
 	}
 	if err := ConsumeToolApproval(a.ID, "bob", "t1", tool, nil); !errors.Is(err, ErrApprovalDenied) {
@@ -149,7 +149,7 @@ func TestToolApprovalExpired(t *testing.T) {
 		t.Fatalf("申请审批失败: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	if _, err := DecideToolApproval(a.ID, "admin", true, ""); err == nil {
+	if _, err := DecideToolApproval(a.ID, "admin", true, "", false); err == nil {
 		t.Fatal("过期审批单不应还能被批准")
 	}
 }
@@ -160,11 +160,33 @@ func TestToolApprovalCrossUser(t *testing.T) {
 
 	tool := Tool{UniqueName: "srv__delete_ns", ToolName: "delete_ns"}
 	a, _ := RequestToolApproval(tool, nil, "alice", "t1")
-	if _, err := DecideToolApproval(a.ID, "admin", true, ""); err != nil {
+	if _, err := DecideToolApproval(a.ID, "admin", true, "", false); err != nil {
 		t.Fatalf("批准失败: %v", err)
 	}
 	// 别人拿到令牌也不能用：绑定的是申请人与租户
 	if err := ConsumeToolApproval(a.ID, "mallory", "t1", tool, nil); err == nil {
 		t.Fatal("他人的审批令牌不应可用")
+	}
+}
+
+// TestToolApprovalDevSelfApprove 开发态（单身份）允许自批，生产态禁止。
+func TestToolApprovalDevSelfApprove(t *testing.T) {
+	SetApprovalStore(&memoryApprovalStore{items: map[string]*ToolApproval{}})
+	setApprovalPolicy(approvalPolicy{Threshold: RiskDestructive, TTL: time.Minute})
+
+	tool := Tool{UniqueName: "srv__drop_index", ToolName: "drop_index"}
+	a, _ := RequestToolApproval(tool, nil, "default", "public")
+
+	// 生产态：自批被拒
+	if _, err := DecideToolApproval(a.ID, "default", true, "", false); !errors.Is(err, ErrApprovalSelfApprove) {
+		t.Fatalf("生产态自批应被拒绝，实际 %v", err)
+	}
+	// 开发态：允许，且注释里留下痕迹
+	got, err := DecideToolApproval(a.ID, "default", true, "", true)
+	if err != nil {
+		t.Fatalf("开发态自批应放行: %v", err)
+	}
+	if got.Comment == "" {
+		t.Error("开发态自批应写入说明，便于审计追溯")
 	}
 }

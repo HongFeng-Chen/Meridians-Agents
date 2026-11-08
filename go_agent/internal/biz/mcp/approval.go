@@ -313,7 +313,11 @@ func ConsumeToolApproval(id, userID, tenantID string, t Tool, args map[string]an
 
 // DecideToolApproval 批准或驳回（approver 必须是管理员，由调用方保证；
 // 这里只保证「不能自己批自己」）。
-func DecideToolApproval(id, approver string, approve bool, comment string) (*ToolApproval, error) {
+//
+// allowSelf 只在「认证关闭的开发态」由调用方置 true：单机开发时系统里只有
+// 一个身份，坚持四眼原则会让流程不可用（同一个人本可以直接把
+// MCP_TOOL_APPROVAL_LEVEL 设成 none）。这类自批会在审计里单独标注。
+func DecideToolApproval(id, approver string, approve bool, comment string, allowSelf bool) (*ToolApproval, error) {
 	return DefaultApprovalStore().Update(id, func(a *ToolApproval) error {
 		if a.Status != ApprovalPending {
 			return fmt.Errorf("%w: 当前状态 %s 不能审批", ErrApprovalInvalid, a.Status)
@@ -325,8 +329,12 @@ func DecideToolApproval(id, approver string, approve bool, comment string) (*Too
 		if strings.TrimSpace(approver) == "" {
 			return fmt.Errorf("%w: 审批人不能为空", ErrApprovalInvalid)
 		}
+		selfApproved := false
 		if strings.EqualFold(strings.TrimSpace(approver), a.UserID) {
-			return ErrApprovalSelfApprove
+			if !allowSelf {
+				return ErrApprovalSelfApprove
+			}
+			selfApproved = true
 		}
 		if approve {
 			a.Status = ApprovalApproved
@@ -336,6 +344,9 @@ func DecideToolApproval(id, approver string, approve bool, comment string) (*Too
 		a.DecidedAt = time.Now()
 		a.DecidedBy = approver
 		a.Comment = strings.TrimSpace(comment)
+		if selfApproved && a.Comment == "" {
+			a.Comment = "开发态自批（认证关闭，单身份）"
+		}
 		return nil
 	})
 }

@@ -432,6 +432,8 @@ curl -s -X POST http://localhost:8000/api/mcp/tools/12/call   -H 'Content-Type: 
 ```
 
 令牌绑定 `(申请人, 租户, 工具, 参数指纹)`，一次性、默认 5 分钟过期；参数改一个字符就得重新申请。
+审批遵循四眼原则（不能批自己发起的）；**只在认证关闭的开发态**允许自批，且在审计里标注
+`self_approved=true`——单机开发时系统里只有一个身份，坚持四眼原则只会让流程不可用。
 
 Agent 运行期同一套口径：`needApproval` 对 `mcp:` 能力先做静态风险判定——高危工具即便没写进
 `require_approval` 也会挂起等审批（LLM 生成定义时漏写是常态，漏写的代价是一条 `DELETE` 直接打到生产库）。

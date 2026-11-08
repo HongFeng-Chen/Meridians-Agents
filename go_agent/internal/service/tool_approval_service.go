@@ -117,17 +117,20 @@ func (s *MCPService) DecideToolApproval(ctx context.Context, id, comment string,
 	if err := requireAdmin(ctx, action); err != nil {
 		return nil, err
 	}
-	a, err := mcp.DecideToolApproval(id, identity.UserID(ctx), approve, comment)
+	// 开发态（认证关闭）系统里只有一个身份，允许自批并在审计里标注
+	info := identity.From(ctx)
+	a, err := mcp.DecideToolApproval(id, info.UserID, approve, comment, info.Auth == "dev")
 	if err != nil {
 		return nil, mapApprovalErr(err)
 	}
 	auditEvent(ctx, "mcp.tool.approval", action, map[string]any{
-		"approval_id": a.ID,
-		"tool":        a.ToolName,
-		"risk":        string(a.Risk),
-		"requester":   a.UserID,
-		"decision":    string(a.Status),
-		"comment":     a.Comment,
+		"approval_id":   a.ID,
+		"tool":          a.ToolName,
+		"risk":          string(a.Risk),
+		"requester":     a.UserID,
+		"decision":      string(a.Status),
+		"comment":       a.Comment,
+		"self_approved": strings.EqualFold(a.DecidedBy, a.UserID),
 	})
 	return a, nil
 }
