@@ -228,8 +228,10 @@ func (in *ServerInput) Normalize() error {
 			return fmt.Errorf("%w: endpoint 需以 http:// 或 https:// 开头", ErrInvalidServer)
 		}
 	case TransportStdio:
-		if in.Command == "" {
-			return fmt.Errorf("%w: stdio 模式必须填 command", ErrInvalidServer)
+		// stdio 会在后端 exec 子进程：走统一策略（默认拒绝 + 白名单 + 路径/参数/环境校验），
+		// 不能只校验 command 非空，否则管理面一旦失守就是远程命令执行。
+		if err := ValidateStdio(in.Command, in.Args, in.Env); err != nil {
+			return err
 		}
 	case TransportProxy:
 		cfg, err := DecodeProxySpec(in.ProxyConfig)

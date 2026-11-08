@@ -55,6 +55,7 @@ func NewHTTPServer(
 	harnessSvc *service.HarnessService,
 ) *http.Server {
 	g := newGate(sec)
+	warnInsecureExposure(sec, c.GetHttp().GetAddr())
 	var opts = []http.ServerOption{
 		// multipart 解码器：/api/extract、/api/upload 走文件上传，
 		// Kratos 默认解码器不认 multipart/form-data（详见 internal/pkg/httpx）

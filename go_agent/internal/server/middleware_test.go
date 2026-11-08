@@ -96,3 +96,64 @@ func withToken(ctx context.Context, token string) context.Context {
 	req.Header.Set("Authorization", "Bearer "+token)
 	return transport.NewServerContext(ctx, &fakeTransport{req: req, op: "/api/conversations"})
 }
+
+// withRemote 构造带 RemoteAddr 的 HTTP transport 上下文（模拟不同来源的请求）。
+func withRemote(ctx context.Context, addr, path string) context.Context {
+	req, _ := http.NewRequest(http.MethodPost, path, nil)
+	req.RemoteAddr = addr
+	return transport.NewServerContext(ctx, &fakeTransport{req: req, op: path})
+}
+
+// TestDevModeAdminOnlyFromLoopback 认证关闭时：
+// 本机回环 → 视为本机管理员（保证开发可用）；远程匿名 → 一律不是管理员。
+// 这是 P0 的核心闸门：AUTH_ENABLED=false + 0.0.0.0 监听时不能让公网配置 MCP。
+func TestDevModeAdminOnlyFromLoopback(t *testing.T) {
+	g := newGate(&conf.Security{Auth: &conf.Auth{DevUser: "dev", DevTenant: "dev"}})
+	var got identity.Info
+	h := g.middleware()(func(ctx context.Context, _ any) (any, error) {
+		got = identity.From(ctx)
+		return nil, nil
+	})
+
+	// 1) 远程来源：放行认证（开发态不拦业务），但没有管理权限
+	if _, err := h(withRemote(context.Background(), "203.0.113.9:40000", "/api/mcp/servers"), nil); err != nil {
+		t.Fatalf("开发态不应报认证错误: %v", err)
+	}
+	if got.Local || got.Admin || identity.AdminAllowed(identity.With(context.Background(), got)) {
+		t.Fatalf("远程匿名请求不应获得管理权限: %+v", got)
+	}
+
+	// 2) 回环来源：允许本机管理
+	if _, err := h(withRemote(context.Background(), "127.0.0.1:40000", "/api/mcp/servers"), nil); err != nil {
+		t.Fatalf("回环请求不应报错: %v", err)
+	}
+	if !got.Local || !identity.AdminAllowed(identity.With(context.Background(), got)) {
+		t.Fatalf("回环请求应获得管理权限: %+v", got)
+	}
+}
+
+// TestStaticTokenAdminSegment 静态令牌 user:tenant:admin 才授予管理员
+func TestStaticTokenAdminSegment(t *testing.T) {
+	g := newGate(&conf.Security{Auth: &conf.Auth{
+		Enabled:      true,
+		JwtSecret:    "s",
+		StaticTokens: map[string]string{"admin-tok": "ops:acme:admin", "user-tok": "dev:acme"},
+	}})
+	var got identity.Info
+	h := g.middleware()(func(ctx context.Context, _ any) (any, error) {
+		got = identity.From(ctx)
+		return nil, nil
+	})
+	if _, err := h(withToken(context.Background(), "admin-tok"), nil); err != nil {
+		t.Fatalf("admin 令牌应放行: %v", err)
+	}
+	if !got.Admin {
+		t.Fatalf("admin-tok 应为管理员: %+v", got)
+	}
+	if _, err := h(withToken(context.Background(), "user-tok"), nil); err != nil {
+		t.Fatalf("普通令牌应放行: %v", err)
+	}
+	if got.Admin {
+		t.Fatalf("user-tok 不应为管理员: %+v", got)
+	}
+}

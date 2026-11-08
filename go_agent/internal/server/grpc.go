@@ -43,6 +43,7 @@ func NewGRPCServer(
 	aiPlatformSvc *service.AIPlatformService,
 	harnessSvc *service.HarnessService,
 ) *grpc.Server {
+	warnInsecureExposure(sec, c.GetGrpc().GetAddr())
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),

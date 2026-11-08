@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -314,6 +315,14 @@ func TestStdioTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("取测试二进制路径: %v", err)
 	}
+	// stdio 策略默认拒绝，测试需显式放行「测试二进制所在目录」
+	mcp.SetStdioPolicy(mcp.StdioPolicy{
+		Enabled:     true,
+		AllowedDirs: []string{filepath.Dir(exe)},
+		MaxArgs:     8,
+		MaxEnv:      8,
+	})
+	t.Cleanup(func() { mcp.SetStdioPolicy(mcp.StdioPolicy{}) })
 	srv := mcp.Server{
 		ID:        1,
 		Transport: mcp.TransportStdio,

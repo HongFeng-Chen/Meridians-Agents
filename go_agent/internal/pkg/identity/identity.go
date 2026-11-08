@@ -22,8 +22,14 @@ type ctxKey struct{}
 type Info struct {
 	UserID   string
 	TenantID string
-	// Auth 凭证来源：jwt / dev（便于审计与排错）
+	// Auth 凭证来源：jwt / static / dev / none（便于审计与排错）
 	Auth string
+	// Admin 是否为管理员（来自 JWT 的 role/roles claim 或静态令牌的第三段）。
+	// 注意：这是「权限」而不是「身份」——登录用户默认不是管理员。
+	Admin bool
+	// Local 请求是否来自回环地址。仅在认证关闭的开发态下用于放行本机管理操作，
+	// 防止「AUTH_ENABLED=false + 0.0.0.0 监听」把管理面裸奔到公网。
+	Local bool
 }
 
 // With 把身份写入 context。空值自动回落到默认身份。
@@ -56,3 +62,21 @@ func UserID(ctx context.Context) string { return From(ctx).UserID }
 
 // TenantID 当前租户标识（限流、预算、账单的作用域键）。
 func TenantID(ctx context.Context) string { return From(ctx).TenantID }
+
+// AdminAllowed 是否允许执行平台管理操作（MCP 服务配置、Skill 安装等）。
+//
+// 规则刻意保守：
+//   - 有效凭证 + role=admin → 允许；
+//   - 认证关闭的开发态（Auth=dev）且请求来自回环地址 → 允许，保证本机开发可用；
+//   - 其余一律拒绝。特别是「认证关闭 + 远程请求」必须拒绝：
+//     否则任何能访问端口的人都能创建 stdio MCP 服务，等价于远程命令执行。
+func AdminAllowed(ctx context.Context) bool {
+	info := From(ctx)
+	if info.Admin {
+		return true
+	}
+	return info.Auth == "dev" && info.Local
+}
+
+// IsAdmin 仅看显式管理员标记（不包含开发态回环放行），用于审计与日志。
+func IsAdmin(ctx context.Context) bool { return From(ctx).Admin }

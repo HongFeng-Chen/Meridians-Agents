@@ -78,6 +78,9 @@ func (s *MCPService) ListMCPServers(ctx context.Context, req *v1.ListMCPServersR
 
 // CreateMCPServer 新增服务。
 func (s *MCPService) CreateMCPServer(ctx context.Context, req *v1.CreateMCPServerRequest) (*v1.MCPServer, error) {
+	if err := requireAdmin(ctx, "mcp.server.create"); err != nil {
+		return nil, err
+	}
 	in, err := serverInput(req.GetName(), req.GetNamespace(), req.GetTransport(), req.GetDescription(),
 		req.GetEndpoint(), req.GetHeaders(), req.GetCommand(), req.GetArgs(), req.GetEnv(),
 		req.GetHealthCheckInterval(), req.GetEnabled(), req.GetProxyConfig())
@@ -103,6 +106,9 @@ func (s *MCPService) CreateMCPServer(ctx context.Context, req *v1.CreateMCPServe
 
 // UpdateMCPServer 更新服务。
 func (s *MCPService) UpdateMCPServer(ctx context.Context, req *v1.UpdateMCPServerRequest) (*v1.MCPServer, error) {
+	if err := requireAdmin(ctx, "mcp.server.update"); err != nil {
+		return nil, err
+	}
 	in, err := serverInput(req.GetName(), req.GetNamespace(), req.GetTransport(), req.GetDescription(),
 		req.GetEndpoint(), req.GetHeaders(), req.GetCommand(), req.GetArgs(), req.GetEnv(),
 		req.GetHealthCheckInterval(), req.GetEnabled(), req.GetProxyConfig())
@@ -135,6 +141,9 @@ func (s *MCPService) GetMCPServer(ctx context.Context, req *v1.GetMCPServerReque
 
 // DeleteMCPServer 删除服务。
 func (s *MCPService) DeleteMCPServer(ctx context.Context, req *v1.DeleteMCPServerRequest) (*v1.DeleteMCPServerReply, error) {
+	if err := requireAdmin(ctx, "mcp.server.delete"); err != nil {
+		return nil, err
+	}
 	if err := s.uc.DeleteServer(ctx, req.GetId()); err != nil {
 		return nil, mapMCPErr(err)
 	}
@@ -143,6 +152,9 @@ func (s *MCPService) DeleteMCPServer(ctx context.Context, req *v1.DeleteMCPServe
 
 // ToggleMCPServer 启停服务。
 func (s *MCPService) ToggleMCPServer(ctx context.Context, req *v1.ToggleMCPServerRequest) (*v1.MCPServer, error) {
+	if err := requireAdmin(ctx, "mcp.server.toggle"); err != nil {
+		return nil, err
+	}
 	sv, err := s.uc.SetServerEnabled(ctx, req.GetId(), req.GetEnabled())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -152,6 +164,9 @@ func (s *MCPService) ToggleMCPServer(ctx context.Context, req *v1.ToggleMCPServe
 
 // ConnectMCPServer 建立连接。
 func (s *MCPService) ConnectMCPServer(ctx context.Context, req *v1.ConnectMCPServerRequest) (*v1.MCPStatus, error) {
+	if err := requireAdmin(ctx, "mcp.server.connect"); err != nil {
+		return nil, err
+	}
 	st, err := s.uc.ConnectServer(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -161,6 +176,9 @@ func (s *MCPService) ConnectMCPServer(ctx context.Context, req *v1.ConnectMCPSer
 
 // DisconnectMCPServer 断开连接。
 func (s *MCPService) DisconnectMCPServer(ctx context.Context, req *v1.DisconnectMCPServerRequest) (*v1.MCPStatus, error) {
+	if err := requireAdmin(ctx, "mcp.server.disconnect"); err != nil {
+		return nil, err
+	}
 	st, err := s.uc.DisconnectServer(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -170,6 +188,9 @@ func (s *MCPService) DisconnectMCPServer(ctx context.Context, req *v1.Disconnect
 
 // PingMCPServer 探活。
 func (s *MCPService) PingMCPServer(ctx context.Context, req *v1.PingMCPServerRequest) (*v1.MCPStatus, error) {
+	if err := requireAdmin(ctx, "mcp.server.ping"); err != nil {
+		return nil, err
+	}
 	st, err := s.uc.PingServer(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -179,6 +200,9 @@ func (s *MCPService) PingMCPServer(ctx context.Context, req *v1.PingMCPServerReq
 
 // SyncMCPServer 同步工具清单。
 func (s *MCPService) SyncMCPServer(ctx context.Context, req *v1.SyncMCPServerRequest) (*v1.SyncMCPServerReply, error) {
+	if err := requireAdmin(ctx, "mcp.server.sync"); err != nil {
+		return nil, err
+	}
 	res, err := s.uc.SyncTools(ctx, req.GetId())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -188,6 +212,9 @@ func (s *MCPService) SyncMCPServer(ctx context.Context, req *v1.SyncMCPServerReq
 
 // SyncAllMCPServers 同步全部启用服务。
 func (s *MCPService) SyncAllMCPServers(ctx context.Context, _ *v1.SyncAllMCPServersRequest) (*v1.SyncAllMCPServersReply, error) {
+	if err := requireAdmin(ctx, "mcp.server.sync_all"); err != nil {
+		return nil, err
+	}
 	list, err := s.uc.SyncAll(ctx)
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -201,6 +228,9 @@ func (s *MCPService) SyncAllMCPServers(ctx context.Context, _ *v1.SyncAllMCPServ
 
 // SetMCPClient 运行时替换 http.Client 参数。
 func (s *MCPService) SetMCPClient(ctx context.Context, req *v1.SetMCPClientRequest) (*v1.MCPStatus, error) {
+	if err := requireAdmin(ctx, "mcp.client.set"); err != nil {
+		return nil, err
+	}
 	opts := mcp.ClientOptions{}
 	if c := req.GetClient(); c != nil {
 		opts = mcp.ClientOptions{
@@ -247,6 +277,9 @@ func (s *MCPService) GetMCPTool(ctx context.Context, req *v1.GetMCPToolRequest) 
 
 // ToggleMCPTool 启停工具。
 func (s *MCPService) ToggleMCPTool(ctx context.Context, req *v1.ToggleMCPToolRequest) (*v1.MCPTool, error) {
+	if err := requireAdmin(ctx, "mcp.tool.toggle"); err != nil {
+		return nil, err
+	}
 	t, err := s.uc.SetToolEnabled(ctx, req.GetId(), req.GetEnabled())
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -256,6 +289,9 @@ func (s *MCPService) ToggleMCPTool(ctx context.Context, req *v1.ToggleMCPToolReq
 
 // DeleteMCPTool 删除工具。
 func (s *MCPService) DeleteMCPTool(ctx context.Context, req *v1.DeleteMCPToolRequest) (*v1.DeleteMCPToolReply, error) {
+	if err := requireAdmin(ctx, "mcp.tool.delete"); err != nil {
+		return nil, err
+	}
 	if err := s.uc.DeleteTool(ctx, req.GetId()); err != nil {
 		return nil, mapMCPErr(err)
 	}
@@ -307,6 +343,9 @@ func (s *MCPService) CallMCPToolByName(ctx context.Context, req *v1.CallMCPToolR
 
 // PreviewMCPProxySpec 预览 Swagger/OpenAPI 解析结果（保存代理前确认接口清单）。
 func (s *MCPService) PreviewMCPProxySpec(ctx context.Context, req *v1.PreviewMCPProxySpecRequest) (*v1.PreviewMCPProxySpecReply, error) {
+	if err := requireAdmin(ctx, "mcp.proxy.preview"); err != nil {
+		return nil, err
+	}
 	preview, err := s.uc.PreviewProxy(ctx, req.GetProxyConfig())
 	if err != nil {
 		return nil, mapMCPErr(err)

@@ -38,18 +38,21 @@ type Verifier struct {
 	Secret      []byte
 	UserClaim   string
 	TenantClaim string
+	// RoleClaim 角色 claim 名（默认 role；同时兼容 roles 数组与 is_admin 布尔）
+	RoleClaim string
 	// Static 静态 Token → 身份（可选）
 	Static map[string]identity.Info
 	// Now 可注入时钟（单测用），为零值时用 time.Now
 	Now func() time.Time
 }
 
-// New 构建校验器；claim 名为空时用默认值 sub / tenant_id。
+// New 构建校验器；claim 名为空时用默认值 sub / tenant_id / role。
 func New(secret string, static map[string]identity.Info) *Verifier {
 	return &Verifier{
 		Secret:      []byte(strings.TrimSpace(secret)),
 		UserClaim:   "sub",
 		TenantClaim: "tenant_id",
+		RoleClaim:   "role",
 		Static:      static,
 	}
 }
@@ -145,7 +148,19 @@ func (v *Verifier) verifyHS256(token string) (identity.Info, error) {
 	if tenant == "" {
 		tenant = identity.DefaultTenant
 	}
-	return identity.Info{UserID: user, TenantID: tenant, Auth: "jwt"}, nil
+	// 管理员判定只看签名后的 claim：登录 ≠ 管理员，管理面必须显式授权。
+	admin := false
+	roleClaim := firstNonEmpty(v.RoleClaim, "role")
+	for _, r := range append(stringListClaim(claims, roleClaim), stringListClaim(claims, "roles")...) {
+		if strings.EqualFold(r, "admin") || strings.EqualFold(r, "superadmin") {
+			admin = true
+			break
+		}
+	}
+	if b, ok := claims["is_admin"].(bool); ok && b {
+		admin = true
+	}
+	return identity.Info{UserID: user, TenantID: tenant, Auth: "jwt", Admin: admin}, nil
 }
 
 // stringClaim 读取字符串 claim（数字也转成字符串）。
@@ -186,4 +201,35 @@ func TokenFromHeader(v string) string {
 		return strings.TrimSpace(v[7:])
 	}
 	return v
+}
+
+// stringListClaim 读取「字符串或字符串数组」形式的 claim（role / roles 两种写法都认）。
+func stringListClaim(claims map[string]any, key string) []string {
+	if key == "" {
+		return nil
+	}
+	switch v := claims[key].(type) {
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			return []string{s}
+		}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }

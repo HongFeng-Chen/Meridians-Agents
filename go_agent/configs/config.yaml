@@ -10,6 +10,11 @@ server:
 # 网关安全边界：认证 / 限流 / 预算。三项都可独立开关。
 # 默认全关是为了本地开发开箱即跑——一旦要对外暴露端口，至少把 auth 打开：
 #   AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串> ./go_agent -conf configs
+#
+# ⚠ 管理面（MCP 服务配置、工具启停、连接管理等）另有硬性规则，与 auth 开关无关：
+#   - 只有携带 role=admin 的 JWT / 静态令牌（user:tenant:admin）才算管理员；
+#   - 认证关闭时仅放行「本机回环地址」的管理操作，远程请求一律 403。
+#   这样即便 AUTH_ENABLED=false 且监听 0.0.0.0，公网也无法创建 stdio MCP 服务。
 security:
   auth:
     enabled: ${AUTH_ENABLED:false}
@@ -158,3 +163,14 @@ data:
     # 超时则中断（任务保持 running，下次启动自动重跑）；建议小于编排层
     # 的 kill 期限（k8s terminationGracePeriodSeconds 默认 30s）
     shutdownTimeout: 20s
+
+# ── MCP stdio 传输执行策略（环境变量，默认全部拒绝）─────────────────────────
+# stdio 会在后端 exec 子进程，等价于代码执行面。默认关闭；启用时必须给白名单：
+#   MCP_STDIO_ENABLED=true
+#   MCP_STDIO_ALLOWED_COMMANDS=npx,uvx,node      # 允许的命令基名（逗号分隔）
+#   MCP_STDIO_ALLOWED_DIRS=/opt/mcp/bin          # command 用绝对路径时必须落在这些目录
+#   MCP_STDIO_ALLOW_SHELL=false                  # 是否放行 sh/bash/cmd 等 shell
+#   MCP_STDIO_ALLOW_CODE_EXEC=false              # 是否放行 python -c / node -e 内联代码
+#   MCP_STDIO_MAX_ARGS=32  MCP_STDIO_MAX_ENV=32
+# 危险环境变量（LD_PRELOAD / NODE_OPTIONS / PYTHONPATH / BASH_ENV 等）始终拒绝。
+# 写入（Normalize）与执行（Dail）两处都会校验，历史脏数据也拦得住。

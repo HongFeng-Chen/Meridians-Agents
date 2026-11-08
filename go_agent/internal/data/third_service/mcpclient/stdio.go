@@ -46,6 +46,11 @@ func newStdioClient(s mcp.Server) (*stdioClient, error) {
 	if name == "" {
 		return nil, fmt.Errorf("stdio 模式缺少 command")
 	}
+	// 执行前二次校验：库里可能已有历史数据，或有人绕过 API 直接写库。
+	// 策略默认拒绝（见 mcp.ValidateStdio），所以这里不是「重复校验」而是兜底。
+	if err := mcp.ValidateStdio(name, s.Args, s.Env); err != nil {
+		return nil, fmt.Errorf("stdio 命令被策略拒绝: %w", err)
+	}
 	args := append([]string(nil), s.Args...)
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" && isScript(name) {

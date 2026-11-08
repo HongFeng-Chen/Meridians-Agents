@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-kratos/kratos/v3/transport"
 	khttp "github.com/go-kratos/kratos/v3/transport/http"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 )
 
 // gate 网关策略集合：认证 + 限流。HTTP 与 gRPC 共用同一份实现，
@@ -50,11 +52,12 @@ func newGate(sec *conf.Security) *gate {
 
 	static := make(map[string]identity.Info, len(a.GetStaticTokens()))
 	for tok, id := range a.GetStaticTokens() {
-		user, tenant, _ := strings.Cut(id, ":")
+		user, tenant, role := parseStaticIdentity(id)
 		static[tok] = identity.Info{
-			UserID:   firstNonEmpty(strings.TrimSpace(user), identity.DefaultUser),
-			TenantID: firstNonEmpty(strings.TrimSpace(tenant), identity.DefaultTenant),
+			UserID:   firstNonEmpty(user, identity.DefaultUser),
+			TenantID: firstNonEmpty(tenant, identity.DefaultTenant),
 			Auth:     "static",
+			Admin:    strings.EqualFold(role, "admin"),
 		}
 	}
 	g.verifier = auth.New(a.GetJwtSecret(), static)
@@ -139,10 +142,16 @@ func (g *gate) middleware() middleware.Middleware {
 	return func(next middleware.Handler) middleware.Handler {
 		return func(ctx context.Context, req any) (any, error) {
 			if !g.authOn {
-				return next(identity.With(ctx, g.dev), req)
+				// 开发态：身份固定为 dev，但只有回环请求才被视为「本机管理员」。
+				// 这样 AUTH_ENABLED=false + 0.0.0.0 监听时，公网请求拿不到管理面权限。
+				info := g.dev
+				info.Local = isLoopbackCtx(ctx)
+				return next(identity.With(ctx, info), req)
 			}
 			if g.isPublic(requestPath(ctx)) {
-				return next(identity.With(ctx, g.dev), req)
+				info := g.dev
+				info.Local = isLoopbackCtx(ctx)
+				return next(identity.With(ctx, info), req)
 			}
 			info, err := g.verifier.Verify(g.token(ctx))
 			if err != nil {
@@ -151,6 +160,70 @@ func (g *gate) middleware() middleware.Middleware {
 			return next(identity.With(ctx, info), req)
 		}
 	}
+}
+
+// warnInsecureExposure 启动期安全检查：认证关闭 + 对外监听时给出明确告警。
+// 管理面已经做了回环限制（identity.AdminAllowed），但业务数据仍然可匿名读取，
+// 所以这不只是提示，而是对外部署前必须处理的配置项。
+func warnInsecureExposure(sec *conf.Security, addrs ...string) {
+	if sec.GetAuth().GetEnabled() {
+		return
+	}
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		host := addr
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		ip := net.ParseIP(host)
+		exposed := host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback())
+		if exposed {
+			log.Warn("认证未启用且监听地址对外暴露：管理面仅允许本机回环操作，远程请求会被 403",
+				"addr", addr,
+				"hint", "对外提供服务前请设置 AUTH_ENABLED=true，并给管理员令牌签发 role=admin",
+			)
+		}
+	}
+}
+
+// parseStaticIdentity 解析静态令牌身份 "user" / "user:tenant" / "user:tenant:admin"。
+func parseStaticIdentity(v string) (user, tenant, role string) {
+	parts := strings.SplitN(strings.TrimSpace(v), ":", 3)
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	switch len(parts) {
+	case 1:
+		return parts[0], "", ""
+	case 2:
+		return parts[0], parts[1], ""
+	default:
+		return parts[0], parts[1], parts[2]
+	}
+}
+
+// isLoopbackCtx 请求是否来自回环地址（HTTP 复用 mcp.go 的 isLoopback，gRPC 看 peer）。
+// gRPC 没有 RemoteAddr 为空的历史兼容问题，空地址一律视为非本机（fail-closed）。
+func isLoopbackCtx(ctx context.Context) bool {
+	if req, ok := khttp.RequestFromServerContext(ctx); ok && req != nil {
+		return isLoopback(req)
+	}
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		host := p.Addr.String()
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if host == "localhost" {
+			return true
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}
+	return false
 }
 
 // rateLimit 限流中间件：维度 = 租户 + 路由模板；超限返回 429 并带 Retry-After。

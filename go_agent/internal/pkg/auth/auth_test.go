@@ -90,3 +90,45 @@ func TestTokenFromHeader(t *testing.T) {
 		t.Fatalf("raw: %q", got)
 	}
 }
+
+// TestVerifyRoleClaim 管理员只能来自签名后的 role/roles claim：
+// 登录用户默认不是管理员（P0：MCP 管理面曾只认「已登录」）。
+func TestVerifyRoleClaim(t *testing.T) {
+	v := New("secret", nil)
+	exp := time.Now().Add(time.Hour).Unix()
+
+	cases := []struct {
+		name  string
+		claim map[string]any
+		want  bool
+	}{
+		{"字符串 admin", map[string]any{"sub": "u1", "exp": exp, "role": "admin"}, true},
+		{"数组含 admin", map[string]any{"sub": "u1", "exp": exp, "roles": []any{"user", "admin"}}, true},
+		{"布尔 is_admin", map[string]any{"sub": "u1", "exp": exp, "is_admin": true}, true},
+		{"普通用户", map[string]any{"sub": "u1", "exp": exp, "role": "user"}, false},
+		{"无角色", map[string]any{"sub": "u1", "exp": exp}, false},
+	}
+	for _, c := range cases {
+		info, err := v.Verify(sign(t, "secret", c.claim, "HS256"))
+		if err != nil {
+			t.Fatalf("%s: verify: %v", c.name, err)
+		}
+		if info.Admin != c.want {
+			t.Errorf("%s: Admin=%v, want %v", c.name, info.Admin, c.want)
+		}
+	}
+}
+
+// TestStaticTokenAdmin 静态令牌第三段 role=admin 才授予管理员
+func TestStaticTokenAdmin(t *testing.T) {
+	v := New("", map[string]identity.Info{
+		"tok-admin": {UserID: "ops", TenantID: "acme", Auth: "static", Admin: true},
+		"tok-user":  {UserID: "dev", TenantID: "acme", Auth: "static"},
+	})
+	if info, _ := v.Verify("tok-admin"); !info.Admin {
+		t.Fatal("tok-admin 应为管理员")
+	}
+	if info, _ := v.Verify("tok-user"); info.Admin {
+		t.Fatal("tok-user 不应为管理员")
+	}
+}
