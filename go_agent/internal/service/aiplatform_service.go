@@ -12,6 +12,7 @@ import (
 
 	v1 "go_agent/api/aiplatform/v1"
 	"go_agent/internal/biz/aiplatform"
+	"go_agent/internal/pkg/redact"
 )
 
 // AIPlatformService 外部 AI 平台接入面。
@@ -101,6 +102,18 @@ func (s *AIPlatformService) UpdatePlatform(ctx context.Context, req *v1.UpdatePl
 	}
 	if len(req.GetHeaders()) == 0 {
 		in.Headers = nil // 未传 headers 表示不改
+	} else {
+		// 读接口给的是掩码：写回时还原成旧值，否则「只改个描述」保存一次
+		// 就会把网关凭证写成 ******（凭证被悄悄换掉，鉴权全挂）
+		cur, gerr := s.uc.Get(ctx, req.GetName())
+		if gerr != nil {
+			return nil, mapAIPlatformErr(gerr)
+		}
+		var old map[string]string
+		if cur != nil {
+			old = cur.Headers
+		}
+		in.Headers = redact.MergeMasked(req.GetHeaders(), old)
 	}
 
 	p, warn, err := s.uc.Update(ctx, req.GetName(), in)
@@ -189,14 +202,15 @@ func toPlatform(p *aiplatform.Platform) *v1.Platform {
 		return nil
 	}
 	return &v1.Platform{
-		Id:             int64(p.ID),
-		Name:           p.Name,
-		Kind:           p.Kind,
-		BaseUrl:        p.BaseURL,
-		HasKey:         p.HasKey,
-		AuthScheme:     p.AuthScheme,
-		AuthHeader:     p.AuthHeader,
-		Headers:        p.Headers,
+		Id:         int64(p.ID),
+		Name:       p.Name,
+		Kind:       p.Kind,
+		BaseUrl:    p.BaseURL,
+		HasKey:     p.HasKey,
+		AuthScheme: p.AuthScheme,
+		AuthHeader: p.AuthHeader,
+		// 网关头可能带 Authorization / 签名，读接口只给键名 + 掩码（P1-03）
+		Headers:        redact.MaskMap(p.Headers),
 		CatalogPath:    p.CatalogPath,
 		StreamablePath: p.StreamablePath,
 		SsePath:        p.SSEPath,

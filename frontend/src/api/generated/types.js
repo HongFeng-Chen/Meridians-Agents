@@ -321,7 +321,8 @@
  * @property {MCPTool[]} [tools] - 详情接口返回，列表接口留空
  * @property {string} [created_at]
  * @property {string} [updated_at]
- * @property {string} [proxy_config] - proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+ * @property {string} [proxy_config] - proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）。 读接口返回的凭证字段已打码（值为 ******），写回该值表示「不修改」。
+ * @property {boolean} [has_credentials] - 是否配置了凭证（Authorization / token / password 等键存在且非空）。 读接口只给这个布尔，具体值一律不回显。
  */
 
 /**

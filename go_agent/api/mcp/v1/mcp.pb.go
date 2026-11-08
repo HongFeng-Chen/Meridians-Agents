@@ -361,10 +361,14 @@ type MCPServer struct {
 	Tools     []*MCPTool `protobuf:"bytes,15,rep,name=tools,proto3" json:"tools,omitempty"`
 	CreatedAt string     `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
 	UpdatedAt string     `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
-	// proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
-	ProxyConfig   string `protobuf:"bytes,18,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）。
+	// 读接口返回的凭证字段已打码（值为 ******），写回该值表示「不修改」。
+	ProxyConfig string `protobuf:"bytes,18,opt,name=proxy_config,proto3" json:"proxy_config,omitempty"`
+	// 是否配置了凭证（Authorization / token / password 等键存在且非空）。
+	// 读接口只给这个布尔，具体值一律不回显。
+	HasCredentials bool `protobuf:"varint,19,opt,name=has_credentials,proto3" json:"has_credentials,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MCPServer) Reset() {
@@ -521,6 +525,13 @@ func (x *MCPServer) GetProxyConfig() string {
 		return x.ProxyConfig
 	}
 	return ""
+}
+
+func (x *MCPServer) GetHasCredentials() bool {
+	if x != nil {
+		return x.HasCredentials
+	}
+	return false
 }
 
 // MCPStats 规模统计
@@ -2813,7 +2824,7 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x11 \x01(\tR\n" +
 	"updated_at\x12\x14\n" +
-	"\x05route\x18\x12 \x01(\tR\x05route\"\xd9\x05\n" +
+	"\x05route\x18\x12 \x01(\tR\x05route\"\x83\x06\n" +
 	"\tMCPServer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
@@ -2839,7 +2850,8 @@ const file_mcp_v1_mcp_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x11 \x01(\tR\n" +
 	"updated_at\x12\"\n" +
-	"\fproxy_config\x18\x12 \x01(\tR\fproxy_config\x1a:\n" +
+	"\fproxy_config\x18\x12 \x01(\tR\fproxy_config\x12(\n" +
+	"\x0fhas_credentials\x18\x13 \x01(\bR\x0fhas_credentials\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a6\n" +

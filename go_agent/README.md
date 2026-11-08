@@ -426,6 +426,23 @@ curl -H "Authorization: Bearer ops-token" -X POST .../api/mcp/servers
 **始终拒绝**（即便 `EGRESS_ALLOW_PRIVATE=true`）：`169.254.0.0/16` 链路本地（云元数据）、组播 / 保留段、
 `localhost`、`metadata.google.internal` 等元数据域名。旧的 `MCP_EGRESS_*` 变量名仍被识别。
 
+### MCP 凭证不回显
+
+MCP 服务的 `headers` / `env` / `proxy_config` 里是能直接用的凭证（`Authorization`、长期 token、
+数据库密码）。读接口不再原样返回（`internal/pkg/redact`）：
+
+| 接口 | 行为 |
+| --- | --- |
+| `GET /api/mcp/servers`、`GET /api/mcp/servers/{id}` | 值一律是 `******`，键名保留；另有 `has_credentials` 布尔 |
+| `POST` / `PUT` | 收到 `******` 表示「这次不改」，用旧值回填；空 map 同样表示不改 |
+| `proxy_config` | 按 JSON 结构递归打码（`auth.token`、`client_secret`、嵌套 `headers` 都覆盖），结构保留供前端编辑 |
+
+「写回掩码 = 保持原值」让前端不用改：表单原样提交不会把凭证写成 `******`。
+AI 平台接入面的网关头走同一套（`redact.MaskMap` / `redact.MergeMasked`）。
+
+> 边界：这是「不再复制扩散」，不是静态加密。落库仍是明文（`mcp_servers.headers`），
+> 真正的 KMS / Envelope Encryption 属于存储层改造，尚未做。
+
 ### 高危工具调用审批
 
 MCP 工具是远端定义的，`delete_repository` 一次调用就能造成不可逆损失。平台按三个信号给工具分级

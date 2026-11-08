@@ -83,8 +83,12 @@ message MCPServer {
   repeated MCPTool tools = 15 [json_name = "tools"];
   string created_at = 16 [json_name = "created_at"];
   string updated_at = 17 [json_name = "updated_at"];
-  // proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+  // proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）。
+  // 读接口返回的凭证字段已打码（值为 ******），写回该值表示「不修改」。
   string proxy_config = 18 [json_name = "proxy_config"];
+  // 是否配置了凭证（Authorization / token / password 等键存在且非空）。
+  // 读接口只给这个布尔，具体值一律不回显。
+  bool has_credentials = 19 [json_name = "has_credentials"];
 }
 
 // MCPStats 规模统计

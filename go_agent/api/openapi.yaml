@@ -5629,7 +5629,10 @@ components:
                     type: string
                 proxy_config:
                     type: string
-                    description: proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）
+                    description: "proxy 模式：Swagger/OpenAPI 导入配置（JSON 原文，结构见 ProxySpec）。\r\n 读接口返回的凭证字段已打码（值为 ******），写回该值表示「不修改」。"
+                has_credentials:
+                    type: boolean
+                    description: "是否配置了凭证（Authorization / token / password 等键存在且非空）。\r\n 读接口只给这个布尔，具体值一律不回显。"
             description: MCPServer MCP 服务
         mcp.v1.MCPStats:
             type: object

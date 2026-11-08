@@ -88,6 +88,10 @@ func (s *MCPService) CreateMCPServer(ctx context.Context, req *v1.CreateMCPServe
 	if err != nil {
 		return nil, mapMCPErr(err)
 	}
+	// 新建时掩码等于没填：不允许把 ****** 当成真实凭证存进去
+	in.Headers = mcp.MergeMaskedHeaders(in.Headers, nil)
+	in.Env = mcp.MergeMaskedHeaders(in.Env, nil)
+	in.ProxyConfig = mcp.MergeMaskedProxyConfig(in.ProxyConfig, "")
 	sv, err := s.uc.CreateServer(ctx, in)
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -110,12 +114,21 @@ func (s *MCPService) UpdateMCPServer(ctx context.Context, req *v1.UpdateMCPServe
 	if err := requireAdmin(ctx, "mcp.server.update"); err != nil {
 		return nil, err
 	}
+	old, err := s.uc.GetServer(ctx, req.GetId())
+	if err != nil {
+		return nil, mapMCPErr(err)
+	}
 	in, err := serverInput(req.GetName(), req.GetNamespace(), req.GetTransport(), req.GetDescription(),
 		req.GetEndpoint(), req.GetHeaders(), req.GetCommand(), req.GetArgs(), req.GetEnv(),
 		req.GetHealthCheckInterval(), req.GetEnabled(), req.GetProxyConfig())
 	if err != nil {
 		return nil, mapMCPErr(err)
 	}
+	// 读接口回的是掩码，写回时按「掩码 = 保持原值」还原：
+	// 否则用户只改个名字保存一次，Authorization 就被 ****** 覆盖了（凭证被悄悄清空）
+	in.Headers = mcp.MergeMaskedHeaders(in.Headers, old.Headers)
+	in.Env = mcp.MergeMaskedHeaders(in.Env, old.Env)
+	in.ProxyConfig = mcp.MergeMaskedProxyConfig(in.ProxyConfig, old.ProxyConfig)
 	sv, err := s.uc.UpdateServer(ctx, req.GetId(), in)
 	if err != nil {
 		return nil, mapMCPErr(err)
@@ -411,19 +424,22 @@ func serverInput(name, namespace, transport, desc, endpoint string, headers map[
 
 func toMCPServer(s *mcp.Server, withTools bool) *v1.MCPServer {
 	out := &v1.MCPServer{
-		Id:                  s.ID,
-		Name:                s.Name,
-		Namespace:           s.EffectiveNamespace(),
-		Transport:           s.Transport,
-		Enabled:             s.Enabled,
-		Description:         s.Description,
-		Endpoint:            s.Endpoint,
-		Headers:             s.Headers,
+		Id:          s.ID,
+		Name:        s.Name,
+		Namespace:   s.EffectiveNamespace(),
+		Transport:   s.Transport,
+		Enabled:     s.Enabled,
+		Description: s.Description,
+		Endpoint:    s.Endpoint,
+		// 凭证不回显（P1-03）：headers / env 只给键名 + 掩码，代理配置按 JSON 结构打码。
+		// 写接口收到掩码值会还原成旧值，所以「表单原样提交」不会抹掉凭证。
+		Headers:             mcp.MaskHeaders(s.Headers),
 		Command:             s.Command,
 		Args:                s.Args,
-		Env:                 s.Env,
+		Env:                 mcp.MaskHeaders(s.Env),
 		HealthCheckInterval: s.HealthCheckInterval,
-		ProxyConfig:         s.ProxyConfig,
+		ProxyConfig:         mcp.MaskProxyConfig(s.ProxyConfig),
+		HasCredentials:      mcp.ServerHasCredentials(s),
 		ToolCount:           int32(s.ToolCount),
 		Status:              toMCPStatus(s.Status),
 		CreatedAt:           formatTS(s.CreatedAt),
