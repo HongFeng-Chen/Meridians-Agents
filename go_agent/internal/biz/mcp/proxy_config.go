@@ -136,11 +136,17 @@ func (p *ProxySpec) Validate() error {
 	if p.SpecURL == "" && p.SpecText == "" {
 		return fmt.Errorf("%w: proxy 模式必须填 spec_url 或 spec_text", ErrInvalidServer)
 	}
-	if p.SpecURL != "" && !strings.HasPrefix(p.SpecURL, "http://") && !strings.HasPrefix(p.SpecURL, "https://") {
-		return fmt.Errorf("%w: spec_url 需以 http:// 或 https:// 开头", ErrInvalidServer)
+	// spec_url 与 base_url 都是服务端会主动去访问的地址，同样走
+	// 出站策略（SSRF）：否则「导入一份 Swagger」就能让后端去探测内网。
+	if p.SpecURL != "" {
+		if err := ValidateEgressURL(p.SpecURL); err != nil {
+			return err
+		}
 	}
-	if p.BaseURL != "" && !strings.HasPrefix(p.BaseURL, "http://") && !strings.HasPrefix(p.BaseURL, "https://") {
-		return fmt.Errorf("%w: base_url 需以 http:// 或 https:// 开头", ErrInvalidServer)
+	if p.BaseURL != "" {
+		if err := ValidateEgressURL(p.BaseURL); err != nil {
+			return err
+		}
 	}
 	if err := p.Auth.normalize(); err != nil {
 		return err

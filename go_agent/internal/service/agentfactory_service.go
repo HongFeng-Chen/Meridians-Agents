@@ -120,6 +120,10 @@ func (s *AgentFactoryService) SearchAgentDefs(ctx context.Context, req *v1.Searc
 }
 
 func (s *AgentFactoryService) SyncAgentVectors(ctx context.Context, _ *v1.SyncAgentVectorsRequest) (*v1.SyncAgentVectorsReply, error) {
+	// 全量重建向量索引：一次调用会扫全库并写 Milvus，属运维动作
+	if err := requireAdmin(ctx, "agentfactory.vectors.sync"); err != nil {
+		return nil, err
+	}
 	n, err := s.uc.SyncAllVectors(ctx)
 	if err != nil {
 		return nil, mapAgentFactoryErr(err)
@@ -147,6 +151,11 @@ func (s *AgentFactoryService) UpdateAgentDef(ctx context.Context, req *v1.Update
 }
 
 func (s *AgentFactoryService) DeleteAgentDef(ctx context.Context, req *v1.DeleteAgentDefRequest) (*v1.DeleteAgentDefReply, error) {
+	// Agent 定义是共享资产（没有 owner 字段，列表对所有调用方可见），
+	// 删除会把别人正在用的 Agent 一起摘掉，属于平台级操作。
+	if err := requireAdmin(ctx, "agentfactory.def.delete"); err != nil {
+		return nil, err
+	}
 	if err := s.uc.DeleteDef(ctx, req.GetId()); err != nil {
 		return nil, mapAgentFactoryErr(err)
 	}
@@ -154,6 +163,10 @@ func (s *AgentFactoryService) DeleteAgentDef(ctx context.Context, req *v1.Delete
 }
 
 func (s *AgentFactoryService) ToggleAgentDef(ctx context.Context, req *v1.ToggleAgentDefRequest) (*v1.AgentDef, error) {
+	// 启停是全局生效的（停用后它作为子 Agent 也调不起来），同样是平台级操作
+	if err := requireAdmin(ctx, "agentfactory.def.toggle"); err != nil {
+		return nil, err
+	}
 	def, err := s.uc.ToggleDef(ctx, req.GetId(), req.GetEnabled())
 	if err != nil {
 		return nil, mapAgentFactoryErr(err)

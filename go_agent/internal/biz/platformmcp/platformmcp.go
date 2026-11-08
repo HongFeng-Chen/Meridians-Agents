@@ -18,12 +18,13 @@ import (
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/conversation"
 	"go_agent/internal/biz/history"
+	"go_agent/internal/biz/mcp"
 )
 
 // 内置服务标识：MCP 服务名与命名空间都用 platform，
 // 工具唯一名即 platform__<tool>，能力名为 mcp:platform__<tool>。
 const (
-	ServerName = "platform"
+	ServerName = mcp.InternalServerName
 	Namespace  = "platform"
 )
 

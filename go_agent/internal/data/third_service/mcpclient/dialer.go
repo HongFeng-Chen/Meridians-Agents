@@ -66,7 +66,14 @@ func (p *HTTPClientProvider) Client(s mcp.Server, opts mcp.ClientOptions) *http.
 	if c, ok := p.cache[key]; ok {
 		return c
 	}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr := mcp.GuardedTransport(http.DefaultTransport.(*http.Transport), mcp.GuardOptions{
+		// 显式配置了代理时，真正 connect 的是代理地址（内网代理是常见做法），
+		// IP 段校验交给代理侧；目标主机仍受「保存时静态校验 + 重定向校验」约束。
+		//
+		// 平台内置服务（/mcp/platform）同样跳过：它的 endpoint 是本机回环地址，
+		// 由进程自己拼出来，不放行的话内置工具源在默认配置下直接不可用。
+		SkipDialCheck: strings.TrimSpace(opts.ProxyURL) != "" || mcp.IsInternalServer(s.Name),
+	})
 	tr.MaxIdleConnsPerHost = 16
 	if opts.InsecureTLS {
 		if tr.TLSClientConfig == nil {
@@ -84,6 +91,11 @@ func (p *HTTPClientProvider) Client(s mcp.Server, opts mcp.ClientOptions) *http.
 		timeout = time.Duration(opts.TimeoutSec) * time.Second
 	}
 	c := &http.Client{Transport: tr, Timeout: timeout}
+	internal := mcp.IsInternalServer(s.Name)
+	mcp.GuardRedirects(c, mcp.GuardOptions{
+		SkipDialCheck:     internal,
+		SkipRedirectCheck: internal,
+	})
 	p.cache[key] = c
 	return c
 }

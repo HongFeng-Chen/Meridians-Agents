@@ -15,6 +15,7 @@ import (
 
 	"go_agent/internal/biz/history"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/egress"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -410,7 +411,9 @@ func (u *UseCase) InstallFromHub(ctx context.Context, in InstallFromHubInput) (*
 // JSON 包按 {name,version,content,files} 解析。私有链接可传 token（Bearer）。
 func (u *UseCase) ImportFromURL(ctx context.Context, in ImportFromURLInput) (*Skill, error) {
 	raw := strings.TrimSpace(in.URL)
-	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+	// 出站闸门：技能包地址同样是「服务端替你去下载」，只校验前缀就能被当成
+	// 内网探测器（http://169.254.169.254/… 会被当技能包拉回来）。
+	if err := egress.ValidateURL(raw); err != nil {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidURL, raw)
 	}
 	pkg, err := u.hub.FetchURL(ctx, raw, strings.TrimSpace(in.Token))
@@ -663,8 +666,8 @@ func validateHub(h *Hub) error {
 	if !validName(h.Name) {
 		return fmt.Errorf("%w: 市场名称需为小写字母数字开头，可含 . _ -", ErrInvalidName)
 	}
-	if !strings.HasPrefix(h.BaseURL, "http://") && !strings.HasPrefix(h.BaseURL, "https://") {
-		return fmt.Errorf("%w: base_url 必须以 http:// 或 https:// 开头", ErrHubResponse)
+	if err := egress.ValidateURL(h.BaseURL); err != nil {
+		return fmt.Errorf("%w: base_url 不合法（%v）", ErrHubResponse, err)
 	}
 	return nil
 }

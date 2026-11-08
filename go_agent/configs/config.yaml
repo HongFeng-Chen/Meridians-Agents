@@ -174,3 +174,18 @@ data:
 #   MCP_STDIO_MAX_ARGS=32  MCP_STDIO_MAX_ENV=32
 # 危险环境变量（LD_PRELOAD / NODE_OPTIONS / PYTHONPATH / BASH_ENV 等）始终拒绝。
 # 写入（Normalize）与执行（Dail）两处都会校验，历史脏数据也拦得住。
+
+# ── 出站访问策略（防 SSRF，MCP http / Swagger 代理 / 技能包下载共用）──────────
+# 服务端会主动访问的地址全部来自管理面配置（MCP endpoint、spec_url、base_url、
+# 技能包 URL）。只校验 http(s):// 前缀等于把后端变成内网跳板，因此统一加三道闸：
+#   1. 保存时静态校验：scheme / userinfo / 字面 IP 段 / 主机白名单 / 端口；
+#   2. Dial 阶段：net.Dialer.Control 校验**解析后的 IP**（防 DNS rebinding）；
+#   3. 重定向：每一跳目标重新校验（防 302 到 169.254.169.254 取元数据凭据）。
+#   EGRESS_ALLOWED_HOSTS=mcp.example.com,.corp.internal   # 主机白名单；配了即白名单模式
+#   EGRESS_DENIED_HOSTS=evil.example.com                  # 额外拉黑，优先于白名单
+#   EGRESS_ALLOW_PRIVATE=false                            # 放行内网/回环（内网部署才开）
+#   EGRESS_ALLOWED_PORTS=443,8443                         # 端口白名单（空 = 不限）
+#   EGRESS_MAX_REDIRECTS=5                                # 最多跟几跳（0 = 不跟随）
+# 始终拒绝：链路本地段（169.254/16，云元数据）、组播、保留段、localhost、
+# metadata.google.internal 等元数据域名——即便 EGRESS_ALLOW_PRIVATE=true 也不放。
+# 兼容旧变量名 MCP_EGRESS_*（历史部署沿用此前缀即可，无需改配置）。

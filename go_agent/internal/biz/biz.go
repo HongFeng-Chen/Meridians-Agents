@@ -3,6 +3,7 @@ package biz
 import (
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/aiplatform"
+	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/conversation"
 	"go_agent/internal/biz/embedder"
 	"go_agent/internal/biz/history"
@@ -35,6 +36,10 @@ var ProviderSet = wire.NewSet(
 	// mcp.New 在 data.ProviderSet 里提供（依赖 dialer/client 等三方连接件），
 	// 这里只补 Embedder 绑定；history.Recorder 由下方 history.UseCase 实现。
 	wire.Bind(new(mcp.Embedder), new(*embedder.EmbeddingClient)),
+
+	// 审计事件：授权判定、管理面变更、高危工具调用落 audit_events 表，
+	// 异步批量写；同时注册为进程默认记录器（横切点直接用 audit.Emit）
+	audit.New,
 
 	// 统一操作历史：MCP 调用 / 技能使用 / 记忆召回 / RAG / GraphRAG 召回
 	// 五类记录落 op_histories，消费方经 history.Recorder 注入（可为 nil 不记录）

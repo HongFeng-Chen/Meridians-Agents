@@ -516,6 +516,20 @@ func (u *UseCase) GetTool(ctx context.Context, id uint64) (*Tool, error) {
 	return u.repo.GetTool(ctx, id)
 }
 
+// ResolveTool 按「id 或唯一名」定位工具（CallTool 的入参口径）。
+//
+// 单独抽出来是给调用前的闸门用：审批要拿工具的风险等级与唯一名做绑定，
+// 不能等到真正发请求时才知道调的是哪个工具。
+func (u *UseCase) ResolveTool(ctx context.Context, toolID uint64, uniqueName string) (*Tool, error) {
+	if toolID > 0 {
+		return u.repo.GetTool(ctx, toolID)
+	}
+	if strings.TrimSpace(uniqueName) == "" {
+		return nil, ErrToolNotFound
+	}
+	return u.repo.GetToolByUniqueName(ctx, uniqueName)
+}
+
 // SetToolEnabled 启停工具，并把状态同步进向量库（保证 is_enabled 标量可信）
 func (u *UseCase) SetToolEnabled(ctx context.Context, id uint64, enabled bool) (*Tool, error) {
 	if err := u.repo.SetToolEnabled(ctx, id, enabled); err != nil {

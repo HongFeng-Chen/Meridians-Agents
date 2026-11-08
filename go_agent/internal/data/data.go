@@ -78,6 +78,9 @@ var ProviderSet = wire.NewSet(
 	wire.Bind(new(skill.HubClient), new(*skillhub.Client)),
 	skill.New,
 
+	// 审计事件：audit_events 表（授权判定 / 管理面变更 / 高危工具调用），异步批量写入
+	dbrepo.NewAuditRepo,
+
 	// 统一操作历史：op_histories 表，五类「用到了什么」的记录
 	// （MCP 调用 / 技能使用 / 记忆召回 / RAG 召回 / GraphRAG 召回），异步写入
 	dbrepo.NewHistoryRepo,

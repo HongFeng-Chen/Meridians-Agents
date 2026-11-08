@@ -224,8 +224,11 @@ func (in *ServerInput) Normalize() error {
 		if in.Endpoint == "" {
 			return fmt.Errorf("%w: http 模式必须填 endpoint", ErrInvalidServer)
 		}
-		if !strings.HasPrefix(in.Endpoint, "http://") && !strings.HasPrefix(in.Endpoint, "https://") {
-			return fmt.Errorf("%w: endpoint 需以 http:// 或 https:// 开头", ErrInvalidServer)
+		// 出站闸门：只校验 http(s):// 前缀等于让后端当内网跳板（SSRF），
+		// 这里走统一策略（scheme / userinfo / 字面 IP 段 / 主机白名单 / 端口）。
+		// 解析后的 IP 校验在 Dial 阶段做，见 egress_transport.go。
+		if err := ValidateServerEndpoint(in.Name, in.Endpoint); err != nil {
+			return err
 		}
 	case TransportStdio:
 		// stdio 会在后端 exec 子进程：走统一策略（默认拒绝 + 白名单 + 路径/参数/环境校验），

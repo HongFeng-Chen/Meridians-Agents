@@ -18,6 +18,7 @@ import (
 	promptv1 "go_agent/api/prompt/v1"
 	ragv1 "go_agent/api/rag/v1"
 	skillv1 "go_agent/api/skill/v1"
+	"go_agent/internal/biz/audit"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/health"
 	"go_agent/internal/pkg/httpx"
@@ -53,6 +54,7 @@ func NewHTTPServer(
 	platformSvc *service.PlatformMCPService,
 	aiPlatformSvc *service.AIPlatformService,
 	harnessSvc *service.HarnessService,
+	auditUC *audit.UseCase,
 ) *http.Server {
 	g := newGate(sec)
 	warnInsecureExposure(sec, c.GetHttp().GetAddr())
@@ -115,6 +117,9 @@ func NewHTTPServer(
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, harnessSvc)
 	// /mcp/platform（平台内置 MCP 端点：任务中心 / 会话 / 链路数据，只读、仅本机）
 	registerPlatformMCP(srv, platformSvc)
+	// /api/mcp/tool-approvals/**（高危工具调用的审批：列表 / 批准 / 驳回）、
+	// /api/admin/audits（审计事件查询）——运维面接口，管理员限定
+	registerOpsRoutes(srv, mcpSvc, auditUC)
 	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
 	srv.HandlePrefix("/api/files/", filesHandler())
 	// /healthz（MySQL / Redis / Milvus 探活，供 LB 摘流）、/metrics（Prometheus 抓取）

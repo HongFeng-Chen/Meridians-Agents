@@ -8,7 +8,11 @@
 //   - 未注入时返回兜底值而非空串，保证单机开发与历史数据（user_id="default"）兼容。
 package identity
 
-import "context"
+import (
+	"context"
+	"os"
+	"strings"
+)
 
 // 兜底身份：未启用认证（本地开发、内网单机）时使用。
 const (
@@ -68,15 +72,36 @@ func TenantID(ctx context.Context) string { return From(ctx).TenantID }
 // 规则刻意保守：
 //   - 有效凭证 + role=admin → 允许；
 //   - 认证关闭的开发态（Auth=dev）且请求来自回环地址 → 允许，保证本机开发可用；
+//   - 认证关闭 + 显式开启 AUTH_DEV_TRUST_ALL=true → 允许（见下）；
 //   - 其余一律拒绝。特别是「认证关闭 + 远程请求」必须拒绝：
 //     否则任何能访问端口的人都能创建 stdio MCP 服务，等价于远程命令执行。
+//
+// AUTH_DEV_TRUST_ALL 是给**演示环境**留的显式逃生阀：单机演示时浏览器从另一台
+// 机器访问，回环判定不成立，管理操作会全 403。这个开关默认关闭，打开时启动日志
+// 会打 WARN——它把管理面重新变成了匿名可达，只在「确定不对外」的环境里用。
 func AdminAllowed(ctx context.Context) bool {
 	info := From(ctx)
 	if info.Admin {
 		return true
 	}
-	return info.Auth == "dev" && info.Local
+	if info.Auth != "dev" {
+		return false
+	}
+	return info.Local || devTrustAll
 }
+
+// DevTrustAll 是否开启了开发态「无条件信任」逃生阀（供启动告警使用）
+func DevTrustAll() bool { return devTrustAll }
+
+// devTrustAll AUTH_DEV_TRUST_ALL：认证关闭时把所有请求视为管理员。
+// 与 MCP_STDIO_* / EGRESS_* 一致，走环境变量，进程启动读一次。
+var devTrustAll = func() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AUTH_DEV_TRUST_ALL"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}()
 
 // IsAdmin 仅看显式管理员标记（不包含开发态回环放行），用于审计与日志。
 func IsAdmin(ctx context.Context) bool { return From(ctx).Admin }

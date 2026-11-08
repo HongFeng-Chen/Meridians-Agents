@@ -13,6 +13,7 @@ import (
 	"time"
 
 	v1 "go_agent/api/mcp/v1"
+	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/mcp"
 )
 
@@ -316,28 +317,43 @@ func (s *MCPService) SearchMCPTools(ctx context.Context, req *v1.SearchMCPToolsR
 }
 
 // CallMCPTool 按 id 调用工具。
+//
+// 调用前过风险闸门（见 tool_approval_service.go）：只读工具直接放行，
+// 写操作与高危工具需要一次性审批令牌，避免「调试接口」成为绕过审批的后门。
 func (s *MCPService) CallMCPTool(ctx context.Context, req *v1.CallMCPToolRequest) (*v1.CallMCPToolReply, error) {
 	args, err := parseCallArgs(req.GetArguments())
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.uc.CallTool(ctx, req.GetId(), req.GetUniqueName(), args)
-	if err != nil {
-		return nil, mapMCPErr(err)
-	}
-	return toCallReply(res), nil
-}
-
-// CallMCPToolByName 按唯一名调用工具。
-func (s *MCPService) CallMCPToolByName(ctx context.Context, req *v1.CallMCPToolRequest) (*v1.CallMCPToolReply, error) {
-	args, err := parseCallArgs(req.GetArguments())
+	t, err := s.guardToolCall(ctx, req.GetId(), req.GetUniqueName(), args)
 	if err != nil {
 		return nil, err
 	}
 	res, err := s.uc.CallTool(ctx, req.GetId(), req.GetUniqueName(), args)
 	if err != nil {
+		auditToolCall(ctx, *t, mcp.ClassifyToolRisk(*t), audit.ResultError, "", err.Error())
 		return nil, mapMCPErr(err)
 	}
+	auditToolCall(ctx, *t, mcp.ClassifyToolRisk(*t), audit.ResultAllowed, "", "")
+	return toCallReply(res), nil
+}
+
+// CallMCPToolByName 按唯一名调用工具（闸门同上）。
+func (s *MCPService) CallMCPToolByName(ctx context.Context, req *v1.CallMCPToolRequest) (*v1.CallMCPToolReply, error) {
+	args, err := parseCallArgs(req.GetArguments())
+	if err != nil {
+		return nil, err
+	}
+	t, err := s.guardToolCall(ctx, req.GetId(), req.GetUniqueName(), args)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.uc.CallTool(ctx, req.GetId(), req.GetUniqueName(), args)
+	if err != nil {
+		auditToolCall(ctx, *t, mcp.ClassifyToolRisk(*t), audit.ResultError, "", err.Error())
+		return nil, mapMCPErr(err)
+	}
+	auditToolCall(ctx, *t, mcp.ClassifyToolRisk(*t), audit.ResultAllowed, "", "")
 	return toCallReply(res), nil
 }
 

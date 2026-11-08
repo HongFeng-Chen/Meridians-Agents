@@ -39,6 +39,9 @@ const (
 type proxyEngine struct {
 	tokens sync.Map // key: auth cache key → tokenEntry
 	locks  sync.Map // key: auth cache key → *sync.Mutex（防并发重复换 token）
+
+	clientOnce sync.Once
+	httpClient *http.Client
 }
 
 type tokenEntry struct {
@@ -49,12 +52,20 @@ type tokenEntry struct {
 func newProxyEngine() *proxyEngine { return &proxyEngine{} }
 
 // client 按配置构造 http.Client（超时走配置，连接复用 default transport）。
+//
+// 出站校验：Swagger 代理打的是外部业务系统，地址完全来自管理面配置，
+// 因此同样要过 egress 闸门（Dial 阶段 IP 校验 + 重定向校验）。
 func (e *proxyEngine) client(cfg *ProxySpec) *http.Client {
 	timeout := defaultProxyTimeout
 	if cfg != nil && cfg.Request.TimeoutMS > 0 {
 		timeout = time.Duration(cfg.Request.TimeoutMS) * time.Millisecond
 	}
-	return &http.Client{Timeout: timeout}
+	e.clientOnce.Do(func() {
+		e.httpClient = GuardedClient(defaultProxyTimeout, GuardOptions{})
+	})
+	c := *e.httpClient // 浅拷贝：共用连接池，只按服务改超时
+	c.Timeout = timeout
+	return &c
 }
 
 // BuildTools 解析文档并生成工具清单（每次同步都重新解析）。

@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go_agent/internal/biz/mcp"
 )
 
 // RunState 一次任务执行的显式状态
@@ -153,13 +155,27 @@ func gatedDef(def *AgentDef) bool {
 	return len(def.RequireApproval) > 0 || strings.EqualFold(def.RiskPauseLevel, "high")
 }
 
-// needApproval 能力是否需要人工审批：require_approval 前缀匹配（尾部 * 通配），
-// 已批准过的能力直接放行（审批结果持久化在 RunState，续跑不重复问）
+// needApproval 能力是否需要人工审批，两条规则叠加：
+//
+//  1. require_approval 前缀匹配（尾部 * 通配）——人显式声明的清单；
+//  2. **静态风险闸门**：mcp: 前缀的能力若按工具名判定为高危（delete/drop/exec…），
+//     即便没写进 require_approval 也要审批。理由：Agent 的定义由 LLM 生成，
+//     指望它主动把每个高危工具都列进审批清单不现实；漏写的代价是一条 DELETE
+//     直接打到生产库。这条规则让「没声明」变成「默认需要人点一下」，
+//     误判的代价只是多点一次审批。
+//
+// 已批准过的能力直接放行（审批结果持久化在 RunState，续跑不重复问）。
 func needApproval(def *AgentDef, st *RunState, ability string) bool {
-	if def == nil || len(def.RequireApproval) == 0 {
+	if st != nil && st.approved(ability) {
 		return false
 	}
-	if st != nil && st.approved(ability) {
+	if strings.HasPrefix(ability, CapToolPrefix) {
+		tool := strings.TrimPrefix(ability, CapToolPrefix)
+		if mcp.ClassifyToolRisk(mcp.Tool{ToolName: tool}) == mcp.RiskDestructive {
+			return true
+		}
+	}
+	if def == nil || len(def.RequireApproval) == 0 {
 		return false
 	}
 	for _, p := range def.RequireApproval {

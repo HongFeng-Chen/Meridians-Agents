@@ -45,6 +45,7 @@ import (
 
 	"go_agent/internal/biz/skill"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/egress"
 )
 
 const (
@@ -66,12 +67,15 @@ type Client struct {
 var _ skill.HubClient = (*Client)(nil)
 
 // New 创建技能市场客户端；超时取 data.skill.httpTimeout
+//
+// 出站校验：市场地址与技能包 URL 都来自管理面配置（skill_hubs 表 / 安装表单），
+// 与 MCP endpoint 属于同一类 SSRF 入口，因此共用 pkg/egress 的 Dial 闸门。
 func New(c *conf.Data) *Client {
 	timeout := 30 * time.Second
 	if t := c.GetSkill().GetHttpTimeout().AsDuration(); t > 0 {
 		timeout = t
 	}
-	return &Client{http: &http.Client{Timeout: timeout}}
+	return &Client{http: egress.Client(timeout, egress.Options{})}
 }
 
 // —— 地址归一化 ——

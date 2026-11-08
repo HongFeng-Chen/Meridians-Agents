@@ -66,6 +66,11 @@ func (s *SkillService) GetSkill(ctx context.Context, req *v1.GetSkillRequest) (*
 
 // InstallSkill 手动安装/上传技能（同名视为升级）。
 func (s *SkillService) InstallSkill(ctx context.Context, req *v1.InstallSkillRequest) (*v1.Skill, error) {
+	// 安装技能 = 往磁盘写文件 + 让 Agent 获得新能力（技能正文会被拼进提示词），
+	// 属于平台级变更：登录用户 ≠ 管理员，走统一闸门。
+	if err := requireAdmin(ctx, "skill.install"); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.GetName()) == "" {
 		return nil, badRequest("请求体无效，需要 name 与 content（或 files）字段")
 	}
@@ -91,6 +96,9 @@ func (s *SkillService) InstallSkill(ctx context.Context, req *v1.InstallSkillReq
 
 // UninstallSkill 卸载技能。
 func (s *SkillService) UninstallSkill(ctx context.Context, req *v1.UninstallSkillRequest) (*v1.UninstallSkillReply, error) {
+	if err := requireAdmin(ctx, "skill.uninstall"); err != nil {
+		return nil, err
+	}
 	if err := s.uc.Uninstall(ctx, req.GetName()); err != nil {
 		return nil, mapSkillErr(err)
 	}
@@ -98,6 +106,9 @@ func (s *SkillService) UninstallSkill(ctx context.Context, req *v1.UninstallSkil
 }
 
 // EnableSkill 启用技能。
+//
+// 启停是「这份能力对当前工作区是否可见」的偏好设置，不改变磁盘内容，
+// 因此不接管理闸门——否则普通用户连自己装过的技能都关不掉。
 func (s *SkillService) EnableSkill(ctx context.Context, req *v1.ToggleSkillRequest) (*v1.Skill, error) {
 	sk, err := s.uc.Enable(ctx, req.GetName())
 	if err != nil {
@@ -165,6 +176,10 @@ func (s *SkillService) ReadSkillFile(ctx context.Context, req *v1.ReadSkillFileR
 
 // SyncSkills 把启用技能落盘到 sync_dir。
 func (s *SkillService) SyncSkills(ctx context.Context, _ *v1.SyncSkillsRequest) (*v1.SyncResult, error) {
+	// 同步会把启用技能整体落盘到 sync_dir（覆盖宿主机的技能目录），平台级变更
+	if err := requireAdmin(ctx, "skill.sync"); err != nil {
+		return nil, err
+	}
 	res, err := s.uc.Sync(ctx)
 	if err != nil {
 		return nil, mapSkillErr(err)
@@ -197,6 +212,10 @@ func (s *SkillService) SearchSkillhub(ctx context.Context, req *v1.SearchHubSkil
 
 // InstallFromHub 从技能市场安装。
 func (s *SkillService) InstallFromHub(ctx context.Context, req *v1.InstallFromHubRequest) (*v1.Skill, error) {
+	// 从市场下载并安装 = 引入外部代码与提示词，等同于 skill.install
+	if err := requireAdmin(ctx, "skill.install.hub"); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.GetName()) == "" {
 		return nil, badRequest("请求体无效，需要 name 字段")
 	}
@@ -214,6 +233,10 @@ func (s *SkillService) InstallFromHub(ctx context.Context, req *v1.InstallFromHu
 
 // ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
 func (s *SkillService) ImportSkillFromURL(ctx context.Context, req *v1.ImportSkillFromURLRequest) (*v1.Skill, error) {
+	// 服务端主动去拉取外部地址，既是安装动作也是出站请求，双重敏感
+	if err := requireAdmin(ctx, "skill.install.url"); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.GetUrl()) == "" {
 		return nil, badRequest("请求体无效，需要 url 字段")
 	}
@@ -250,6 +273,10 @@ func (s *SkillService) ListSkillhubHubs(ctx context.Context, req *v1.ListHubsReq
 
 // CreateHub 新增技能市场。
 func (s *SkillService) CreateHub(ctx context.Context, req *v1.CreateHubRequest) (*v1.Hub, error) {
+	// Hub 配置里带访问令牌，且决定后续所有技能包的下载来源 —— 平台级配置
+	if err := requireAdmin(ctx, "skill.hub.create"); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.GetName()) == "" || strings.TrimSpace(req.GetBaseUrl()) == "" {
 		return nil, badRequest("请求体无效，需要 name 与 base_url 字段")
 	}
@@ -269,6 +296,9 @@ func (s *SkillService) CreateHub(ctx context.Context, req *v1.CreateHubRequest) 
 
 // UpdateHub 修改技能市场。
 func (s *SkillService) UpdateHub(ctx context.Context, req *v1.UpdateHubRequest) (*v1.Hub, error) {
+	if err := requireAdmin(ctx, "skill.hub.update"); err != nil {
+		return nil, err
+	}
 	h, err := s.uc.UpdateHub(ctx, req.GetName(), skill.HubPatch{
 		BaseURL:     req.BaseUrl,
 		Token:       req.Token,
@@ -284,6 +314,9 @@ func (s *SkillService) UpdateHub(ctx context.Context, req *v1.UpdateHubRequest) 
 
 // DeleteHub 删除技能市场。
 func (s *SkillService) DeleteHub(ctx context.Context, req *v1.DeleteHubRequest) (*v1.DeleteHubReply, error) {
+	if err := requireAdmin(ctx, "skill.hub.delete"); err != nil {
+		return nil, err
+	}
 	if err := s.uc.DeleteHub(ctx, req.GetName()); err != nil {
 		return nil, mapSkillErr(err)
 	}
@@ -292,6 +325,9 @@ func (s *SkillService) DeleteHub(ctx context.Context, req *v1.DeleteHubRequest) 
 
 // SetDefaultHub 设为默认市场。
 func (s *SkillService) SetDefaultHub(ctx context.Context, req *v1.SetDefaultHubRequest) (*v1.Hub, error) {
+	if err := requireAdmin(ctx, "skill.hub.set_default"); err != nil {
+		return nil, err
+	}
 	h, err := s.uc.SetDefaultHub(ctx, req.GetName())
 	if err != nil {
 		return nil, mapSkillErr(err)

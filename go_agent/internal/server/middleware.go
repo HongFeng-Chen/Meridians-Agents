@@ -167,7 +167,18 @@ func (g *gate) middleware() middleware.Middleware {
 // 所以这不只是提示，而是对外部署前必须处理的配置项。
 func warnInsecureExposure(sec *conf.Security, addrs ...string) {
 	if sec.GetAuth().GetEnabled() {
+		if identity.DevTrustAll() {
+			log.Warn("AUTH_DEV_TRUST_ALL 已开启但认证是启用的：该开关只在认证关闭时生效，可忽略")
+		}
 		return
+	}
+	if identity.DevTrustAll() {
+		// 逃生阀是显式打开的，但它确实把管理面重新变成了匿名可达，
+		// 每次启动都提醒一次，避免「演示环境」悄无声息地变成生产配置。
+		log.Warn("AUTH_DEV_TRUST_ALL=true：认证关闭时所有请求都被当作管理员，"+
+			"管理面（MCP 配置 / 技能安装 / Agent 删除）对任何能访问端口的人开放——仅限不对外暴露的演示环境",
+			"advice", "生产环境请设置 AUTH_ENABLED=true 并签发 role=admin 的令牌，然后关闭该开关",
+		)
 	}
 	for _, addr := range addrs {
 		if addr == "" {

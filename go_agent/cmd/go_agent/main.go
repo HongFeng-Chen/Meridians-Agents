@@ -10,7 +10,11 @@ import (
 	"time"
 
 	"go_agent/internal/biz/agentfactory"
+	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/mcp"
 	"go_agent/internal/conf"
+	"go_agent/internal/pkg/egress"
+	"go_agent/internal/pkg/identity"
 	"go_agent/internal/service"
 
 	"github.com/go-kratos/kratos/contrib/otel/v3/tracing"
@@ -89,6 +93,10 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 		kratos.AfterStop(func(ctx context.Context) error {
 			// 兜底硬停：Drain 已完成时立即返回；超时场景负责取消并回收 worker
 			afUC.Stop()
+			// 审计是异步批量写的，把缓冲区里最近 2s 的事件落库再退出
+			if uc := audit.Default(); uc != nil {
+				uc.Close()
+			}
 			return nil
 		}),
 	)
@@ -172,6 +180,24 @@ func logStartupInfo(bc *conf.Bootstrap) {
 	if sec.GetAuth().GetEnabled() && sec.GetAuth().GetJwtSecret() == "" && len(sec.GetAuth().GetStaticTokens()) == 0 {
 		log.Error("认证已启用但没有可用凭证：jwtSecret 与 staticTokens 都为空，所有请求都会被拒绝")
 	}
+
+	// 安全策略是环境变量驱动的（不走 config.yaml），启动时打一遍，避免「以为配了」
+	ep := egress.CurrentPolicy()
+	ap := mcp.CurrentApprovalPolicy()
+	threshold := string(ap.Threshold)
+	if threshold == "" {
+		threshold = "none"
+	}
+	log.Info("security policies",
+		"egress_allowed_hosts", len(ep.AllowedHosts),
+		"egress_allow_private", ep.AllowPrivate,
+		"egress_allowed_ports", len(ep.AllowedPorts),
+		"egress_max_redirects", ep.MaxRedirects,
+		"tool_approval_level", threshold,
+		"tool_approval_ttl", ap.TTL.String(),
+		"mcp_stdio_enabled", mcp.CurrentStdioPolicy().Enabled,
+		"dev_trust_all", identity.DevTrustAll(),
+	)
 
 	if d.GetLlm().GetApiKey() == "" {
 		log.Warn("LLM_API_KEY 未配置：问答与图谱抽取会失败（健康检查仍可用）")

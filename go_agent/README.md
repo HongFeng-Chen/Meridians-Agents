@@ -347,6 +347,119 @@ python scripts/e2e_isolation.py                  # 会话 / 任务 / 知识库�
 | --- | --- |
 | `GET /healthz` | 并发探测 MySQL / Redis / Milvus，全通过 `200`，任一失败 `503`（可直接做 LB readiness） |
 | `GET /metrics` | Prometheus 文本格式：请求量/时延、`llm_tokens_total{model}`、`llm_cost_cny_total{model}`、`llm_provider_available`、限流拒绝数等 |
+| `GET /api/admin/audits` | 审计事件查询（仅管理员）：`?action=&result=&resource=&user=&since=&until=&limit=` |
+| `GET /api/mcp/tool-approvals` | 待审批的高危工具调用（仅管理员） |
+| `POST /api/mcp/tool-approvals/{id}/approve` \| `/deny` | 批准 / 驳回一次高危调用（仅管理员，且不能批自己发起的） |
+
+### 管理面授权（登录 ≠ 管理员）
+
+网关的认证只回答「你是谁」。**MCP 配置、技能安装、Agent 删除这类平台级变更
+另有一道独立闸门**，判定规则见 `internal/pkg/identity`：
+
+| 情况 | 判定 |
+| --- | --- |
+| JWT / 静态令牌带 `role=admin`（`roles` 里含 `admin` 亦可） | 放行 |
+| 认证关闭（开发态）+ 请求来自回环地址 | 放行（仅为了本机开发可用） |
+| 认证关闭 + `AUTH_DEV_TRUST_ALL=true` | 放行（演示环境逃生阀，启动打 WARN） |
+| 其余（含「已登录的普通用户」） | `403`，并落一条 `denied` 审计事件 |
+
+被闸门覆盖的动作：`mcp.server.*`（增删改 / 连接 / 同步 / 客户端参数）、`mcp.tool.*`（启停 / 删除）、
+`mcp.proxy.preview`、`skill.install*` / `skill.uninstall` / `skill.sync` / `skill.hub.*`、
+`agentfactory.def.delete` / `agentfactory.def.toggle` / `agentfactory.vectors.sync`、`mcp.tool.approval.*`、`audit.list`。
+
+技能的**启停**（`skill.enable` / `skill.disable`）刻意不设闸门：它不写磁盘、不改能力集合，属于个人偏好。
+
+管理员的两种给法：
+
+```bash
+# 1) 静态令牌：user:tenant:admin
+#    security.auth.staticTokens: { "ops-token": "ops:acme:admin" }
+curl -H "Authorization: Bearer ops-token" -X POST .../api/mcp/servers
+
+# 2) JWT：payload 里加 role=admin
+#    {"sub":"ops","tenant_id":"acme","role":"admin","exp":...}
+```
+
+> 单机演示时浏览器从另一台机器访问，回环判定不成立，管理按钮会全 403。
+> 要么签发一个 admin 令牌，要么显式打开 `AUTH_DEV_TRUST_ALL=true`——
+> 后者把管理面重新变成匿名可达，只在确定不对外暴露的环境里用。
+
+### 出站访问策略（防 SSRF）
+
+服务端会主动访问的地址（MCP `endpoint`、Swagger `spec_url` / `base_url`、技能包 URL、技能市场 `base_url`）
+全部来自管理面配置。只校验 `http(s)://` 前缀等于把后端变成内网跳板，因此统一走
+`internal/pkg/egress`，三道闸叠加：
+
+1. **保存时静态校验**：scheme、`userinfo`、字面量 IP 段、主机白名单、端口；
+2. **Dial 阶段**：`net.Dialer.Control` 校验**解析后的 IP**——挡住「域名指向内网」与 DNS rebinding；
+3. **重定向**：每一跳目标重新校验——挡住 `302 Location: http://169.254.169.254/`。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `EGRESS_ALLOWED_HOSTS` | 空 | 主机白名单（`mcp.example.com` / `.corp.internal` / `*.corp.internal`）；**配了就变白名单模式** |
+| `EGRESS_DENIED_HOSTS` | 空 | 额外拉黑，优先级高于白名单 |
+| `EGRESS_ALLOW_PRIVATE` | `false` | 放行内网 / 回环（内网部署、本机 MCP 服务才开） |
+| `EGRESS_ALLOWED_PORTS` | 空 | 端口白名单，空 = 不限 |
+| `EGRESS_MAX_REDIRECTS` | `5` | 最多跟几跳重定向，`0` = 不跟随 |
+
+**始终拒绝**（即便 `EGRESS_ALLOW_PRIVATE=true`）：`169.254.0.0/16` 链路本地（云元数据）、组播 / 保留段、
+`localhost`、`metadata.google.internal` 等元数据域名。旧的 `MCP_EGRESS_*` 变量名仍被识别。
+
+### 高危工具调用审批
+
+MCP 工具是远端定义的，`delete_repository` 一次调用就能造成不可逆损失。平台按三个信号给工具分级
+（`internal/biz/mcp/risk.go`）：显式标签（`tags: ["readonly"｜"write"｜"destructive"]`）→ proxy 路由方法
+（`GET` 读 / `PUT`·`PATCH`·`POST` 写 / `DELETE` 高危）→ 名称与描述关键词（`delete`/`drop`/`exec`/`truncate`…）。
+**未知工具按 `write` 处理**，不猜 `read`。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `MCP_TOOL_APPROVAL_LEVEL` | `destructive` | 达到该等级即需审批：`none` / `write` / `destructive` / `all` |
+| `MCP_TOOL_APPROVAL_TTL` | `300` | 审批单有效期（秒） |
+
+两段式调用（管理面调试接口 `POST /api/mcp/tools/{id}/call`，也是脚本直调的唯一入口）：
+
+```bash
+# 1) 直接调用 → 428，响应里带审批单号 ap...
+curl -s -X POST http://localhost:8000/api/mcp/tools/12/call   -H 'Content-Type: application/json'   -d '{"arguments":{"repo":"billing","force":true}}'
+# → 428 APPROVAL_REQUIRED：已生成审批单 ap3f…（5m0s 内有效）
+
+# 2) 管理员批准（四眼原则：不能批自己发起的）
+curl -s -X POST http://localhost:8000/api/mcp/tool-approvals/ap3f.../approve   -H 'Authorization: Bearer ops-token' -d '{"comment":"确认删测试库"}'
+
+# 3) 带令牌重放，参数必须完全一致
+curl -s -X POST http://localhost:8000/api/mcp/tools/12/call   -H 'Content-Type: application/json' -H 'X-MCP-Approval-Token: ap3f...'   -d '{"arguments":{"repo":"billing","force":true}}'
+```
+
+令牌绑定 `(申请人, 租户, 工具, 参数指纹)`，一次性、默认 5 分钟过期；参数改一个字符就得重新申请。
+
+Agent 运行期同一套口径：`needApproval` 对 `mcp:` 能力先做静态风险判定——高危工具即便没写进
+`require_approval` 也会挂起等审批（LLM 生成定义时漏写是常态，漏写的代价是一条 `DELETE` 直接打到生产库）。
+任务挂起后走既有的 O3 流程：`paused` → `POST /api/agentfactory/tasks/{id}/approve` → 从 checkpoint 续跑。
+
+### 审计事件（`audit_events`）
+
+授权判定、管理面变更、高危工具调用都会落一条审计事件（`internal/biz/audit` + `audit_events` 表），
+异步批量写入——审计不能拖慢也不能搞挂业务请求，缓冲满了宁可丢并计数告警。
+
+| 字段 | 说明 |
+| --- | --- |
+| `ts` / `action` / `result` | 时间、动作（`mcp.server.create` / `skill.install` / `mcp.tool.call`）、结果（`allowed` / `denied` / `error`） |
+| `user_id` / `tenant_id` / `auth_type` / `is_admin` / `is_local` | 身份快照（不靠 join，用户改名后仍还原当时事实） |
+| `resource` / `resource_id` / `risk` | 作用对象与风险等级 |
+| `ip` / `trace_id` / `latency_ms` / `detail` | 来源 IP（优先 `X-Forwarded-For`）、链路号、耗时、JSON 明细（截断 2000 字符） |
+
+保留期 `AUDIT_RETENTION_DAYS`（默认 90 天），后台每 6h 清理一次。
+
+```bash
+# 上周谁被拒过
+curl -s -H 'Authorization: Bearer ops-token'   'http://localhost:8000/api/admin/audits?result=denied&since=7d&limit=50'
+# 某个高危工具的全部调用
+curl -s -H 'Authorization: Bearer ops-token'   'http://localhost:8000/api/admin/audits?action=mcp.tool.call&resource=tool&limit=200'
+```
+
+> 边界：审批单存在进程内存里（单实例够用；多副本需要换 Redis 实现，接口已抽成 `ApprovalStore`）。
+> 审计是「事后追溯」，不替代事前拦截——真正的拦截在前面的三道闸门。
 
 ## API 一览
 
