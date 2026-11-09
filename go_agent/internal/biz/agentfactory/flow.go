@@ -214,41 +214,57 @@ func (g *FlowGraph) Validate() error {
 	return nil
 }
 
-// evalCond 执行条件判断，返回是否命中「是」分支
-func evalCond(c *FlowCond, text string) bool {
+// evalCond 规则判断，返回是否命中「是」分支。
+//
+// 第二个返回值是「判断本身失败」：配置缺比较值、运算符不认识、gt/lt 取不到数字，
+// 都属于配置/数据错误，必须显式返回。旧实现一律返回 false，等于把"没法判断"
+// 静默当成"条件不成立"，另一条分支照常执行——在审批/风控类条件上这是放行。
+func evalCond(c *FlowCond, text string) (bool, error) {
 	if c == nil {
-		return true
+		return true, nil
 	}
 	text = strings.TrimSpace(text)
 	switch c.Mode {
 	case CondModeLLM:
 		// LLM 判断由调用方注入（需要模型能力），这里只做规则兜底
-		return len([]rune(text)) > 0
+		return len([]rune(text)) > 0, nil
 	}
 	switch c.Op {
 	case CondOpContains:
-		return strings.Contains(text, c.Value)
-	case CondOpNotContains:
-		return !strings.Contains(text, c.Value)
-	case CondOpNotEmpty:
-		return text != ""
-	case CondOpIsEmpty:
-		return text == ""
-	case CondOpGt, CondOpLt:
-		n, err := strconv.ParseFloat(strings.TrimSpace(firstNumber(text)), 64)
-		if err != nil {
-			return false
+		if c.Value == "" {
+			return false, fmt.Errorf("条件配置错误：contains 缺少比较值")
 		}
+		return strings.Contains(text, c.Value), nil
+	case CondOpNotContains:
+		if c.Value == "" {
+			return false, fmt.Errorf("条件配置错误：not_contains 缺少比较值")
+		}
+		return !strings.Contains(text, c.Value), nil
+	case CondOpNotEmpty:
+		return text != "", nil
+	case CondOpIsEmpty:
+		return text == "", nil
+	case CondOpGt, CondOpLt:
 		limit, err := strconv.ParseFloat(strings.TrimSpace(c.Value), 64)
 		if err != nil {
-			return false
+			return false, fmt.Errorf("条件配置错误：%s 的比较值 %q 不是数字", c.Op, c.Value)
+		}
+		raw := strings.TrimSpace(firstNumber(text))
+		if raw == "" {
+			return false, fmt.Errorf("条件判断失败：上游产出里没有可比较的数字")
+		}
+		n, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return false, fmt.Errorf("条件判断失败：上游产出里的 %q 不是数字", raw)
 		}
 		if c.Op == CondOpGt {
-			return n > limit
+			return n > limit, nil
 		}
-		return n < limit
+		return n < limit, nil
+	case "":
+		return text != "", nil
 	default:
-		return text != ""
+		return false, fmt.Errorf("条件配置错误：未知运算符 %q", c.Op)
 	}
 }
 

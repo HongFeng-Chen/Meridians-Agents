@@ -56,10 +56,14 @@ type Recorder struct {
 
 	// st 当前执行状态（O1）：由 runGraph / runToolLoop 装配，checkpoint 时序列化
 	st *RunState
+	// commit 并发波次的共享提交器：波次里每个步骤/成员完成即落 checkpoint，
+	// 崩溃重启后已完成的部分不再重跑（见 waveCommit）
+	commit *waveCommit
 	// cpSeq checkpoint 序号（恢复时从已有序号继续递增；排序以表自增 ID 为准）
 	cpSeq int
-	// mu 保护 task.Progress 等共享字段（波次并发时多个派生 Recorder 写同一任务）
-	mu sync.Mutex
+	// mu 保护 task.Progress 等共享字段（波次并发时多个派生 Recorder 写同一任务）。
+	// 必须是共享指针：derive 出来的每个分支如果各拿一把零值锁，等于没有锁。
+	mu *sync.Mutex
 }
 
 func (r *Recorder) event(typ string, turn int, payload any) {
@@ -78,13 +82,26 @@ func (r *Recorder) event(typ string, turn int, payload any) {
 // derive 派生 Recorder（波次并发的每个分支一个）：共享任务与定义，
 // 轮次计数从当前位置延续，事件照常落同一任务；避免并发读写同一 turn 计数。
 func (r *Recorder) derive() *Recorder {
-	return &Recorder{u: r.u, task: r.task, def: r.def, turn: r.turn, silentFinal: r.silentFinal, st: r.st, cpSeq: r.cpSeq}
+	return &Recorder{u: r.u, task: r.task, def: r.def, turn: r.turn, silentFinal: r.silentFinal,
+		st: r.st, commit: r.commit, cpSeq: r.cpSeq, mu: r.mu}
+}
+
+// lock 取共享锁（字面量构造的 Recorder 没有 mu 时就地补一把）
+func (r *Recorder) lock() *sync.Mutex {
+	if r.mu == nil {
+		r.mu = &sync.Mutex{}
+	}
+	return r.mu
 }
 
 // checkpoint 在步骤边界落一份 RunState 快照（O2）。
 // 写失败只告警不阻断：checkpoint 是优化，不是正确性依赖（大不了从头重跑）。
 func (r *Recorder) checkpoint(cursor string) {
 	if r.st == nil {
+		return
+	}
+	if r.commit != nil {
+		r.commit.checkpoint(r, cursor)
 		return
 	}
 	r.st.Turn = r.turn
@@ -96,6 +113,98 @@ func (r *Recorder) checkpoint(cursor string) {
 		GraphType: r.def.GraphType,
 		Cursor:    cursor,
 		State:     encodeState(r.st),
+		CreatedAt: time.Now(),
+	})
+}
+
+// waveCommit 并发波次的共享提交器。
+//
+// 波次里多个步骤/成员同时跑，各自持有独立的 RunState 副本（循环状态、凭据表），
+// 但「哪一步已经完成」是共享事实，必须只有一个写入者视角：
+//
+//   - 所有快照在同一把锁下串行化，避免 Seq 竞争与 map 并发写；
+//   - 步骤副本落盘时，计划级字段（Steps / Done / StepIdx / StepState / MemberOut）
+//     取自父状态——父状态是唯一真相，否则「步骤 A 完成」与「步骤 B 挂起等审批」
+//     两份快照会互相覆盖，重启后不是漏跑就是重跑。
+type waveCommit struct {
+	mu  sync.Mutex
+	st  *RunState
+	seq int
+	// pauseCursor 波次内一旦有步骤挂起等审批，后续快照沿用这个挂起游标。
+	//
+	// 审批动作（ApproveTask）是从「最新 checkpoint 的 cursor」取回「在等人批什么」的。
+	// 同波其他步骤的进度快照如果把游标覆盖成 plan_step，批准时就找不到凭据，
+	// 任务会重新挂起——一个永远批不完的审批。
+	pauseCursor string
+}
+
+// newWaveCommit 绑定波次共享状态（seq 从恢复点继续递增）
+func newWaveCommit(st *RunState, seq int) *waveCommit {
+	return &waveCommit{st: st, seq: seq}
+}
+
+// checkpoint 步骤副本 / 父状态统一的落盘点
+func (w *waveCommit) checkpoint(r *Recorder, cursor string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := decodeApprovalCursor(cursor); ok {
+		w.pauseCursor = cursor // 挂起游标粘住，见字段注释
+	}
+	state := r.st
+	if state != w.st {
+		merged := *state
+		merged.Steps = w.st.Steps
+		merged.Done = append([]string(nil), w.st.Done...)
+		merged.StepIdx = w.st.StepIdx
+		merged.Replans = w.st.Replans
+		merged.StepState = copyStepState(w.st.StepState)
+		merged.MemberOut = copyStringMap(w.st.MemberOut)
+		merged.Turn = r.turn
+		merged.Cursor = cursor
+		state = &merged
+	} else {
+		w.st.Turn = r.turn
+		w.st.Cursor = cursor
+	}
+	w.saveLocked(r, state, cursor)
+}
+
+// recordStep 步骤结束（done / failed / paused）并立刻落盘：
+// 整个波次跑完才落的话，中途崩溃会丢掉同波已完成的步骤，重启后重复执行其副作用。
+func (w *waveCommit) recordStep(r *Recorder, idx int, status, out string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.st.finishStep(idx, status, out)
+	w.st.Turn = r.turn
+	w.saveLocked(r, w.st, fmt.Sprintf(`{"kind":"plan_step","index":%d,"step":%d,"status":%q}`, w.st.StepIdx, idx, status))
+}
+
+// recordMember 并行编排成员完成即落盘（续跑时 MemberOut 命中直接复用）
+func (w *waveCommit) recordMember(r *Recorder, key, out string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.st.MemberOut == nil {
+		w.st.MemberOut = map[string]string{}
+	}
+	w.st.MemberOut[key] = out
+	w.st.Turn = r.turn
+	w.saveLocked(r, w.st, fmt.Sprintf(`{"kind":"wave","member":%q}`, key))
+}
+
+// saveLocked 序列化落库（调用方持锁）
+func (w *waveCommit) saveLocked(r *Recorder, state *RunState, cursor string) {
+	if w.pauseCursor != "" {
+		cursor = w.pauseCursor // 有人挂着等审批：游标不能被进度快照冲掉
+	}
+	w.seq++
+	state.Turn = r.turn
+	state.Cursor = cursor
+	_ = r.u.repo.SaveCheckpoint(r.u.baseCtx, &TaskCheckpoint{
+		TaskID:    r.task.ID,
+		Seq:       w.seq,
+		GraphType: r.def.GraphType,
+		Cursor:    cursor,
+		State:     encodeState(state),
 		CreatedAt: time.Now(),
 	})
 }
@@ -117,10 +226,11 @@ func (r *Recorder) setProgress(pct int) {
 	if pct > 99 {
 		pct = 99
 	}
-	r.mu.Lock()
+	mu := r.lock()
+	mu.Lock()
 	r.task.Progress = pct
 	r.u.repo.SaveTask(r.u.baseCtx, r.task)
-	r.mu.Unlock()
+	mu.Unlock()
 	r.snapshot()
 }
 
@@ -289,10 +399,11 @@ func (u *UseCase) runGraph(ctx context.Context, def *AgentDef, input string, rec
 	// 恢复（O2）：读最新 checkpoint 反序列化 RunState。无 checkpoint → nil（全新执行）。
 	// 命中时轮次计数与 checkpoint 序号延续，落 resume 事件；审批批准过的能力保留放行。
 	st := u.loadRunState(ctx, rec, input)
-	// 编排图优先：flow 里有节点时按 DAG 执行（串并行可混排 + 条件分支）
-	// 注：DAG 图暂不续跑（节点子任务各自有 checkpoint，子 Agent 级恢复已生效）
+	// 编排图优先：flow 里有节点时按 DAG 执行（串并行可混排 + 条件分支）。
+	// DAG 也续跑：节点级 checkpoint 记录"哪些节点已完成、边怎么决断"，
+	// 重启后已完成节点不再执行（否则重启一次就把外部副作用再做一遍）。
 	if g := ParseFlowGraph(def.Flow); g != nil && len(g.Nodes) > 1 {
-		return u.runFlowGraph(ctx, def, g, input, rec)
+		return u.runFlowGraph(ctx, def, g, input, rec, st)
 	}
 	// 显式编排（串行/并行）：成员任务 + 汇总 + 监察
 	if (def.Orchestration == OrchestrationSerial || def.Orchestration == OrchestrationParallel) && len(def.Members) > 0 {

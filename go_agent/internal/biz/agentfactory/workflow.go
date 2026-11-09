@@ -131,6 +131,9 @@ func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input s
 	}
 
 	var wg sync.WaitGroup
+	// 成员完成即落盘：整波跑完才落的话，中途崩溃会让已完成的成员在重启后重跑，
+	// 它们的外部副作用（发消息、调接口）就会发生两次。
+	wc := newWaveCommit(st, rec.cpSeq)
 	for _, j := range jobs {
 		wg.Add(1)
 		go func(j job) {
@@ -140,8 +143,11 @@ func (u *UseCase) runMembersParallel(ctx context.Context, def *AgentDef, input s
 				if results[i].TaskID == j.task.ID {
 					results[i].Answer = ans
 					results[i].Err = err
-					return
+					break
 				}
+			}
+			if err == nil && ans != "" {
+				wc.recordMember(rec, j.key, ans)
 			}
 		}(j)
 	}

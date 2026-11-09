@@ -1000,7 +1000,7 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	}
 	_ = u.repo.SaveTask(ctx, t)
 
-	rec := &Recorder{u: u, task: t, def: def}
+	rec := &Recorder{u: u, task: t, def: def, mu: &sync.Mutex{}}
 	rec.status("", TaskRunning)
 	rec.snapshot()
 

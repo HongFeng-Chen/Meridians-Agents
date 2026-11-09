@@ -179,7 +179,7 @@ func TestApproveNonPausedTask(t *testing.T) {
 	}
 }
 
-// TestReadySteps 波次调度：显式依赖并行、空依赖串行兜底。
+// TestReadySteps 波次调度：显式依赖并行、空依赖串行兜底、已完成步骤跳过。
 func TestReadySteps(t *testing.T) {
 	steps := []planStep{
 		{Goal: "s1", DependsOn: []int{}},     // 空依赖 = 串行语义：只有首个就绪
@@ -187,18 +187,33 @@ func TestReadySteps(t *testing.T) {
 		{Goal: "s3", DependsOn: []int{1}},    // 依赖 s1（与 s2 同波并行）
 		{Goal: "s4", DependsOn: []int{2, 3}}, // 依赖 s2、s3
 	}
+	done := func(idx ...int) map[int]bool {
+		m := map[int]bool{}
+		for _, i := range idx {
+			m[i] = true
+		}
+		return m
+	}
 	// startIdx=0：只有 s1（空依赖且是首个）
-	if got := readySteps(steps, 0); len(got) != 1 || got[0] != 0 {
+	if got := readySteps(steps, 0, done()); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("startIdx=0 应只有 s1，实际 %v", got)
 	}
 	// startIdx=1（s1 完成）：s2、s3 都就绪（依赖 s1），并行
-	got := readySteps(steps, 1)
+	got := readySteps(steps, 1, done(0))
 	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("startIdx=1 应 s2/s3 并行，实际 %v", got)
 	}
 	// startIdx=3（s1~s3 完成）：只有 s4
-	if got := readySteps(steps, 3); len(got) != 1 || got[0] != 3 {
+	if got := readySteps(steps, 3, done(0, 1, 2)); len(got) != 1 || got[0] != 3 {
 		t.Fatalf("startIdx=3 应只有 s4，实际 %v", got)
+	}
+	// 乱序完成：s3 先完成、s2 还没跑 → s4 依赖未满足，不得就绪
+	if got := readySteps(steps, 1, done(0, 2)); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("s4 的依赖 s2 未完成时不应就绪，实际 %v", got)
+	}
+	// 已完成的步骤不再返回（否则续跑会重复执行副作用）
+	if got := readySteps(steps, 1, done(0, 1, 2, 3)); len(got) != 0 {
+		t.Fatalf("全部完成时不应有就绪步骤，实际 %v", got)
 	}
 }
 

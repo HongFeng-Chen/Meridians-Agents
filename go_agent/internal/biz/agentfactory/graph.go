@@ -37,6 +37,60 @@ const (
 	nodeFailed
 )
 
+// 节点状态的持久化形态。用字符串而不是 iota 数字：checkpoint 可能比代码活得久，
+// 增删一个状态常量不该让老 checkpoint 被误读成另一个状态。
+const (
+	nodeStatusWait    = "wait"
+	nodeStatusDone    = "done"
+	nodeStatusSkipped = "skipped"
+	nodeStatusFailed  = "failed"
+)
+
+func nodeStatusName(s int) string {
+	switch s {
+	case nodeDone:
+		return nodeStatusDone
+	case nodeSkipped:
+		return nodeStatusSkipped
+	case nodeFailed:
+		return nodeStatusFailed
+	default:
+		return nodeStatusWait
+	}
+}
+
+// nodeStatusFrom 解析持久化状态；未知值按「未执行」处理（宁可重跑一次）
+func nodeStatusFrom(s string) int {
+	switch s {
+	case nodeStatusDone:
+		return nodeDone
+	case nodeStatusSkipped:
+		return nodeSkipped
+	case nodeStatusFailed:
+		return nodeFailed
+	default:
+		return nodeWait
+	}
+}
+
+// 边状态的持久化形态
+const (
+	edgeStatusActive = "active"
+	edgeStatusDead   = "dead"
+)
+
+// nodePersistCap 节点产出写入 checkpoint 的上限（rune）。
+// 下游拼输入时最多取 4000 runes，超过这个长度的部分对续跑没有意义。
+const nodePersistCap = 8000
+
+// NodeRecord 编排图节点的持久化状态
+type NodeRecord struct {
+	Status string `json:"status"`
+	Output string `json:"output,omitempty"`
+	// Branch 条件节点的判定结果（nil = 不是条件节点）
+	Branch *bool `json:"branch,omitempty"`
+}
+
 type graphRun struct {
 	g        *FlowGraph
 	nodeAt   map[string]int
@@ -49,8 +103,13 @@ type graphRun struct {
 	turns    int
 }
 
-// runFlowGraph 执行编排图
-func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph, input string, rec *Recorder) (*RunResult, error) {
+// runFlowGraph 执行编排图。
+//
+// 续跑（O2）：RunState.NodeState / EdgeState 记录每个节点与边的决断结果。
+// 已完成的节点不再执行、产出直接复用——否则重启一次就把已经发生的
+// 外部副作用（发消息、建单、写库）再做一遍。落盘与节点结束在同一处：
+// 节点少、波次内串行提交，不需要额外的并发控制。
+func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph, input string, rec *Recorder, st *RunState) (*RunResult, error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
@@ -71,9 +130,45 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 		r.outEdges[e.From] = append(r.outEdges[e.From], i)
 		r.inEdges[e.To] = append(r.inEdges[e.To], i)
 	}
+	if st == nil {
+		st = newState(input)
+	}
+	rec.st = st
+	r.restore(st) // 已完成的节点直接复用产出，不再执行（副作用只发生一次）
+
+	// save 落一份节点 + 边 + 产出的快照（同一次写入，避免"节点已完成、边未决断"的中间态）
+	save := func(i int) {
+		if st.NodeState == nil {
+			st.NodeState = map[string]NodeRecord{}
+		}
+		if st.EdgeState == nil {
+			st.EdgeState = map[int]string{}
+		}
+		node := g.Nodes[i]
+		nr := st.NodeState[node.ID]
+		nr.Status = nodeStatusName(r.nodeSt[i])
+		// 落盘上限：下游拼输入时本来就截到 4000 runes，存全量只会让
+		// 每个节点快照都背上几 KB 的历史产出（60 节点 × 每次快照）
+		nr.Output = truncateRunes(r.outputs[node.ID], nodePersistCap)
+		st.NodeState[node.ID] = nr
+		for _, ei := range r.outEdges[node.ID] {
+			switch r.edgeSt[ei] {
+			case edgeActive:
+				st.EdgeState[ei] = edgeStatusActive
+			case edgeDead:
+				st.EdgeState[ei] = edgeStatusDead
+			}
+		}
+		rec.checkpoint(fmt.Sprintf(`{"kind":"node","node":%q,"status":%q}`, node.ID, nr.Status))
+	}
 
 	sup := u.loadSupervisor(ctx, def.SupervisorKey)
-	remaining := len(g.Nodes)
+	remaining := 0
+	for i := range g.Nodes {
+		if r.nodeSt[i] == nodeWait {
+			remaining++
+		}
+	}
 
 	for remaining > 0 {
 		if err := ctx.Err(); err != nil {
@@ -111,6 +206,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			r.nodeSt[i] = nodeSkipped
 			r.resolveEdges(i, outSkipped, nil)
 			remaining--
+			save(i)
 			rec.event(EventNode, rec.turn, map[string]any{"node": g.Nodes[i].ID, "kind": g.Nodes[i].Kind, "status": "skipped"})
 		}
 
@@ -173,6 +269,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				r.nodeSt[i] = nodeFailed
 				r.resolveEdges(i, outFailed, nil)
 				remaining--
+				save(i)
 				rec.event(EventNode, rec.turn, map[string]any{
 					"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
 					"status": "error", "error": p.create.Error(),
@@ -186,6 +283,9 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				// 下游带着残缺上下文继续跑，等于审批没批就把后续动作做了。
 				if errors.Is(errs[k], ErrApprovalNeeded) {
 					r.nodeSt[i] = nodeFailed
+					// 挂起也落盘：重启后这个节点仍是 failed（不重跑、不激活下游），
+					// 等人批的是子任务，父图不能自己往前跑
+					save(i)
 					rec.event(EventNode, rec.turn, map[string]any{
 						"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
 						"child_task_id": p.task.ID, "status": "paused",
@@ -204,6 +304,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				r.nodeSt[i] = nodeFailed
 				r.resolveEdges(i, outFailed, nil)
 				remaining--
+				save(i)
 				rec.event(EventNode, rec.turn, map[string]any{
 					"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
 					"child_task_id": p.task.ID, "status": "error",
@@ -226,6 +327,7 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			r.nodeSt[i] = nodeDone
 			r.resolveEdges(i, outSuccess, nil)
 			remaining--
+			save(i)
 			rec.event(EventNode, rec.turn, map[string]any{
 				"node": node.ID, "kind": node.Kind, "agent": node.AgentKey,
 				"child_task_id": p.task.ID, "status": "done",
@@ -239,7 +341,20 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 			in := r.nodeInput(i, input)
 			switch node.Kind {
 			case FlowNodeCondition:
-				pass := u.evalCondition(ctx, node.Cond, in)
+				pass, cerr := u.evalCondition(ctx, node.Cond, in)
+				if cerr != nil {
+					// 判断失败不等于「条件不成立」：节点标失败、出边按失败语义
+					// 决断（只有 when=failure/always 的边放行），不猜分支。
+					r.outputs[node.ID] = "[执行失败] 条件判断失败：" + cerr.Error()
+					r.nodeSt[i] = nodeFailed
+					r.resolveEdges(i, outFailed, nil)
+					save(i)
+					rec.event(EventNode, rec.turn, map[string]any{
+						"node": node.ID, "kind": node.Kind, "status": "error",
+						"error": truncateRunes(cerr.Error(), 400),
+					})
+					break
+				}
 				branch := "false"
 				if pass {
 					branch = "true"
@@ -247,6 +362,13 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				r.outputs[node.ID] = in // 条件节点透传上游，供分支下游使用
 				r.nodeSt[i] = nodeDone
 				r.resolveEdges(i, outSuccess, &pass)
+				if st.NodeState == nil {
+					st.NodeState = map[string]NodeRecord{}
+				}
+				nr := st.NodeState[node.ID]
+				nr.Branch = &pass // 判定结果入档：重启后能回答"走了哪条分支"
+				st.NodeState[node.ID] = nr
+				save(i)
 				rec.event(EventNode, rec.turn, map[string]any{
 					"node": node.ID, "kind": node.Kind, "status": "condition",
 					"branch": branch, "input": truncateRunes(in, 400),
@@ -259,11 +381,13 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 				r.outputs[node.ID] = ans
 				r.nodeSt[i] = nodeDone
 				r.resolveEdges(i, outSuccess, nil)
+				save(i)
 				r.turns++
 				rec.event(EventNode, rec.turn, map[string]any{"node": node.ID, "kind": node.Kind, "status": "done"})
 			default:
 				r.nodeSt[i] = nodeSkipped
 				r.resolveEdges(i, outSkipped, nil)
+				save(i)
 			}
 			remaining--
 		}
@@ -278,6 +402,59 @@ func (u *UseCase) runFlowGraph(ctx context.Context, def *AgentDef, g *FlowGraph,
 		return nil, fmt.Errorf("编排执行完成但没有产生输出")
 	}
 	return &RunResult{Answer: final, Turns: r.turns + 1}, nil
+}
+
+// restore 把 checkpoint 里的节点 / 边状态装回运行时，返回已完成（不必再跑）的节点数。
+//
+// 语义按状态分三种：
+//
+//	done / skipped  复用：副作用已经发生（或分支已判定），不能再做一遍
+//	failed          重试：失败的节点在重新提交时应该再跑一次，同时清掉它上次
+//	                留下的出边判定——否则重试成功了，下游还因为"边已置死"不启动
+//	wait            不动
+//
+// 只认「节点 ID 还在、边下标还在范围内」的记录：编排图被改过（删节点、重连线）时，
+// 老 checkpoint 直接忽略，宁可整张图重跑，也不能拿着对不上的状态继续。
+func (r *graphRun) restore(st *RunState) int {
+	if st == nil || len(st.NodeState) == 0 {
+		return 0
+	}
+	done := 0
+	for i, n := range r.g.Nodes {
+		rec, ok := st.NodeState[n.ID]
+		if !ok {
+			continue
+		}
+		status := nodeStatusFrom(rec.Status)
+		switch status {
+		case nodeWait:
+			continue
+		case nodeFailed:
+			delete(st.NodeState, n.ID)
+			for _, ei := range r.outEdges[n.ID] {
+				delete(st.EdgeState, ei)
+				r.edgeSt[ei] = edgeUndecided
+			}
+			continue
+		}
+		r.nodeSt[i] = status
+		r.outputs[n.ID] = rec.Output
+		if status == nodeDone {
+			done++
+		}
+	}
+	for ei, s := range st.EdgeState {
+		if ei < 0 || ei >= len(r.edgeSt) {
+			continue
+		}
+		switch s {
+		case edgeStatusActive:
+			r.edgeSt[ei] = edgeActive
+		case edgeStatusDead:
+			r.edgeSt[ei] = edgeDead
+		}
+	}
+	return done
 }
 
 // hasActiveInput 是否存在已激活入边；无入边的入口节点视作激活
@@ -407,29 +584,63 @@ func (r *graphRun) outputNode() string {
 	return ""
 }
 
-// evalCondition 条件判断：规则本地算，LLM 模式走模型判定
-func (u *UseCase) evalCondition(ctx context.Context, c *FlowCond, input string) bool {
+// evalCondition 条件判断：规则本地算，LLM 模式走模型判定。
+//
+// 判断失败必须显式返回错误：条件节点决定「哪条分支被激活」，把失败当成
+// false 会让未命中分支照常执行（等于猜了一个答案还继续跑），
+// 调用方据此把节点标 failed、出边按失败语义决断。
+func (u *UseCase) evalCondition(ctx context.Context, c *FlowCond, input string) (bool, error) {
 	if c == nil {
-		return true
-	}
-	if c.Mode == CondModeLLM && u.chat == nil {
-		return evalCond(c, input)
+		return true, nil
 	}
 	if c.Mode != CondModeLLM {
 		return evalCond(c, input)
 	}
+	if u.chat == nil {
+		return false, fmt.Errorf("条件节点配置为模型判断，但当前没有可用模型")
+	}
 	question := strings.TrimSpace(c.Question)
 	if question == "" {
-		question = "上游产出是否满足任务要求？"
+		return false, fmt.Errorf("条件节点配置为模型判断，但缺少判断问题")
 	}
 	system := `你是流程编排里的条件判断器。根据给定材料回答一个问题，只输出 YES 或 NO，不要任何解释。`
 	user := fmt.Sprintf("## 判断问题\n%s\n\n## 材料\n%s", question, truncateRunes(input, 6000))
 	ans, err := u.chat.ChatTemp(ctx, system, user, 0)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("条件判断调用模型失败: %w", err)
 	}
+	pass, ok := parseYesNo(ans)
+	if !ok {
+		return false, fmt.Errorf("条件判断未得到明确结论（模型输出：%s）", truncateRunes(strings.TrimSpace(ans), 80))
+	}
+	return pass, nil
+}
+
+// parseYesNo 解析模型的是/否判断；无法判定时 ok=false（由调用方转成显式错误）。
+//
+// 两种结论同时出现（"YES 也可以是 NO"）按无法判定处理：条件节点决定走哪条分支，
+// 拿不准的时候必须报错让人看，不能挑一个更容易解析的当结论。
+func parseYesNo(ans string) (bool, bool) {
 	up := strings.ToUpper(strings.TrimSpace(ans))
-	return strings.Contains(up, "YES") || strings.Contains(up, "是")
+	if up == "" {
+		return false, false
+	}
+	hasYes := strings.Contains(up, "YES") || strings.Contains(up, "是")
+	hasNo := strings.Contains(up, "NO") || strings.Contains(up, "否")
+	if hasYes && hasNo {
+		return false, false
+	}
+	switch {
+	case strings.HasPrefix(up, "YES"), strings.HasPrefix(up, "是"):
+		return true, true
+	case strings.HasPrefix(up, "NO"), strings.HasPrefix(up, "否"), strings.HasPrefix(up, "不是"):
+		return false, true
+	case hasYes:
+		return true, true
+	case hasNo:
+		return false, true
+	}
+	return false, false
 }
 
 // graphFinalize 输出节点：交回根 Agent 汇总成面向用户的答案

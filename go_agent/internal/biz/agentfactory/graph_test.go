@@ -351,3 +351,247 @@ func TestFlowEdgeWhenValidation(t *testing.T) {
 		t.Fatal("未知 when 值应被拒绝")
 	}
 }
+
+// —— 第四阶段：条件判断失败必须显式报错，不能当成「条件不成立」 ——
+
+// evalCond 只在能得出结论时返回 true/false；配置错误 / 数据不可比较返回 error。
+func TestEvalCondExplicitErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		cond *FlowCond
+		text string
+		pass bool
+		err  string
+	}{
+		{"contains 命中", &FlowCond{Mode: CondModeRule, Op: CondOpContains, Value: "完成"}, "任务已完成", true, ""},
+		{"contains 缺比较值", &FlowCond{Mode: CondModeRule, Op: CondOpContains}, "任何内容", false, "缺少比较值"},
+		{"未知运算符", &FlowCond{Mode: CondModeRule, Op: "match"}, "x", false, "未知运算符"},
+		{"gt 比较值非数字", &FlowCond{Mode: CondModeRule, Op: CondOpGt, Value: "很多"}, "共 3 条", false, "不是数字"},
+		{"gt 文本里没数字", &FlowCond{Mode: CondModeRule, Op: CondOpGt, Value: "3"}, "没有任何数字", false, "没有可比较的数字"},
+		{"gt 正常比较", &FlowCond{Mode: CondModeRule, Op: CondOpGt, Value: "3"}, "共 5 条", true, ""},
+		{"is_empty", &FlowCond{Mode: CondModeRule, Op: CondOpIsEmpty}, "   ", true, ""},
+	}
+	for _, c := range cases {
+		pass, err := evalCond(c.cond, c.text)
+		if c.err == "" {
+			if err != nil || pass != c.pass {
+				t.Fatalf("%s：期望 pass=%v，实际 pass=%v err=%v", c.name, c.pass, pass, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), c.err) {
+			t.Fatalf("%s：期望错误包含 %q，实际 %v", c.name, c.err, err)
+		}
+	}
+}
+
+// parseYesNo 只接受明确结论；模棱两可时 ok=false 由调用方转成错误。
+func TestParseYesNo(t *testing.T) {
+	yes := []string{"YES", "yes.", " 是", "是，满足要求", "答案是 YES"}
+	no := []string{"NO", "no", "否", "不是", "答案为 NO"}
+	unclear := []string{"", "CHILD-ANSWER", "无法判断", "YES 也可能是 NO"}
+	for _, s := range yes {
+		if pass, ok := parseYesNo(s); !ok || !pass {
+			t.Fatalf("%q 应判为是，实际 pass=%v ok=%v", s, pass, ok)
+		}
+	}
+	for _, s := range no {
+		if pass, ok := parseYesNo(s); !ok || pass {
+			t.Fatalf("%q 应判为否，实际 pass=%v ok=%v", s, pass, ok)
+		}
+	}
+	for _, s := range unclear {
+		if _, ok := parseYesNo(s); ok {
+			t.Fatalf("%q 不应给出结论", s)
+		}
+	}
+}
+
+// 模型判断失败 → 条件节点标 failed，两条分支都不激活（不猜一条继续跑）。
+func TestFlowConditionErrorActivatesNoBranch(t *testing.T) {
+	u, repo, _ := newTestUseCase(t, &wfChatter{}) // 非条件提示词一律回 "CHILD-ANSWER"（不可解析）
+	ctx := context.Background()
+	for _, key := range []string{"dag-t1", "dag-t2", "dag-t3", "dag-t4", "dag-t5"} {
+		if _, err := u.CreateDef(ctx, AgentInput{AgentKey: key, Name: key, GraphType: GraphSimple}); err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+	}
+	if _, err := u.CreateDef(ctx, AgentInput{
+		AgentKey: "cond-err-root", Name: "条件失败根", Role: RoleRoot, GraphType: GraphSimple,
+		Flow: dagFlow(FlowCond{Mode: CondModeLLM, Question: "上游产出是否达标？"}),
+	}); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	task, err := u.SubmitTask(ctx, TaskInput{AgentKey: "cond-err-root", Input: "跑一遍"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	final := runTask(t, u, task.ID)
+
+	ran := map[string]int{}
+	condStatus := ""
+	repo.mu.Lock()
+	for _, tk := range repo.tasks {
+		if tk.ParentTaskID == task.ID {
+			ran[tk.AgentKey]++
+		}
+	}
+	for _, e := range repo.events {
+		if e.TaskID != task.ID || e.Type != EventNode {
+			continue
+		}
+		var p map[string]any
+		_ = json.Unmarshal([]byte(e.Payload), &p)
+		if p["node"] == "c1" {
+			condStatus, _ = p["status"].(string)
+		}
+	}
+	repo.mu.Unlock()
+
+	if condStatus != "error" {
+		t.Fatalf("条件节点应记 error 状态，实际 %q", condStatus)
+	}
+	if ran["dag-t4"] != 0 || ran["dag-t5"] != 0 {
+		t.Fatalf("条件判断失败时两条分支都不应执行，实际 t4=%d t5=%d", ran["dag-t4"], ran["dag-t5"])
+	}
+	if !strings.Contains(final.Result, "条件判断失败") {
+		t.Fatalf("兜底产出应说明条件判断失败，实际 %q", truncateRunes(final.Result, 120))
+	}
+}
+
+// —— 第四阶段：DAG 节点级续跑 ——
+
+// 已完成节点在重启后不再执行：产出直接复用，子任务不重建（副作用只发生一次）。
+func TestFlowGraphResumeSkipsDoneNodes(t *testing.T) {
+	u, repo, _ := newTestUseCase(t, &wfChatter{})
+	ctx := context.Background()
+	for _, key := range []string{"dag-t1", "dag-t2", "dag-t3", "dag-t4", "dag-t5"} {
+		if _, err := u.CreateDef(ctx, AgentInput{AgentKey: key, Name: key, GraphType: GraphSimple}); err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+	}
+	if _, err := u.CreateDef(ctx, AgentInput{
+		AgentKey: "dag-resume-root", Name: "DAG 续跑根", Role: RoleRoot, GraphType: GraphSimple,
+		Flow: dagFlow(FlowCond{Mode: CondModeRule, Op: CondOpContains, Value: "CHILD"}),
+	}); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	task, err := u.SubmitTask(ctx, TaskInput{AgentKey: "dag-resume-root", Input: "跑一遍混排流程"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// 预置：入口节点 n1 已完成、两条出边已决断（崩溃发生在 n2/n3 之前）
+	st := newState("跑一遍混排流程")
+	st.NodeState = map[string]NodeRecord{"n1": {Status: nodeStatusDone, Output: "上游已完成"}}
+	st.EdgeState = map[int]string{0: edgeStatusActive, 1: edgeStatusActive}
+	if err := repo.SaveCheckpoint(ctx, &TaskCheckpoint{
+		TaskID: task.ID, Seq: 1, GraphType: GraphSimple,
+		Cursor: `{"kind":"node","node":"n1","status":"done"}`, State: encodeState(st),
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+
+	final := runTask(t, u, task.ID)
+	if final.Status != TaskSucceeded {
+		t.Fatalf("续跑失败: %s / %s", final.Status, final.ErrorMsg)
+	}
+	if final.Result != "FINAL-ANSWER" {
+		t.Fatalf("结果应为汇总答案，实际 %q", final.Result)
+	}
+
+	ran := map[string]int{}
+	repo.mu.Lock()
+	for _, tk := range repo.tasks {
+		if tk.ParentTaskID == task.ID {
+			ran[tk.AgentKey]++
+		}
+	}
+	repo.mu.Unlock()
+	if ran["dag-t1"] != 0 {
+		t.Fatalf("已完成节点不应重跑，实际执行 %d 次", ran["dag-t1"])
+	}
+	for _, key := range []string{"dag-t2", "dag-t3", "dag-t4"} {
+		if ran[key] != 1 {
+			t.Fatalf("%s 应执行 1 次，实际 %d（%v）", key, ran[key], ran)
+		}
+	}
+	if ran["dag-t5"] != 0 {
+		t.Fatalf("条件未命中分支不应执行，实际 %d", ran["dag-t5"])
+	}
+
+	// 最终 checkpoint 里应能看到全部节点状态，条件节点的分支也要入档
+	cp, _ := repo.LatestCheckpoint(ctx, task.ID)
+	if cp == nil {
+		t.Fatal("应有 checkpoint")
+	}
+	state := decodeState(cp.State)
+	if state == nil {
+		t.Fatal("checkpoint 状态不可解析")
+	}
+	for _, id := range []string{"n1", "n2", "n3", "c1", "n4", "n5", "out"} {
+		if _, ok := state.NodeState[id]; !ok {
+			t.Fatalf("节点 %s 的状态应入档，实际 %+v", id, state.NodeState)
+		}
+	}
+	if br := state.NodeState["c1"].Branch; br == nil || !*br {
+		t.Fatalf("条件节点应记录分支判定（true），实际 %v", br)
+	}
+	if got := state.NodeState["n1"].Output; got != "上游已完成" {
+		t.Fatalf("已完成节点的产出不应被改写，实际 %q", got)
+	}
+}
+
+// 失败节点在重新提交时重试：出边判定一并复位，重试成功后下游照常执行。
+func TestFlowGraphRetriesFailedNodeOnResume(t *testing.T) {
+	u, repo, _ := newTestUseCase(t, &wfChatter{})
+	ctx := context.Background()
+	for _, key := range []string{"dag-t1", "dag-t2", "dag-t3", "dag-t4", "dag-t5"} {
+		if _, err := u.CreateDef(ctx, AgentInput{AgentKey: key, Name: key, GraphType: GraphSimple}); err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+	}
+	if _, err := u.CreateDef(ctx, AgentInput{
+		AgentKey: "dag-retry-root", Name: "DAG 重试根", Role: RoleRoot, GraphType: GraphSimple,
+		Flow: dagFlow(FlowCond{Mode: CondModeRule, Op: CondOpContains, Value: "CHILD"}),
+	}); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	task, err := u.SubmitTask(ctx, TaskInput{AgentKey: "dag-retry-root", Input: "跑一遍混排流程"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// 预置：n1 上次失败，两条出边因此被判死
+	st := newState("跑一遍混排流程")
+	st.NodeState = map[string]NodeRecord{"n1": {Status: nodeStatusFailed, Output: "[执行失败] 上次挂了"}}
+	st.EdgeState = map[int]string{0: edgeStatusDead, 1: edgeStatusDead}
+	if err := repo.SaveCheckpoint(ctx, &TaskCheckpoint{
+		TaskID: task.ID, Seq: 1, GraphType: GraphSimple,
+		Cursor: `{"kind":"node","node":"n1","status":"failed"}`, State: encodeState(st),
+	}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+
+	final := runTask(t, u, task.ID)
+	if final.Status != TaskSucceeded {
+		t.Fatalf("重试失败: %s / %s", final.Status, final.ErrorMsg)
+	}
+	if final.Result != "FINAL-ANSWER" {
+		t.Fatalf("重试后应正常汇总，实际 %q", final.Result)
+	}
+	ran := map[string]int{}
+	repo.mu.Lock()
+	for _, tk := range repo.tasks {
+		if tk.ParentTaskID == task.ID {
+			ran[tk.AgentKey]++
+		}
+	}
+	repo.mu.Unlock()
+	if ran["dag-t1"] != 1 {
+		t.Fatalf("失败节点应重试一次，实际 %d", ran["dag-t1"])
+	}
+	if ran["dag-t2"] != 1 || ran["dag-t3"] != 1 || ran["dag-t4"] != 1 {
+		t.Fatalf("重试成功后下游应正常执行，实际 %v", ran)
+	}
+}

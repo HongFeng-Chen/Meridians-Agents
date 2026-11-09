@@ -289,6 +289,7 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 			// 不需要拆解：退化为单轮直答
 			return u.runSimple(ctx, def, input, rec)
 		}
+		steps = u.checkPlan(rec, steps)
 		st.Steps = steps
 		rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "waves": planWaves(steps)})
 	} else {
@@ -300,8 +301,13 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 		return nil, err
 	}
 
-	// 续跑对齐：把乱序完成记录（MemberOut["step:<idx>"]）按序搬进 Done
+	// 续跑对齐：老格式的乱序完成记录先迁进 StepState，再把连续完成的前缀并进 Done
 	st.drainStepOutputs()
+	st.promoteDoneSteps()
+
+	// 波次共享提交器：并发步骤的完成记录与快照都在同一把锁下合并到 st
+	wc := newWaveCommit(st, rec.cpSeq)
+	rec.commit = wc
 
 	total := len(st.Steps)
 	for st.StepIdx < len(st.Steps) {
@@ -310,19 +316,32 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 		}
 		rec.setProgress(10 + (st.StepIdx*75)/max(total, 1))
 
-		// 收集本波次：所有依赖已满足的待执行步骤
-		ready := readySteps(st.Steps, st.StepIdx)
+		// 收集本波次：依赖已满足且尚未完成的步骤（续跑时已完成的不再重跑）
+		ready := readySteps(st.Steps, st.StepIdx, st.doneSteps())
 		if len(ready) == 0 {
-			ready = []int{st.StepIdx} // 依赖成环等异常：兜底串行推进，防死锁
+			// 依赖校验已在 checkPlan 里做过，走到这里说明状态被外部改坏：
+			// 宁可报错退出，也不能挑一个依赖未满足的步骤硬跑（那正是"重复副作用"的来源）
+			return nil, fmt.Errorf("%w: 计划第 %d 步依赖未满足，无法推进（可能存在环或状态损坏）", ErrInvalidDef, st.StepIdx+1)
 		}
 		for _, i := range ready {
+			st.startStep(i)
 			rec.event(EventNode, rec.turn, map[string]any{
 				"node": fmt.Sprintf("step-%d", i+1), "kind": "step", "agent": st.Steps[i].Agent,
 				"status": "running", "output": truncateRunes(st.Steps[i].Goal, 300),
 			})
 		}
 
-		// 并发执行（上限 parallelLimit；每个步骤派生独立 Recorder 与循环状态）
+		// 并发执行（上限 parallelLimit；每个步骤派生独立 Recorder 与循环状态）。
+		// 每个步骤一结束就落盘：整波跑完才落的话，中途崩溃会丢掉同波里已完成的
+		// 步骤，重启后它们会被重跑——发邮件、下单、改库这类副作用就会发生两次。
+		//
+		// 状态副本必须在派发前一次性克隆好：跑到一半再克隆会和
+		// waveCommit 的写入撞车（并发读写同一张 map）。
+		doneCtx := append([]string(nil), st.Done...)
+		clones := make([]*RunState, len(ready))
+		for k := range ready {
+			clones[k] = st.cloneForStep()
+		}
 		results := make([]string, len(ready))
 		errs := make([]error, len(ready))
 		sem := make(chan struct{}, u.parallelLimit())
@@ -333,7 +352,14 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				results[k], errs[k] = u.execPlanStep(ctx, def, rec, system, input, st.Done, st.Steps[i], st.cloneForStep())
+				results[k], errs[k] = u.execPlanStep(ctx, def, rec, system, input, doneCtx, st.Steps[i], clones[k])
+				switch {
+				case errs[k] == nil:
+					wc.recordStep(rec, i, stepDone, results[k])
+				case errors.Is(errs[k], ErrApprovalNeeded), errors.Is(errs[k], ErrChildApprovalPending):
+					// 挂起：这一波的其他步骤结果照常保留，重启后只重放挂起的那一步
+					wc.recordStep(rec, i, stepPaused, "")
+				}
 			}(k, i)
 		}
 		wg.Wait()
@@ -365,6 +391,11 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 			}
 		}
 		if failIdx >= 0 {
+			for k, i := range ready {
+				if errs[k] != nil && i == failIdx {
+					wc.recordStep(rec, i, stepFailed, "")
+				}
+			}
 			if st.Replans >= 2 {
 				return nil, fmt.Errorf("计划第 %d 步执行失败: %w", failIdx+1, errs[failK])
 			}
@@ -372,34 +403,33 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 			rec.event(EventError, rec.turn, map[string]any{
 				"message": fmt.Sprintf("第 %d 步失败，触发重规划：%v", failIdx+1, errs[failK]),
 			})
-			note := fmt.Sprintf("原计划第 %d 步「%s」执行失败：%v。请重新给出从该步开始的剩余步骤（已完成的不再重复）。", failIdx+1, st.Steps[failIdx].Goal, errs[failK])
+			note := fmt.Sprintf("原计划第 %d 步「%s」执行失败：%v。请重新给出从该步开始的剩余步骤（已完成的不再重复），"+
+				"depends_on 从这批新步骤的第 1 步开始重新编号。", failIdx+1, st.Steps[failIdx].Goal, errs[failK])
 			next, perr := u.makePlan(ctx, def, input, note, rec)
 			if perr != nil || len(next) == 0 {
 				return nil, fmt.Errorf("第 %d 步失败且重规划无结果: %w", failIdx+1, errs[failK])
 			}
-			st.Steps = append(st.Steps[:failIdx], next...)
+			// 新计划的依赖是「新计划内部 1-based 序号」，拼进绝对下标前必须重基，
+			// 否则「新计划第 2 步依赖第 1 步」会被读成「依赖绝对下标 1」，
+			// 两个本该串行的步骤会被同波并发跑。校验也必须针对拼接后的完整计划，
+			// 只校验新段会把段内依赖全部误判成前向依赖。
+			merged := append(append([]planStep{}, st.Steps[:failIdx]...), rebaseDeps(failIdx, next)...)
+			st.Steps = u.checkPlan(rec, merged)
+			st.clearStepsFrom(failIdx)
 			total = len(st.Steps)
 			rec.event(EventPlan, rec.turn, map[string]any{"steps": st.Steps, "revised": true})
 			rec.checkpoint(fmt.Sprintf(`{"kind":"plan_step","index":%d}`, st.StepIdx))
 			continue // 不推进 StepIdx：重试当前失败位置
 		}
 
-		// 成功：先入乱序完成表，再按序推进 StepIdx（保持 Done 与步骤前缀对齐）
-		for k, i := range ready {
-			st.MemberOut[fmt.Sprintf("step:%d", i)] = results[k]
-		}
-		for {
-			out, ok := st.MemberOut[fmt.Sprintf("step:%d", st.StepIdx)]
-			if !ok {
-				break
-			}
-			delete(st.MemberOut, fmt.Sprintf("step:%d", st.StepIdx))
+		// 成功：并行完成的步骤乱序写进 StepState，按连续前缀并入 Done 后推进 StepIdx
+		before := st.StepIdx
+		st.promoteDoneSteps()
+		for i := before; i < st.StepIdx; i++ {
 			rec.event(EventNode, rec.turn, map[string]any{
-				"node": fmt.Sprintf("step-%d", st.StepIdx+1), "kind": "step", "agent": st.Steps[st.StepIdx].Agent,
-				"status": "done", "output": truncateRunes(out, 800),
+				"node": fmt.Sprintf("step-%d", i+1), "kind": "step", "agent": st.Steps[i].Agent,
+				"status": "done", "output": truncateRunes(st.StepState[i].Output, 800),
 			})
-			st.Done = append(st.Done, fmt.Sprintf("步骤 %d（%s）：%s", st.StepIdx+1, st.Steps[st.StepIdx].Goal, out))
-			st.StepIdx++
 		}
 		rec.checkpoint(fmt.Sprintf(`{"kind":"plan_step","index":%d}`, st.StepIdx))
 	}
@@ -413,22 +443,36 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 	return u.finish(rec, answer), nil
 }
 
-// readySteps 收集本波次可执行的步骤下标：依赖全部落在已完成前缀内。
-// DependsOn 为空 = 依赖前一步（串行语义：只有下一个待执行步骤就绪）。
-func readySteps(steps []planStep, startIdx int) []int {
+// readySteps 收集本波次可执行的步骤下标：依赖全部已完成，且自己还没完成。
+//
+//	DependsOn 非空  等这些步骤都 done（1-based，指向更早的步骤）
+//	DependsOn 为空  串行语义：前一步全部完成后才启动（与历史行为一致）
+//
+// done 是「已完成步骤集合」而不是简单的下标前缀：并行波次里步骤会乱序完成，
+// 用前缀判断会让已完成步骤被重跑。
+func readySteps(steps []planStep, startIdx int, done map[int]bool) []int {
 	ready := make([]int, 0, len(steps)-startIdx)
 	for i := startIdx; i < len(steps); i++ {
+		if done[i] {
+			continue
+		}
 		deps := steps[i].DependsOn
 		if len(deps) == 0 {
-			if i != startIdx {
-				continue // 串行语义：等前一步
+			ok := true
+			for j := 0; j < i; j++ {
+				if !done[j] {
+					ok = false
+					break
+				}
 			}
-			ready = append(ready, i)
+			if ok {
+				ready = append(ready, i)
+			}
 			continue
 		}
 		ok := true
 		for _, d := range deps {
-			if d < 1 || d > startIdx { // 依赖必须是已完成的步骤（1-based ≤ startIdx）
+			if d < 1 || !done[d-1] {
 				ok = false
 				break
 			}
@@ -438,6 +482,76 @@ func readySteps(steps []planStep, startIdx int) []int {
 		}
 	}
 	return ready
+}
+
+// checkPlan 生成/重规划后的执行计划验证：依赖非法时（越界 / 自依赖 / 前向依赖 /
+// 重复依赖）把非法依赖摘掉并记一条 plan_invalid 事件。
+//
+// 为什么不直接失败：非法依赖只影响"能不能并发"，摘掉后退化成串行，语义仍然正确；
+// 让整个任务因为模型把 depends_on 写错而失败，代价远大于慢一点。但绝不静默——
+// 事件里保留原始依赖，排障时能看到模型到底写错了什么。
+func (u *UseCase) checkPlan(rec *Recorder, steps []planStep) []planStep {
+	bad, fixed := validatePlan(steps)
+	if len(bad) == 0 {
+		return steps
+	}
+	if rec != nil {
+		rec.event(EventPlan, rec.turn, map[string]any{
+			"invalid": bad,
+			"steps":   steps,
+			"note":    "计划依赖非法，已摘除非法依赖并退化为串行",
+		})
+	}
+	return fixed
+}
+
+// validatePlan 校验计划结构与依赖，返回问题列表与修正后的计划。
+//
+// 依赖只允许指向更早的步骤（1 .. i），这是调度器的前提：readySteps 依赖
+// 「更早的步骤已经完成」来判断就绪，前向依赖 / 自依赖会让它永远等不到。
+func validatePlan(steps []planStep) (problems []string, fixed []planStep) {
+	fixed = make([]planStep, len(steps))
+	for i, s := range steps {
+		fixed[i] = s
+		fixed[i].DependsOn = nil
+		if strings.TrimSpace(s.Goal) == "" {
+			problems = append(problems, fmt.Sprintf("第 %d 步目标为空", i+1))
+		}
+		seen := make(map[int]bool, len(s.DependsOn))
+		for _, d := range s.DependsOn {
+			switch {
+			case d < 1:
+				problems = append(problems, fmt.Sprintf("第 %d 步依赖 %d：序号非法（从 1 开始）", i+1, d))
+			case d > i:
+				problems = append(problems, fmt.Sprintf("第 %d 步依赖 %d：不能依赖自己或更晚的步骤", i+1, d))
+			case seen[d]:
+				problems = append(problems, fmt.Sprintf("第 %d 步依赖 %d：重复声明", i+1, d))
+			default:
+				seen[d] = true
+				fixed[i].DependsOn = append(fixed[i].DependsOn, d)
+			}
+		}
+	}
+	return problems, fixed
+}
+
+// rebaseDeps 重规划结果拼进绝对下标前重基依赖：新计划的 depends_on 是
+// 「新计划内部的 1-based 序号」，偏移 base（= 被替换段的起始下标）之后才是
+// 原计划里的绝对序号。不做这一步，串行依赖会被误判为已满足而并发执行。
+func rebaseDeps(base int, steps []planStep) []planStep {
+	out := make([]planStep, len(steps))
+	for i, s := range steps {
+		out[i] = s
+		if len(s.DependsOn) == 0 {
+			continue
+		}
+		deps := make([]int, 0, len(s.DependsOn))
+		for _, d := range s.DependsOn {
+			deps = append(deps, d+base)
+		}
+		out[i].DependsOn = deps
+	}
+	return out
 }
 
 // planWaves 静态预览波次分组（事件展示用）：贪心按依赖分层
