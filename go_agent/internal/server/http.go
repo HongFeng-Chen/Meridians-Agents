@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	adminv1 "go_agent/api/admin/v1"
 	agentfactoryv1 "go_agent/api/agentfactory/v1"
 	aiplatformv1 "go_agent/api/aiplatform/v1"
 	conversationv1 "go_agent/api/conversation/v1"
@@ -55,6 +56,7 @@ func NewHTTPServer(
 	platformSvc *service.PlatformMCPService,
 	aiPlatformSvc *service.AIPlatformService,
 	harnessSvc *service.HarnessService,
+	adminSvc *service.AdminService,
 	auditUC *audit.UseCase,
 ) *http.Server {
 	g := newGate(sec)
@@ -117,6 +119,8 @@ func NewHTTPServer(
 	// /api/aiplatform/**（外部 AI 平台：千问/百炼 MCP 广场搜索与一键接入）
 	aiplatformv1.RegisterAIPlatformServiceHTTPServer(srv, aiPlatformSvc)
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, harnessSvc)
+	// /api/admin/tenants、/api/admin/users（系统管理：多租户 + 成员名册）
+	adminv1.RegisterAdminServiceHTTPServer(srv, adminSvc)
 	// /mcp/platform（平台内置 MCP 端点：任务中心 / 会话 / 链路数据，只读、仅本机）
 	registerPlatformMCP(srv, platformSvc)
 	// /api/mcp/tool-approvals/**（高危工具调用的审批：列表 / 批准 / 驳回）、

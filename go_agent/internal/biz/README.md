@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | `conversation` | 会话目录、消息、LLM 自主编排、多角色辩论 | `/api/conversations/**` | HANDOVER 2.1 |
 | `agentfactory` | Agent 定义 / 任务 / 13 种执行图（含 auto）/ worker 池 / cron / 优雅停机 | `/api/agentfactory/**` | HANDOVER 2.2 |
-| `harness` | 评测骨架（**未接线**，无 HTTP） | — | HANDOVER 2.3 |
+| `harness` | 评测 Harness：用例集 → 异步运行 → 断言 + LLM 评审 → 报告 | `/api/harness/**` | HANDOVER 2.3 |
 | `memory` | 短期 Redis + 长期 MySQL/Milvus + 记忆图谱 | `/api/memory/**` | HANDOVER 2.4 |
 | `rag` + `rag/graphrag` | 入库、混合检索问答、图谱构建与召回 | `/api/ingest` `/api/query` `/api/graph/**` | HANDOVER 2.5、`rag/DESIGN.md` |
 | `prompt` | 模板版本化、激活回滚、渲染 | `/api/prompts/**` | HANDOVER 2.6 |
@@ -22,6 +22,7 @@
 | `skill` | 技能安装启停、市场下载、落盘、按 URL 装包 | `/api/skills/**` | HANDOVER 2.9 |
 | `aiplatform` | 千问 / 百炼平台登记、目录搜索、MCP 一键接入（复用 `mcp.UseCase`） | `/api/aiplatform/**` | HANDOVER 2.13 |
 | `history` | 统一操作历史（5 类召回 + MCP 调用） | `/api/histories` | HANDOVER 2.10 |
+| `org` | 系统管理：多租户（tenants）+ 成员名册（users），规则在用例里、repo 只存取 | `/api/admin/**` | HANDOVER 2.14 |
 | `embedder` | OpenAI 兼容 Embedding 客户端（内部能力） | — | HANDOVER 2.11 |
 
 ## 允许的依赖方向

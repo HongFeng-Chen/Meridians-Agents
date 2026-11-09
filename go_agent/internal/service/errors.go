@@ -22,6 +22,7 @@ import (
 	"go_agent/internal/biz/llm"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/memory"
+	"go_agent/internal/biz/org"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/skill"
 )
@@ -230,6 +231,32 @@ func mapAIPlatformErr(err error) error {
 		return badRequest(err.Error())
 	case errors.Is(err, aiplatform.ErrImportFailed), errors.Is(err, aiplatform.ErrAuthFailed):
 		return upstreamErr(err.Error())
+	default:
+		return internalErr(err)
+	}
+}
+
+// mapOrgErr 系统管理域（租户 / 成员）错误
+//
+// 区分「参数不合法」「对象已存在 / 仍被占用」「没有权限」三类：
+// 前者改输入，后者是业务约束（如最后一个管理员、仍有成员的租户），
+// 前端提示语完全不同，不能都塞进 400。
+func mapOrgErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, org.ErrTenantNotFound), errors.Is(err, org.ErrUserNotFound):
+		return notFound(err.Error())
+	case errors.Is(err, org.ErrTenantExists), errors.Is(err, org.ErrUserExists):
+		return conflict(err.Error())
+	case errors.Is(err, org.ErrTenantHasUsers), errors.Is(err, org.ErrLastAdmin):
+		// 约束类冲突：不是重名，改个名字重试也没用，得先迁成员 / 补管理员
+		return conflictCode("ORG_CONSTRAINT", err.Error())
+	case errors.Is(err, org.ErrForbidden), errors.Is(err, org.ErrBuiltinTenant),
+		errors.Is(err, org.ErrSelfProtect):
+		return forbidden("ORG_FORBIDDEN", err.Error())
+	case errors.Is(err, org.ErrInvalidTenant), errors.Is(err, org.ErrInvalidUser):
+		return badRequest(err.Error())
 	default:
 		return internalErr(err)
 	}

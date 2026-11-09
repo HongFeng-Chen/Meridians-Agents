@@ -15,6 +15,7 @@ import {
   conversation,
   aiplatform,
   harness,
+  admin,
 } from './api/generated/index.js';
 import { ApiError, OPERATIONS } from './api/http.js';
 
@@ -30,6 +31,7 @@ export {
   conversation,
   aiplatform,
   harness,
+  admin,
   ApiError,
   OPERATIONS,
 };

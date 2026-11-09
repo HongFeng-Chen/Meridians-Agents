@@ -1,0 +1,202 @@
+// Package admin.v1 定义系统管理域（多租户 + 成员名册）的对外契约。
+//
+// 对应 internal/biz/org：租户是隔离键（tenant_id），成员是「谁属于哪个租户、
+// 在该租户里是什么角色」的名册。两件事刻意分开：
+//   - 租户 key 一旦创建不可改，因为它已经写进 agent_tasks / memories 等表的 tenant_id；
+//   - 成员名册只做管理，不参与登录认证——身份仍由 JWT / 静态令牌决定，
+//     名册负责回答「这个租户下有哪些人、谁该被停用」，为后续签发令牌与配额打底。
+//
+// public 是内置默认租户（认证关闭时的开发身份、历史数据的归属），不可删除。
+syntax = "proto3";
+
+package admin.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/admin/v1;v1";
+
+// Tenant 租户：一个隔离域。
+message Tenant {
+  // 租户键（隔离键），创建后不可修改
+  string key = 1 [json_name = "key"];
+  string name = 2 [json_name = "name"];
+  // active | disabled
+  string status = 3 [json_name = "status"];
+  string remark = 4 [json_name = "remark"];
+  // 派生：名册成员数
+  int32 user_count = 5 [json_name = "user_count"];
+  // 派生：该租户的历史任务数（agent_tasks）
+  int64 task_count = 6 [json_name = "task_count"];
+  // 是否内置租户（public：不可删除）
+  bool builtin = 7 [json_name = "builtin"];
+  string created_at = 8 [json_name = "created_at"];
+  string updated_at = 9 [json_name = "updated_at"];
+}
+
+message ListTenantsRequest {
+  // 关键字：匹配 key / name
+  string q = 1 [json_name = "q"];
+  string status = 2 [json_name = "status"];
+}
+
+message ListTenantsReply {
+  repeated Tenant items = 1 [json_name = "items"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message CreateTenantRequest {
+  // 租户键：小写字母/数字/-/_，2-32 位；不可用 public
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  string name = 2 [json_name = "name"];
+  string remark = 3 [json_name = "remark"];
+}
+
+message UpdateTenantRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+  optional string name = 2 [json_name = "name"];
+  // active | disabled；停用只是标记，不阻断已有数据的读写
+  optional string status = 3 [json_name = "status"];
+  optional string remark = 4 [json_name = "remark"];
+}
+
+message TenantReply {
+  Tenant tenant = 1 [json_name = "tenant"];
+}
+
+message DeleteTenantRequest {
+  string key = 1 [(google.api.field_behavior) = REQUIRED, json_name = "key"];
+}
+
+// DeleteReply 删除结果（租户键或成员 id）。
+message DeleteReply {
+  string id = 1 [json_name = "id"];
+  bool deleted = 2 [json_name = "deleted"];
+}
+
+// User 成员名册条目。
+message User {
+  int64 id = 1 [json_name = "id"];
+  // 所属租户键，与鉴权链路的 tenant_id 同一取值
+  string tenant_id = 2 [json_name = "tenant_id"];
+  // 登录主体（JWT sub）；同租户内唯一
+  string username = 3 [json_name = "username"];
+  string display_name = 4 [json_name = "display_name"];
+  string email = 5 [json_name = "email"];
+  // platform_admin | tenant_admin | developer | operator | auditor | user
+  string role = 6 [json_name = "role"];
+  // active | disabled
+  string status = 7 [json_name = "status"];
+  // manual（控制台登记）；保留字段，供将来从 JWT 自动发现
+  string source = 8 [json_name = "source"];
+  string created_at = 9 [json_name = "created_at"];
+  string updated_at = 10 [json_name = "updated_at"];
+}
+
+message ListUsersRequest {
+  // 租户过滤；非平台管理员强制只看本租户
+  string tenant_id = 1 [json_name = "tenant_id"];
+  // 关键字：匹配 username / display_name / email
+  string q = 2 [json_name = "q"];
+  string role = 3 [json_name = "role"];
+  string status = 4 [json_name = "status"];
+}
+
+message ListUsersReply {
+  repeated User items = 1 [json_name = "items"];
+  int32 total = 2 [json_name = "total"];
+}
+
+message CreateUserRequest {
+  // 目标租户；非平台管理员只能填自己所属租户（会强制覆盖）
+  string tenant_id = 1 [json_name = "tenant_id"];
+  string username = 2 [(google.api.field_behavior) = REQUIRED, json_name = "username"];
+  string display_name = 3 [json_name = "display_name"];
+  string email = 4 [json_name = "email"];
+  // 角色；默认 user。platform_admin 只有平台管理员能授予
+  string role = 5 [json_name = "role"];
+}
+
+message UpdateUserRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+  optional string display_name = 2 [json_name = "display_name"];
+  optional string email = 3 [json_name = "email"];
+  optional string role = 4 [json_name = "role"];
+  optional string status = 5 [json_name = "status"];
+}
+
+message UserReply {
+  User user = 1 [json_name = "user"];
+}
+
+message DeleteUserRequest {
+  int64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+// AdminService 系统管理：多租户与成员名册。
+//
+// 权限：
+//   - 列表类需要 tenant:manage（租户管理员可看本租户；平台管理员看全部）；
+//   - 租户的创建/改名/停用/删除需要 platform:config（平台级配置）；
+//   - 成员增删改需要 tenant:manage，且非平台管理员被限制在自己租户内。
+service AdminService {
+  // ListTenants 租户列表（含成员数、任务数）。
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsReply) {
+    option (google.api.http) = {
+      get: "/api/admin/tenants"
+    };
+  }
+
+  // CreateTenant 新建租户；key 不可重复且不可用 public。
+  rpc CreateTenant(CreateTenantRequest) returns (TenantReply) {
+    option (google.api.http) = {
+      post: "/api/admin/tenants"
+      body: "*"
+    };
+  }
+
+  // UpdateTenant 修改租户名称 / 状态 / 备注（key 不可改）。
+  rpc UpdateTenant(UpdateTenantRequest) returns (TenantReply) {
+    option (google.api.http) = {
+      patch: "/api/admin/tenants/{key}"
+      body: "*"
+    };
+  }
+
+  // DeleteTenant 删除租户；public 与仍有成员的租户拒绝删除。
+  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteReply) {
+    option (google.api.http) = {
+      delete: "/api/admin/tenants/{key}"
+    };
+  }
+
+  // ListUsers 成员列表（按租户 / 角色 / 状态 / 关键字过滤）。
+  rpc ListUsers(ListUsersRequest) returns (ListUsersReply) {
+    option (google.api.http) = {
+      get: "/api/admin/users"
+    };
+  }
+
+  // CreateUser 登记成员；同租户内 username 唯一。
+  rpc CreateUser(CreateUserRequest) returns (UserReply) {
+    option (google.api.http) = {
+      post: "/api/admin/users"
+      body: "*"
+    };
+  }
+
+  // UpdateUser 修改成员资料 / 角色 / 状态（username 与所属租户不可改）。
+  rpc UpdateUser(UpdateUserRequest) returns (UserReply) {
+    option (google.api.http) = {
+      patch: "/api/admin/users/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteUser 移除成员；不能删除自己与内置 default 主体。
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteReply) {
+    option (google.api.http) = {
+      delete: "/api/admin/users/{id}"
+    };
+  }
+}

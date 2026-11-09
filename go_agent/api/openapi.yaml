@@ -56,6 +56,183 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/rag.v1.StatsReply'
+    /api/admin/tenants:
+        get:
+            tags:
+                - AdminService
+            description: ListTenants 租户列表（含成员数、任务数）。
+            operationId: AdminService_ListTenants
+            parameters:
+                - name: q
+                  in: query
+                  description: 关键字：匹配 key / name
+                  schema:
+                    type: string
+                - name: status
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.ListTenantsReply'
+        post:
+            tags:
+                - AdminService
+            description: CreateTenant 新建租户；key 不可重复且不可用 public。
+            operationId: AdminService_CreateTenant
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/admin.v1.CreateTenantRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.TenantReply'
+    /api/admin/tenants/{key}:
+        delete:
+            tags:
+                - AdminService
+            description: DeleteTenant 删除租户；public 与仍有成员的租户拒绝删除。
+            operationId: AdminService_DeleteTenant
+            parameters:
+                - name: key
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.DeleteReply'
+        patch:
+            tags:
+                - AdminService
+            description: UpdateTenant 修改租户名称 / 状态 / 备注（key 不可改）。
+            operationId: AdminService_UpdateTenant
+            parameters:
+                - name: key
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/admin.v1.UpdateTenantRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.TenantReply'
+    /api/admin/users:
+        get:
+            tags:
+                - AdminService
+            description: ListUsers 成员列表（按租户 / 角色 / 状态 / 关键字过滤）。
+            operationId: AdminService_ListUsers
+            parameters:
+                - name: tenant_id
+                  in: query
+                  description: 租户过滤；非平台管理员强制只看本租户
+                  schema:
+                    type: string
+                - name: q
+                  in: query
+                  description: 关键字：匹配 username / display_name / email
+                  schema:
+                    type: string
+                - name: role
+                  in: query
+                  schema:
+                    type: string
+                - name: status
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.ListUsersReply'
+        post:
+            tags:
+                - AdminService
+            description: CreateUser 登记成员；同租户内 username 唯一。
+            operationId: AdminService_CreateUser
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/admin.v1.CreateUserRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.UserReply'
+    /api/admin/users/{id}:
+        delete:
+            tags:
+                - AdminService
+            description: DeleteUser 移除成员；不能删除自己与内置 default 主体。
+            operationId: AdminService_DeleteUser
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.DeleteReply'
+        patch:
+            tags:
+                - AdminService
+            description: UpdateUser 修改成员资料 / 角色 / 状态（username 与所属租户不可改）。
+            operationId: AdminService_UpdateUser
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/admin.v1.UpdateUserRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/admin.v1.UserReply'
     /api/agentfactory/agents:
         get:
             tags:
@@ -3689,6 +3866,159 @@ paths:
                     content: {}
 components:
     schemas:
+        admin.v1.CreateTenantRequest:
+            required:
+                - key
+            type: object
+            properties:
+                key:
+                    type: string
+                    description: 租户键：小写字母/数字/-/_，2-32 位；不可用 public
+                name:
+                    type: string
+                remark:
+                    type: string
+        admin.v1.CreateUserRequest:
+            required:
+                - username
+            type: object
+            properties:
+                tenant_id:
+                    type: string
+                    description: 目标租户；非平台管理员只能填自己所属租户（会强制覆盖）
+                username:
+                    type: string
+                display_name:
+                    type: string
+                email:
+                    type: string
+                role:
+                    type: string
+                    description: 角色；默认 user。platform_admin 只有平台管理员能授予
+        admin.v1.DeleteReply:
+            type: object
+            properties:
+                id:
+                    type: string
+                deleted:
+                    type: boolean
+            description: DeleteReply 删除结果（租户键或成员 id）。
+        admin.v1.ListTenantsReply:
+            type: object
+            properties:
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/admin.v1.Tenant'
+                total:
+                    type: integer
+                    format: int32
+        admin.v1.ListUsersReply:
+            type: object
+            properties:
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/admin.v1.User'
+                total:
+                    type: integer
+                    format: int32
+        admin.v1.Tenant:
+            type: object
+            properties:
+                key:
+                    type: string
+                    description: 租户键（隔离键），创建后不可修改
+                name:
+                    type: string
+                status:
+                    type: string
+                    description: active | disabled
+                remark:
+                    type: string
+                user_count:
+                    type: integer
+                    description: 派生：名册成员数
+                    format: int32
+                task_count:
+                    type: string
+                    description: 派生：该租户的历史任务数（agent_tasks）
+                builtin:
+                    type: boolean
+                    description: 是否内置租户（public：不可删除）
+                created_at:
+                    type: string
+                updated_at:
+                    type: string
+            description: Tenant 租户：一个隔离域。
+        admin.v1.TenantReply:
+            type: object
+            properties:
+                tenant:
+                    $ref: '#/components/schemas/admin.v1.Tenant'
+        admin.v1.UpdateTenantRequest:
+            required:
+                - key
+            type: object
+            properties:
+                key:
+                    type: string
+                name:
+                    type: string
+                status:
+                    type: string
+                    description: active | disabled；停用只是标记，不阻断已有数据的读写
+                remark:
+                    type: string
+        admin.v1.UpdateUserRequest:
+            required:
+                - id
+            type: object
+            properties:
+                id:
+                    type: string
+                display_name:
+                    type: string
+                email:
+                    type: string
+                role:
+                    type: string
+                status:
+                    type: string
+        admin.v1.User:
+            type: object
+            properties:
+                id:
+                    type: string
+                tenant_id:
+                    type: string
+                    description: 所属租户键，与鉴权链路的 tenant_id 同一取值
+                username:
+                    type: string
+                    description: 登录主体（JWT sub）；同租户内唯一
+                display_name:
+                    type: string
+                email:
+                    type: string
+                role:
+                    type: string
+                    description: platform_admin | tenant_admin | developer | operator | auditor | user
+                status:
+                    type: string
+                    description: active | disabled
+                source:
+                    type: string
+                    description: manual（控制台登记）；保留字段，供将来从 JWT 自动发现
+                created_at:
+                    type: string
+                updated_at:
+                    type: string
+            description: User 成员名册条目。
+        admin.v1.UserReply:
+            type: object
+            properties:
+                user:
+                    $ref: '#/components/schemas/admin.v1.User'
         agentfactory.v1.AgentDef:
             type: object
             properties:
@@ -7580,6 +7910,14 @@ tags:
 
          路由顺序说明：集合接口 /platforms 必须声明在单体 /platforms/{name} 之前，
          gorilla/mux 按注册顺序匹配；contract_test.go 有守卫。
+    - name: AdminService
+      description: |-
+        AdminService 系统管理：多租户与成员名册。
+
+         权限：
+           - 列表类需要 tenant:manage（租户管理员可看本租户；平台管理员看全部）；
+           - 租户的创建/改名/停用/删除需要 platform:config（平台级配置）；
+           - 成员增删改需要 tenant:manage，且非平台管理员被限制在自己租户内。
     - name: AgentFactoryService
       description: AgentFactoryService Agent 低代码工厂 + 异步任务管理。
     - name: ConversationService

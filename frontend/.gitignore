@@ -6,6 +6,7 @@ dist/
 
 # screenshots / smoke artifacts
 shots/
+.smoke/
 
 # logs & OS
 *.log

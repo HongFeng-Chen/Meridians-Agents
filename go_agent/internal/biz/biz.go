@@ -9,6 +9,7 @@ import (
 	"go_agent/internal/biz/history"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/memory"
+	"go_agent/internal/biz/org"
 	"go_agent/internal/biz/platformmcp"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag"
@@ -62,6 +63,10 @@ var ProviderSet = wire.NewSet(
 	// 具体实现（*mcp.UseCase / *skill.UseCase）在 data.ProviderSet 里构造，
 	// 因此接口绑定放在 cmd/go_agent/wire.go 的 wire.Build 中统一声明。
 	aiplatform.New,
+
+	// 系统管理：多租户与成员名册（tenants / users）。
+	// 规则都在用例里（public 不可删、key 不可改、最后一个管理员保护），repo 只做存取。
+	org.New,
 
 	// 模型客户端
 	embedder.NewEmbedding,

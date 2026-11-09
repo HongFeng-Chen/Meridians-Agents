@@ -37,6 +37,7 @@ const SERVICE_GROUPS = {
   ConversationService: { group: 'conversation', label: '会话' },
   AIPlatformService: { group: 'aiplatform', label: 'AI 平台（千问 / 百炼）' },
   HarnessService: { group: 'harness', label: '评测 Harness' },
+  AdminService: { group: 'admin', label: '系统管理（租户 / 成员）' },
 };
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];

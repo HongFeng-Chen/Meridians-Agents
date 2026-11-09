@@ -30,6 +30,8 @@ const PAGES = [
   ['agents', 'Agent 工厂'],
   ['tasks', '任务中心'],
   ['mcp', 'MCP 服务与工具'],
+  ['tenants', '租户管理'],
+  ['users', '用户管理'],
   ['admin', '文档与系统'],
 ];
 

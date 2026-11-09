@@ -45,9 +45,10 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `conversation.v1` | 会话目录 + 消息 + 辩论 | `internal/biz/conversation` | 16 |
 | `history.v1` | 统一操作历史 | `internal/biz/history` | 2 |
 | `aiplatform.v1` | 外部 AI 平台（千问 / 百炼 MCP 广场） | `internal/biz/aiplatform` | 8 |
+| `admin.v1` | 系统管理：多租户 + 成员名册 | `internal/biz/org` | 8 |
 | `todo.v1` | Kratos 脚手架样例（**未接线**，不参与契约校验） | — | 7 |
 
-合计 **163** 个对外操作（不含 `todo.v1`），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
+合计 **171** 个对外操作（不含 `todo.v1`），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
 
 ## 约定
 
@@ -392,6 +393,30 @@ agent_key/温度/耗时/ok/错误/字符数/token 三项）——业务通过 `l
 `/api/aiplatform/platforms`（集合）声明在 `/api/aiplatform/platforms/{name}`（单体）之前
 （gorilla/mux 按注册顺序匹配），`contract_test.go` 有守卫。
 接入动作复用 `biz/mcp.UseCase` 的「创建 → 连接 → 同步工具」，失败回滚删除，不重复实现。
+
+### AdminService
+
+系统管理面：多租户（`tenants`）与成员名册（`users`）。
+
+- **租户键即隔离键**：`tenant_key` 创建后不可修改，它已经是 `agent_tasks` / `rag_documents`
+  等表的 `tenant_id` 取值；`public` 是内置租户（认证关闭时的开发身份、历史数据归属），不可删除。
+- **名册不参与登录认证**：身份仍由 JWT / 静态令牌决定；这里只回答「这个租户下有哪些人、
+  是什么角色、谁被停用了」，`status=disabled` 只是标记，不会让已签发的令牌立刻失效。
+- **权限**：列表需要 `tenant:manage`（非平台管理员被强制限定在本租户）；租户增删改需要
+  `platform:config`；成员增删改需要 `tenant:manage`，且不能越租户操作。
+- **约束**：仍有成员的租户不可删（删租户不动历史任务）；不能停用/删除自己；租户至少保留
+  一名启用的 `tenant_admin`——唯一的例外是平台管理员，那是「管理员离职」时的恢复通道。
+
+| 方法 | 路径 | 操作 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/admin/tenants` | ListTenants | 租户列表（含成员数、任务数、内置标记） |
+| POST | `/api/admin/tenants` | CreateTenant | 新建租户（key 唯一、不可用 public） |
+| PATCH | `/api/admin/tenants/{key}` | UpdateTenant | 改名称 / 状态 / 备注（key 不可改） |
+| DELETE | `/api/admin/tenants/{key}` | DeleteTenant | 删除租户（public、仍有成员 → 拒绝） |
+| GET | `/api/admin/users` | ListUsers | 成员列表（租户 / 角色 / 状态 / 关键字） |
+| POST | `/api/admin/users` | CreateUser | 登记成员（同租户 username 唯一） |
+| PATCH | `/api/admin/users/{id}` | UpdateUser | 改资料 / 角色 / 状态 |
+| DELETE | `/api/admin/users/{id}` | DeleteUser | 移除成员（default 与本人不可删） |
 
 ### HarnessService
 

@@ -17,4 +17,5 @@ var ProviderSet = wire.NewSet(
 	NewPlatformMCPService,
 	NewAIPlatformService,
 	NewHarnessService,
+	NewAdminService,
 )

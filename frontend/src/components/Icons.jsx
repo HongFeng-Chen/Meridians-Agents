@@ -196,3 +196,21 @@ export const IconDebate = (p) => (
     <path d="M10 12h4M12 10v4" />
   </Svg>
 );
+
+/** 租户：多窗口楼宇，代表一个隔离域 */
+export const IconTenant = (p) => (
+  <Svg {...p}>
+    <path d="M4 21V6.5a1.5 1.5 0 0 1 1-1.4l6-2.3a1 1 0 0 1 1.3.9V21" />
+    <path d="M12 10h6.5a1.5 1.5 0 0 1 1.5 1.5V21" />
+    <path d="M2.5 21h19" />
+    <path d="M7 8.5h2M7 12h2M7 15.5h2M15 13.5h1.5M15 17h1.5" />
+  </Svg>
+);
+
+/** 成员：单人剪影 */
+export const IconUser = (p) => (
+  <Svg {...p}>
+    <circle cx="12" cy="8.5" r="3.6" />
+    <path d="M4.8 20.2a7.4 7.4 0 0 1 14.4 0" />
+  </Svg>
+);

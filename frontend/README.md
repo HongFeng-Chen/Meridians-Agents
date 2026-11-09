@@ -5,7 +5,7 @@
 
 无 UI 框架依赖（原生 CSS，设计令牌在 `src/styles.css` 的 `:root`），路由用 hash，刷新不丢页面。
 
-## 页面（16 个）
+## 页面（18 个）
 
 | 分组 | 导航 | 说明 |
 |------|------|------|
@@ -24,7 +24,9 @@
 | | Agent 工厂 | Agent 定义（能力白名单、执行图、DAG 编排）、LLM 造 Agent、能力目录 |
 | | 任务中心 | 任务列表 / 详情抽屉 / 事件链路 / 子任务树 / 取消重试 / 审批（批准、驳回） |
 | 会话 | 会话 | 会话目录 + 多轮对话 + 消息链路弹层（召回明细、工具调用）+ 多角色辩论（暂停 / 恢复 / 叫停、增删角色） |
-| 管理 | 文档与系统 | 文档列表与删除（含图谱引用摘除）、连接与模型信息、系统配置 |
+| 系统管理 | 租户管理 | 多租户隔离域：新建 / 改名 / 启停 / 删除；列表带成员数、任务数与内置标记（`public` 不可删，租户键创建后不可改） |
+| | 用户管理 | 成员名册：按租户 / 角色 / 状态筛选，登记与编辑成员、改角色、停用、移除；名册只做管理，不参与登录认证 |
+| | 文档与系统 | 文档列表与删除（含图谱引用摘除）、连接与模型信息、系统配置 |
 
 ## 启动
 
@@ -64,9 +66,9 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            16 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
+├── pages/            18 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
 │                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
-│                     Tasks / Chats / Admin）
+│                     Tasks / Chats / Tenants / Users / Admin）
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、
 │                     TaskDetailDrawer、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
 ├── api/generated/    proto → SDK（不要手改）
@@ -76,8 +78,8 @@ src/
 
 ## 约定
 
-- **接口只走 SDK**：页面 import `{ rag, prompt, memory, llm, skill, mcp, agentfactory, conversation, history, aiplatform, harness }`
-  十一个命名空间；`src/api.js` 只保留旧签名兼容层。
+- **接口只走 SDK**：页面 import `{ rag, prompt, memory, llm, skill, mcp, agentfactory, conversation, history, aiplatform, harness, admin }`
+  十二个命名空间；`src/api.js` 只保留旧签名兼容层。
 - 改了 `api/*.proto` 后先 `make api && make sdk`，再改页面；不要在前端手写 URL。
 - 后端错误已统一映射（`ApiError`），页面只处理提示文案，不做状态码分支。
 - 图表为纯 SVG / 手写 Canvas 实现（子图、趋势图），不引图表库。

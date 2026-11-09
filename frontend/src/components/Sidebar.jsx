@@ -12,7 +12,9 @@ import {
   IconSearch,
   IconSettings,
   IconSpark,
+  IconTenant,
   IconUpload,
+  IconUser,
 } from './Icons.jsx';
 
 const NAV_GROUPS = [
@@ -49,8 +51,12 @@ const NAV_GROUPS = [
     ],
   },
   {
-    label: '管理',
-    items: [{ key: 'admin', label: '文档与系统', icon: IconSettings }],
+    label: '系统管理',
+    items: [
+      { key: 'tenants', label: '租户管理', icon: IconTenant },
+      { key: 'users', label: '用户管理', icon: IconUser },
+      { key: 'admin', label: '文档与系统', icon: IconSettings },
+    ],
   },
 ];
 

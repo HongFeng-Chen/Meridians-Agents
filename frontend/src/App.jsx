@@ -16,6 +16,8 @@ import Eval from './pages/Eval.jsx';
 import Agents from './pages/Agents.jsx';
 import Tasks from './pages/Tasks.jsx';
 import Chats from './pages/Chats.jsx';
+import Tenants from './pages/Tenants.jsx';
+import Users from './pages/Users.jsx';
 import { api } from './api.js';
 import { IconRefresh } from './components/Icons.jsx';
 
@@ -104,6 +106,16 @@ const PAGES = {
     title: '文档与系统',
     desc: '管理已入库文档，查看连接配置与接口契约',
     component: Admin,
+  },
+  tenants: {
+    title: '租户管理',
+    desc: '多租户隔离域：租户键即 tenant_id，创建后不可改；public 是内置租户，不可删除',
+    component: Tenants,
+  },
+  users: {
+    title: '用户管理',
+    desc: '成员名册：谁属于哪个租户、在该租户是什么角色。名册只做管理，不参与登录认证',
+    component: Users,
   },
 };
 

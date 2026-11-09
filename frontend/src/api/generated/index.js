@@ -120,6 +120,90 @@ export const query = (input = {}, options) =>
 export const uploadAndIngest = (input = {}, options) =>
   call('RagService_UploadAndIngest', input, options);
 
+/* ---------- 系统管理（租户 / 成员） ---------- */
+
+/**
+ * ListTenants 租户列表（含成员数、任务数）。
+ *
+ * GET /api/admin/tenants
+ *   query 参数：q, status
+ * @returns {Promise<ListTenantsReply>}
+ */
+export const listTenants = (input = {}, options) =>
+  call('AdminService_ListTenants', input, options);
+
+/**
+ * CreateTenant 新建租户；key 不可重复且不可用 public。
+ *
+ * POST /api/admin/tenants
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<TenantReply>}
+ */
+export const createTenant = (input = {}, options) =>
+  call('AdminService_CreateTenant', input, options);
+
+/**
+ * UpdateTenant 修改租户名称 / 状态 / 备注（key 不可改）。
+ *
+ * PATCH /api/admin/tenants/{key}
+ * @param {UpdateTenantRequest} input 路径参数：key
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<TenantReply>}
+ */
+export const updateTenant = (input = {}, options) =>
+  call('AdminService_UpdateTenant', input, options);
+
+/**
+ * DeleteTenant 删除租户；public 与仍有成员的租户拒绝删除。
+ *
+ * DELETE /api/admin/tenants/{key}
+ * @param {Object} input 路径参数：key
+ * @returns {Promise<DeleteReply>}
+ */
+export const deleteTenant = (input = {}, options) =>
+  call('AdminService_DeleteTenant', input, options);
+
+/**
+ * ListUsers 成员列表（按租户 / 角色 / 状态 / 关键字过滤）。
+ *
+ * GET /api/admin/users
+ *   query 参数：tenant_id, q, role, status
+ * @returns {Promise<ListUsersReply>}
+ */
+export const listUsers = (input = {}, options) =>
+  call('AdminService_ListUsers', input, options);
+
+/**
+ * CreateUser 登记成员；同租户内 username 唯一。
+ *
+ * POST /api/admin/users
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<UserReply>}
+ */
+export const createUser = (input = {}, options) =>
+  call('AdminService_CreateUser', input, options);
+
+/**
+ * UpdateUser 修改成员资料 / 角色 / 状态（username 与所属租户不可改）。
+ *
+ * PATCH /api/admin/users/{id}
+ * @param {UpdateUserRequest} input 路径参数：id
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<UserReply>}
+ */
+export const updateUser = (input = {}, options) =>
+  call('AdminService_UpdateUser', input, options);
+
+/**
+ * DeleteUser 移除成员；不能删除自己与内置 default 主体。
+ *
+ * DELETE /api/admin/users/{id}
+ * @param {Object} input 路径参数：id
+ * @returns {Promise<DeleteReply>}
+ */
+export const deleteUser = (input = {}, options) =>
+  call('AdminService_DeleteUser', input, options);
+
 /* ---------- Agent 工厂 ---------- */
 
 /**
@@ -1687,6 +1771,17 @@ export const rag = {
   ingest,
   query,
   uploadAndIngest,
+};
+
+export const admin = {
+  listTenants,
+  createTenant,
+  updateTenant,
+  deleteTenant,
+  listUsers,
+  createUser,
+  updateUser,
+  deleteUser,
 };
 
 export const agentfactory = {

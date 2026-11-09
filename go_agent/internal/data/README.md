@@ -27,6 +27,7 @@ wire 装配集中在 `data.go` 的 `ProviderSet`；biz 层只依赖接口（port
 | `mcp.go` | `mcp_servers`、`tools`（MCP 服务与工具元数据；headers/args/env 是 JSON 列，空集合必须写 `{}` / `[]`，不能写空串） |
 | `llm.go` | `llm_providers`（数据源配置）、`llm_calls`（调用历史：token 用量/耗时/模型/task_id/tenant_id 关联，Manager 异步写入） |
 | `agentfactory.go` | `agent_definitions`、`agent_tasks`（任务池：pending/running/paused，带 `tenant_id`）、`agent_task_history`（终态归档，`FinishTask` 事务迁移 / `ReviveTask` 复活）、`agent_task_events`、`agent_task_checkpoints`（步骤/节点级快照）；capabilities 等是 JSON 列，任务时间列可空、零值写 NULL |
+| `org.go` | `tenants`（隔离域，`tenant_key` 主键、创建后不可改）、`users`（成员名册，`(tenant_id, username)` 唯一；只做管理，不参与登录认证） |
 | `doc.go` | 包说明 |
 
 **`milvusdb/models/`** — 集合 Schema，一个集合一个文件（字段常量 + 构造函数同文件）：
