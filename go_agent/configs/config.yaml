@@ -77,7 +77,8 @@ data:
     auto_migrate: ${DB_AUTO_MIGRATE:true}
   redis:
     addr: ${REDIS_ADDR:127.0.0.1:6379}
-    # 默认值与 docker-compose.yml 里的 --requirepass 保持一致，本地开箱可跑；
+    # 默认值与两处 compose 的 --requirepass 保持一致（根 docker-compose.yml 与
+    # deploy/compose.yaml，均取 ${REDIS_PASSWORD:-redis_pass}），本地开箱可跑；
     # 要连无密码 Redis，直接把这里改成空串或设置 REDIS_PASSWORD 环境变量。
     # （k8s 里由 Secret 注入 REDIS_PASSWORD）
     password: ${REDIS_PASSWORD:redis_pass}

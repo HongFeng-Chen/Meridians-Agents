@@ -6,14 +6,22 @@
 #
 # 连接信息与 configs/config.yaml 默认值一致：
 #   MySQL  root/root@tcp(127.0.0.1:3306)/go_agent?charset=utf8mb4
-#   Redis  127.0.0.1:6379
+#   Redis  127.0.0.1:6379（口令 redis_pass）
+#
+# 两处刻意的安全默认：
+#   1. Redis 必须与服务端配置里的 password 一致。之前 compose 没写 --requirepass，
+#      而 config.yaml 默认带 redis_pass，本地一启动就连不上（报 NOAUTH）——
+#      口令成了「配了但没人用」的状态。现在统一由 REDIS_PASSWORD 决定，
+#      不设时退回 redis_pass，仍然不是「无密码」。
+#   2. 端口只绑回环：开发库里放的是真实文档与调用记录，不该因为
+#      「本机跑一下」就暴露到局域网。要跨机访问自行改成 "0.0.0.0:3306:3306" 并自负风险。
 services:
   mysql:
     image: mysql:8.4
     container_name: go-agent-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: go_agent
       TZ: Asia/Shanghai
     command:
@@ -21,11 +29,11 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+08:00
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -34,13 +42,20 @@ services:
     image: redis:7-alpine
     container_name: go-agent-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      # 与 configs/config.yaml 的 ${REDIS_PASSWORD:redis_pass} 同一来源
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_pass}
+    command:
+      - sh
+      - -c
+      # requirepass 从环境变量注入；--appendonly 保证重启不丢缓存与锁
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 20
