@@ -198,6 +198,8 @@ func logStartupInfo(bc *conf.Bootstrap) {
 	log.Info("security policies",
 		"egress_allowed_hosts", len(ep.AllowedHosts),
 		"egress_allow_private", ep.AllowPrivate,
+		// 本机 / 集群内 MCP 服务要靠这一项放行，打出来才能判断「到底是没配还是配了没重启」
+		"egress_allow_private_hosts", strings.Join(ep.AllowPrivateHosts, ","),
 		"egress_allowed_ports", len(ep.AllowedPorts),
 		"egress_max_redirects", ep.MaxRedirects,
 		"tool_approval_level", threshold,

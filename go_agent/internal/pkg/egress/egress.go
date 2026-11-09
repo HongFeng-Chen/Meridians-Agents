@@ -20,6 +20,10 @@
 //	EGRESS_DENIED_HOSTS=evil.example.com                 额外拉黑（始终生效）
 //	EGRESS_ALLOW_PRIVATE=false                           是否允许打内网/回环（默认否；
 //	                                                     链路本地段 169.254/16 始终拒绝）
+//	EGRESS_ALLOW_PRIVATE_HOSTS=127.0.0.1,.svc.cluster.local
+//	                                                     仅对这些主机放行内网/回环。本机或集群内
+//	                                                     跑 MCP 服务时用这个，比全局打开
+//	                                                     EGRESS_ALLOW_PRIVATE 收得紧得多
 //	EGRESS_ALLOWED_PORTS=443,8443                        端口白名单（空 = 不限）
 //	EGRESS_MAX_REDIRECTS=5                               最多跟几跳重定向（0 = 不跟随）
 //
@@ -52,6 +56,11 @@ type Policy struct {
 	DeniedHosts []string
 	// AllowPrivate 是否允许访问回环/私网/链路本地地址
 	AllowPrivate bool
+	// AllowPrivateHosts 仅对这些主机放行回环/私网。
+	// 匹配规则同 AllowedHosts（精确主机名、"*.suffix"、".suffix"），IP 字面量按字符串比。
+	// 与 AllowPrivate 的区别是「按连接目标收窄」：本机/集群内跑 MCP 服务时，
+	// 只需要放行那一个主机，不必把全部 RFC1918 网段一起打开。
+	AllowPrivateHosts []string
 	// AllowedPorts 端口白名单；空表示不限端口
 	AllowedPorts []int
 	// MaxRedirects 最多跟随的重定向跳数；0 表示不跟随
@@ -117,10 +126,11 @@ var (
 // loadPolicy 从环境变量加载（MCP_EGRESS_* 为兼容别名）
 func loadPolicy() Policy {
 	p := Policy{
-		AllowedHosts: normalizePatterns(envList("EGRESS_ALLOWED_HOSTS", "MCP_EGRESS_ALLOWED_HOSTS")),
-		DeniedHosts:  normalizePatterns(envList("EGRESS_DENIED_HOSTS", "MCP_EGRESS_DENIED_HOSTS")),
-		AllowPrivate: envBool(false, "EGRESS_ALLOW_PRIVATE", "MCP_EGRESS_ALLOW_PRIVATE"),
-		MaxRedirects: envInt(5, "EGRESS_MAX_REDIRECTS", "MCP_EGRESS_MAX_REDIRECTS"),
+		AllowedHosts:      normalizePatterns(envList("EGRESS_ALLOWED_HOSTS", "MCP_EGRESS_ALLOWED_HOSTS")),
+		DeniedHosts:       normalizePatterns(envList("EGRESS_DENIED_HOSTS", "MCP_EGRESS_DENIED_HOSTS")),
+		AllowPrivate:      envBool(false, "EGRESS_ALLOW_PRIVATE", "MCP_EGRESS_ALLOW_PRIVATE"),
+		AllowPrivateHosts: normalizePatterns(envList("EGRESS_ALLOW_PRIVATE_HOSTS", "MCP_EGRESS_ALLOW_PRIVATE_HOSTS")),
+		MaxRedirects:      envInt(5, "EGRESS_MAX_REDIRECTS", "MCP_EGRESS_MAX_REDIRECTS"),
 	}
 	for _, s := range envList("EGRESS_ALLOWED_PORTS", "MCP_EGRESS_ALLOWED_PORTS") {
 		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n > 0 && n <= 65535 {
@@ -191,7 +201,7 @@ func CheckHost(host string) error {
 		return fmt.Errorf("%w: 主机 %q 在黑名单内", ErrBlocked, h)
 	}
 	if ip := net.ParseIP(h); ip != nil {
-		return CheckIP(ip)
+		return CheckIPForHost(ip, h)
 	}
 	if len(p.AllowedHosts) > 0 && !matchPatterns(h, p.AllowedHosts) {
 		return fmt.Errorf("%w: 主机 %q 不在出站白名单内；请配置 EGRESS_ALLOWED_HOSTS", ErrBlocked, h)
@@ -203,7 +213,17 @@ func CheckHost(host string) error {
 //
 // 这是防 DNS rebinding 的关键：域名可以在保存配置时解析到公网、在真正 connect
 // 时解析到 127.0.0.1。所以必须拿「即将连接的那个 IP」来判断。
+//
+// 不知道主机名时用这个；知道的话用 CheckIPForHost，才能应用 EGRESS_ALLOW_PRIVATE_HOSTS。
 func CheckIP(ip net.IP) error {
+	return CheckIPForHost(ip, "")
+}
+
+// CheckIPForHost 在 CheckIP 的基础上带上「本次连接的主机名」，
+// 使 EGRESS_ALLOW_PRIVATE_HOSTS 能按目标收窄放行范围。
+//
+// host 传解析前的原始目标（域名或 IP 字面量），空字符串等价于 CheckIP。
+func CheckIPForHost(ip net.IP, host string) error {
 	if ip == nil {
 		return fmt.Errorf("%w: IP 无法解析", ErrBlocked)
 	}
@@ -219,16 +239,31 @@ func CheckIP(ip net.IP) error {
 			return fmt.Errorf("%w: 目标地址 %s 属于链路本地/保留网段（%s），禁止出站", ErrBlocked, ip, n.String())
 		}
 	}
-	if CurrentPolicy().AllowPrivate {
+	if allowPrivateFor(host) {
 		return nil
 	}
 	for _, n := range privateBlocked {
 		if n.Contains(ip) {
 			return fmt.Errorf("%w: 目标地址 %s 属于内网/回环网段（%s），禁止出站；"+
-				"确需访问内网请显式设置 EGRESS_ALLOW_PRIVATE=true", ErrBlocked, ip, n.String())
+				"确需访问内网请把这台主机加进 EGRESS_ALLOW_PRIVATE_HOSTS（如 127.0.0.1），"+
+				"或整体设置 EGRESS_ALLOW_PRIVATE=true", ErrBlocked, ip, n.String())
 		}
 	}
 	return nil
+}
+
+// allowPrivateFor 该主机是否被允许访问私网。
+// 注意：白名单只影响「私网/回环」这一层，链路本地（169.254/16）等网段始终拒绝。
+func allowPrivateFor(host string) bool {
+	p := CurrentPolicy()
+	if p.AllowPrivate {
+		return true
+	}
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "" || len(p.AllowPrivateHosts) == 0 {
+		return false
+	}
+	return matchPatterns(h, p.AllowPrivateHosts)
 }
 
 // checkPort 端口白名单（未配置则不限）

@@ -104,6 +104,58 @@ func TestValidateURL_AllowList(t *testing.T) {
 	}
 }
 
+// TestValidateURL_AllowPrivateHosts 按主机收窄放行：
+// 只放行名单里的主机，同网段的其他地址仍按默认策略拒绝。
+// 本机 / 集群内跑 MCP 服务时用这个，比 EGRESS_ALLOW_PRIVATE=true 收得紧。
+func TestValidateURL_AllowPrivateHosts(t *testing.T) {
+	withPolicy(t, Policy{
+		AllowPrivateHosts: []string{"127.0.0.1", ".svc.cluster.local"},
+		MaxRedirects:      5,
+	})
+
+	for _, raw := range []string{
+		"http://127.0.0.1:8080/mcp",                         // 本机 MCP
+		"http://k8s-mcp.default.svc.cluster.local:8080/mcp", // 集群内服务
+	} {
+		if err := ValidateURL(raw); err != nil {
+			t.Errorf("白名单主机应放行私网 %q，实际 %v", raw, err)
+		}
+	}
+	// 同一网段但不在名单里 —— 继续拒绝，否则「放行一台机器」就退化成「放行全网段」
+	if err := ValidateURL("http://127.0.0.2:8080/mcp"); err == nil {
+		t.Error("未列入白名单的回环地址应继续拒绝")
+	}
+	if err := ValidateURL("http://10.0.0.5:8500/v1/agent/self"); err == nil {
+		t.Error("未列入白名单的私网地址应继续拒绝")
+	}
+	// 链路本地是云元数据地址，任何白名单都不能放
+	if err := ValidateURL("http://169.254.169.254/latest/meta-data"); err == nil {
+		t.Error("链路本地地址即便配了私网白名单也应拒绝")
+	}
+}
+
+// TestTransport_AllowPrivateHostsDial 运行时（Dial 阶段）同样按主机收窄：
+// 同一份 Client 先被默认策略拒绝，放行名单加上该主机后必须能连上。
+func TestTransport_AllowPrivateHostsDial(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	withPolicy(t, Policy{MaxRedirects: 5})
+	if resp, err := Client(2*time.Second, Options{}).Get(srv.URL); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("默认策略下回环地址应被 Dial 阶段拒绝")
+	}
+
+	withPolicy(t, Policy{AllowPrivateHosts: []string{"127.0.0.1"}, MaxRedirects: 5})
+	resp, err := Client(2*time.Second, Options{}).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("私网白名单内主机应可连接，实际 %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
 func TestValidateURL_DeniedListWins(t *testing.T) {
 	withPolicy(t, Policy{
 		AllowedHosts: []string{".example.com"},

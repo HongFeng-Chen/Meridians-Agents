@@ -506,11 +506,17 @@ curl -H "Authorization: Bearer ops-token" -X POST .../api/mcp/servers
 | `EGRESS_ALLOWED_HOSTS` | 空 | 主机白名单（`mcp.example.com` / `.corp.internal` / `*.corp.internal`）；**配了就变白名单模式** |
 | `EGRESS_DENIED_HOSTS` | 空 | 额外拉黑，优先级高于白名单 |
 | `EGRESS_ALLOW_PRIVATE` | `false` | 放行内网 / 回环（内网部署、本机 MCP 服务才开） |
+| `EGRESS_ALLOW_PRIVATE_HOSTS` | 空 | 只对这些主机放行内网 / 回环（`127.0.0.1` / `.svc.cluster.local`）；推荐用它代替上面的全局开关 |
 | `EGRESS_ALLOWED_PORTS` | 空 | 端口白名单，空 = 不限 |
 | `EGRESS_MAX_REDIRECTS` | `5` | 最多跟几跳重定向，`0` = 不跟随 |
 
 **始终拒绝**（即便 `EGRESS_ALLOW_PRIVATE=true`）：`169.254.0.0/16` 链路本地（云元数据）、组播 / 保留段、
 `localhost`、`metadata.google.internal` 等元数据域名。旧的 `MCP_EGRESS_*` 变量名仍被识别。
+
+本机或集群内跑 MCP 服务（例如 `http://127.0.0.1:8080/mcp`）时，启动前设
+`EGRESS_ALLOW_PRIVATE_HOSTS=127.0.0.1`（集群内用 `.svc.cluster.local`）即可，不必打开
+`EGRESS_ALLOW_PRIVATE`。策略只在**进程启动时读取一次**，改完环境变量必须重启进程——
+否则前端点「连接」仍会看到 `出站访问被拒绝: 目标地址 127.0.0.1 属于内网/回环网段`。
 
 ### MCP 凭证不回显
 

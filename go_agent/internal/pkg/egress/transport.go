@@ -41,34 +41,35 @@ func Transport(base *http.Transport, opts Options) *http.Transport {
 		return tr
 	}
 
-	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-		// Control 在 connect 之前被调用，拿到的 address 是**已解析的 IP:port**。
-		// 这是唯一能挡住 DNS rebinding 的位置：解析结果已确定、连接尚未建立，
-		// 此时拒绝是零成本的。
-		Control: func(_, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("出站校验：地址 %q 无法解析: %w", address, err)
-			}
-			ip := net.ParseIP(host)
-			if ip == nil {
-				return fmt.Errorf("出站校验：%q 不是合法 IP", host)
-			}
-			return CheckIP(ip)
-		},
-	}
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("出站校验：目标 %q 无法解析: %w", addr, err)
 		}
-		// 主机名层面的白名单（IP 段判断交给上面的 Control 回调）
+		// 主机名层面的白名单（IP 段判断交给 Control 回调）
 		if err := CheckHost(host); err != nil {
 			return nil, err
 		}
-		return dialer.DialContext(ctx, network, addr)
+		// 每次连接单独建 Dialer，只为了把 host 闭包进 Control：
+		// Control 拿到的 address 是**已解析的 IP:port**，是唯一能挡住 DNS rebinding
+		// 的位置（解析结果已确定、连接尚未建立，此时拒绝零成本）；而
+		// EGRESS_ALLOW_PRIVATE_HOSTS 需要「这次连的是哪台主机」才能收窄放行范围。
+		d := &net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				ipStr, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return fmt.Errorf("出站校验：地址 %q 无法解析: %w", address, err)
+				}
+				ip := net.ParseIP(ipStr)
+				if ip == nil {
+					return fmt.Errorf("出站校验：%q 不是合法 IP", ipStr)
+				}
+				return CheckIPForHost(ip, host)
+			},
+		}
+		return d.DialContext(ctx, network, addr)
 	}
 	return tr
 }

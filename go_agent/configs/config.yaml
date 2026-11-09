@@ -201,6 +201,9 @@ data:
 #   EGRESS_ALLOWED_HOSTS=mcp.example.com,.corp.internal   # 主机白名单；配了即白名单模式
 #   EGRESS_DENIED_HOSTS=evil.example.com                  # 额外拉黑，优先于白名单
 #   EGRESS_ALLOW_PRIVATE=false                            # 放行内网/回环（内网部署才开）
+#   EGRESS_ALLOW_PRIVATE_HOSTS=127.0.0.1,.svc.cluster.local  # 只对这些主机放行内网/回环
+#                                                          # 本机或集群内跑 MCP 服务用这个，
+#                                                          # 比全局 EGRESS_ALLOW_PRIVATE 收得紧
 #   EGRESS_ALLOWED_PORTS=443,8443                         # 端口白名单（空 = 不限）
 #   EGRESS_MAX_REDIRECTS=5                                # 最多跟几跳（0 = 不跟随）
 # 始终拒绝：链路本地段（169.254/16，云元数据）、组播、保留段、localhost、
