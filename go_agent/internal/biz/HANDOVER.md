@@ -93,12 +93,12 @@ flowchart LR
 | 模块 | 一句话职责 | 对外入口（HTTP） | 主要存储 | 测试 |
 | --- | --- | --- | --- | --- |
 | `conversation` | 会话目录 + 消息 + LLM 编排对话 + 多角色辩论 | `/api/conversations/**` | MySQL `conversations` `conversation_messages` `debates` | `conversation_test.go` `chat_test.go` |
-| `agentfactory` | Agent 低代码工厂：定义/任务/事件/12 种执行图/worker 池/定时调度 | `/api/agentfactory/**` | MySQL `agent_definitions` `agent_tasks` `agent_task_history` `agent_task_events`；Milvus `{base}_agents`；Redis `af:*` | `agentfactory_test.go` `graph*_test.go` `workflow_test.go` `cron_test.go` |
+| `agentfactory` | Agent 低代码工厂：定义/任务/事件/13 种执行图（含 auto）/worker 池/定时调度 | `/api/agentfactory/**` | MySQL `agent_definitions` `agent_tasks` `agent_task_history` `agent_task_events` `agent_task_checkpoints`；Milvus `{base}_agents`；Redis `af:*` | `agentfactory_test.go` `graph*_test.go` `workflow_test.go` `plan_test.go` `task_state_test.go` `cron_test.go` |
 | `harness` | 评测用例集：黑盒执行 + 规则断言 + LLM Judge + 报告 | `/api/harness/**` | MySQL `harness_sets` `harness_cases` `harness_runs` `harness_run_items` | `harness_test.go` |
 | `memory` | 短期（Redis）+ 长期（MySQL+Milvus）+ 记忆图谱 | `/api/memory/**` | MySQL `memories`；Redis `mem:short:*`；Milvus `{base}_memories` | `memory_test.go` |
 | `rag` | 文档入库 + 混合检索问答 + GraphRAG 图谱 | `/api/ingest` `/api/query` `/api/graph/**` | MySQL `rag_documents`；Milvus `{base}`；Redis `rag:ans:*` `rag:lock:ingest:*` | `rag_test.go` `chunker_test.go` |
 | `prompt` | 提示词模板版本化 + 在线生效 + 渲染 | `/api/prompts/**` | MySQL `prompt_templates` `prompt_versions`；Redis `prompt:ver:*` | `prompt_test.go` `template_test.go` |
-| `mcp` | MCP 服务/工具生命周期、语义召回、调用 | `/api/mcp/**` | MySQL `mcp_servers` `tools`；Milvus `{base}_tools`；Redis `mcp:tool:*` `mcp:status:*` `ns:tools:*` | 无单测（靠 contract 手测） |
+| `mcp` | MCP 服务/工具生命周期、语义召回、调用 | `/api/mcp/**` | MySQL `mcp_servers` `tools`；Milvus `{base}_tools`；Redis `mcp:tool:*` `mcp:status:*` `ns:tools:*` | `stdio_policy_test.go` `egress_test.go` `redact_test.go` `risk_test.go` `proxy_test.go` |
 | `platformmcp` | 平台只读 MCP 工具：任务中心 / 会话 / 链路 / 操作历史（7 个工具） | `/mcp/platform`（server 层挂载） | 只读复用 agentfactory / conversation / history 用例 | `platformmcp_test.go` |
 | `llm` | 多数据源管理 + 场景路由 + 故障切换 + 调用历史 | `/api/llm/**` `/api/llm/calls` | MySQL `llm_providers` `llm_calls` | `manager_test.go` `llm_test.go` |
 | `skill` | 技能安装/启停/卸载 + 技能市场 + 落盘 + URL 安装 | `/api/skills/**` `/api/skillhub/**` | MySQL `skills` `skill_files` `skill_hubs`；磁盘 `sync_dir` | `skill_test.go` |
@@ -227,7 +227,7 @@ sequenceDiagram
             UC->>DB: AddEvent(tool_call, latency, ok)
         end
     end
-    UC->>DB: FinishTask(任务池→任务历史表)
+    UC->>DB: TransitionTask(running→终态，任务池→任务历史表)
     UC->>DB: AddEvent(final) + 快照
 ```
 
@@ -294,6 +294,16 @@ sequenceDiagram
 7. **时间**：统一 `time.Time`，落库 `created_at/updated_at`，对外由 service 转 RFC3339 字符串。
 8. **测试**：biz 模块用 `fakeRepo`（手写，不引 mock 框架）。改接口后**必须**同步 fake，否则 `go test ./...` 直接编译失败——
    这是刻意的，用来强制你更新所有实现。
+9. **查询必须带租户**：已接入租户的数据（`rag_documents`、`agent_tasks`/`agent_task_history`、
+   `op_histories`、`llm_calls`）一律 `(tenant_id, user_id)` 双条件。新增表加
+   `tenant_id varchar(128) not null default 'public'`（默认值负责回填历史行）；
+   读路径从 `identity.TenantID(ctx)` 取，不要只按 user_id 过滤——不同租户可以有相同 user_id，
+   这是文档验收标准里明确要防的越权场景。`memories` 仍是 user 维度（见 5.5 待办）。
+10. **管理面写操作走 `requirePerm`**：`service/guard.go` 的 `requirePerm(ctx, authz.PermXxx, …)`
+    是唯一入口（角色 → 权限矩阵在 `pkg/authz`）。不要在 handler 里自己比较角色名或 `AdminAllowed`。
+11. **状态变更一律 CAS**：任务的任何状态迁移都走 `TransitionTask(ctx, id, from, t)`，
+    不要 `SaveTask` 直接写 `Status`。`from` 必须列出「这次迁移允许的源状态」，
+    输掉 CAS 时按语义处理：取消重读重试、审批返回 409、worker 只补事件不覆盖。
 
 ---
 
@@ -356,7 +366,7 @@ sequenceDiagram
 | `Append` / `AppendAs` | 追加消息（后者带 speaker） | `POST /api/conversations/{id}/messages` |
 | `Chat` | 一轮完整对话 | `POST /api/conversations/{id}/chat` |
 | `CreateDebate` / `CurrentDebate` | 开辩论 / 查当前（活跃优先，否则最近一场） | `POST .../debates`、`GET .../debates/current` |
-| `PauseDebate` / `ResumeDebate` / `StopDebate` | 暂停 / 恢复 / 叫停 | `POST .../debates/current/pause|resume|stop` |
+| `PauseDebate` / `ResumeDebate` / `StopDebate` | 暂停 / 恢复 / 叫停 | `POST .../debates/current/pause\|resume\|stop` |
 | `AddDebateRole` / `RemoveDebateRole` | 辩论中增减角色（下一轮生效） | `POST .../debates/current/roles[/remove]` |
 
 #### 时序图 1：Chat 编排（内部细节版）
@@ -463,7 +473,22 @@ sequenceDiagram
 - `conversations`：ID、title、agent_key、message_count、last_message、时间戳。
 - `conversation_messages`：role、speaker、content、meta（本轮链路 JSON）、task_id。
 - `debates`：conversation_id、topic、status、round、max_rounds、end_rule、roles（JSON）、finished_at。
+- `data/uploads/<yyyymm>/<随机名>.<ext>`：聊天附件（图片/视频），只允许白名单扩展名；
+  消息里的 `attachments[].url` 固定是裸地址 `/api/files/<bucket>/<name>`。
 - 无 Redis / Milvus 依赖（`debateManager` 只是进程内 map）。
+
+#### 附件存储与访问控制（2026-11-09 起）
+
+- **存储裸地址**：`Message.Attachments[].URL` 落库时**不带**签名。签名随密钥变化，
+  落库的话换密钥或重启（纯静态令牌部署用进程内随机密钥）会让历史消息里的附件永久 403。
+- **读取时现签**：`conversation.Detail` / `ListMessagesPage` / `Append` 返回前统一调
+  `signAttachments`，给每条地址补 `?sig=HMAC-SHA256(密钥, 路径)`。
+- **静态路由自校验**：`/api/files/` 是原始 `net/http` 路由（不过 Kratos 认证中间件），
+  `filesHandler` 自己校验「有效签名 或 Authorization 头 或 `?token=`」。
+  浏览器 `<img src>` 带不了头，所以必须允许签名与查询参数两种形态。
+- **反查磁盘要剥查询串**：`mediaDiskRel` 先 `mediaauth.PathOnly(url)` 再映射 `bucket/name`，
+  否则带签名的地址会被当成文件名（图片回传给模型时读不到文件）。
+- **开发态不签名**：认证关闭时 `mediaauth.Configure("")`，保持「打开就能看图」。
 
 #### 改动指南
 
@@ -485,6 +510,8 @@ sequenceDiagram
 4. **`toolCatalog` 是「二选一」**：Agent 目录非空就不列 MCP 工具。想让两者共存必须改这个函数。
 5. **辩论 goroutine 用的是 `context.Background()`**，不受 HTTP 请求取消影响——只能通过 DB 状态（stopping/stopped）控制。
 6. **暂停是「协作式」的**：`PauseDebate` 只改状态，当前这句发言会照常生成完；前端不要期待秒停。
+7. **附件地址不要自己拼**：前端/Agent 拿到的 URL 已带签名；要复用就原样用，别截掉查询串，
+   也别把裸地址存到别处再展示（会 401）。签名只对原路径有效——改文件名即失效，这是刻意的。
 
 #### 测试
 
@@ -504,11 +531,14 @@ sequenceDiagram
 
 | 文件 | 内容 | 行数级别 |
 | --- | --- | --- |
-| `types.go` | 领域模型、12 种 `GraphType` 常量、状态常量、校验 | 大 |
-| `agentfactory.go` | `UseCase` 主体：定义 CRUD、任务提交/取消/重试、worker 池、`executeTaskNow` | 大 |
+| `types.go` | 领域模型、13 种 `GraphType` 常量（含 auto）、状态常量、校验 | 大 |
+| `agentfactory.go` | `UseCase` 主体：定义 CRUD、任务提交/取消/重试/审批、worker 池、`executeTaskNow` | 大 |
 | `runtime.go` | `Recorder`（事件/进度/快照）、`runGraph` 分派、`runToolLoop` 通用循环 | 中 |
+| `state.go` | `RunState`（计划步骤 / 图节点与边 / 审批凭据）与 checkpoint 编解码、老格式迁移 | 中 |
+| `approval.go` | 审批凭据（参数哈希 / 策略版本 / 自批检查）、挂起与续跑 | 中 |
+| `task_state.go` | 任务状态边表：`CanTransit` / `TransitableFrom`（自检与反查用；真正的约束仍是 SQL CAS） | 小 |
 | `graphs.go` | 各执行图实现（plan_execute / reflexion / router / self_ask / state_machine / orchestrator / debate / blackboard…） | 最大 |
-| `graph.go` + `flow.go` | DAG 编排（`FlowGraph` 解析/校验/执行、条件分支） | 中 |
+| `graph.go` + `flow.go` | DAG 编排（`FlowGraph` 解析/校验/执行、条件分支、节点级续跑） | 中 |
 | `workflow.go` | 显式串行/并行成员编排 + 汇总 + 监察 | 中 |
 | `capability.go` | 能力目录（Agent 委派 + MCP 工具 + 技能统一视图）、`InvokeDispatch` | 小 |
 | `factory.go` | `create_agent` 元编程护栏（配额、白名单、防自举、沙箱灰度） | 中 |
@@ -521,28 +551,50 @@ sequenceDiagram
 | 类型 | 说明 |
 | --- | --- |
 | `AgentDef` | `AgentKey`（唯一）、`System`、`Capabilities`（能力白名单）、`GraphType`、`MaxTurns`、`Flow`（DAG JSON）、`Members`（编排成员）、`Orchestration`（serial/parallel）、`Schedule`（cron）、`Source`（manual/llm）、`Sandbox`、`Vectorized` |
-| `Task` | `Status`（pending/running/succeeded/failed/canceled）、`Progress`、`Result`、`ErrorMsg`、`ConvID`、`Archived` |
+| `Task` | `Status`（pending/running/paused/succeeded/failed/canceled）、`Progress`、`Result`、`ErrorMsg`、`ConvID`、`Archived`、`TenantID` |
 | `TaskEvent` | `Type`（status/thought/tool_call/delegate/final/error…）、`Turn`、`Payload`（JSON） |
-| `Recorder` | 任务执行期的事件写入器：`event` / `status` / `snapshot` / `setProgress` |
+| `TaskCheckpoint` | `TaskID` + `Seq` + `GraphType` + `Cursor` + `State`（`RunState` JSON）；游标记录「停在哪个步骤/节点」 |
+| `RunState` | 计划（`Steps`/`StepState`）、图（`NodeState`/`EdgeState`）、`Approvals`（审批凭据）、`Turn`/`Cursor` |
+| `ApprovalGrant` | `Ability` + `ArgsHash` + `PolicyVersion` + `Requester`/`Approver` + `Decision` + `ExpiresAt` + `SelfApproved` |
+| `Recorder` | 任务执行期的事件写入器：`event` / `status` / `snapshot` / `setProgress` / `checkpoint` |
 | `CapabilitySchema` | 能力目录条目：`agent:<key>`、`mcp:<unique_name>`、`skill:<name>` |
 
-**状态机（任务）**：
+**状态机（任务）**：合法边定义在 `task_state.go`。除崩溃恢复的批量重置
+（`RequeueInterrupted`，本身就是 `WHERE status='running'` 的条件更新）外，状态写入都必须经过
+`TransitionTask(ctx, id, from, t)`（SQL `WHERE id = ? AND status IN (?)`）。
+输掉 CAS 说明状态已被别人改过，调用方按语义处理，**不要无条件覆盖**。
 
 ```text
 SubmitTask → [pending] ──ClaimTask──▶ [running] ──成功──▶ [succeeded]
                  │                        │
                  │ CancelTask             ├──失败──▶ [failed]
-                 ▼                        └──ctx 取消──▶ [canceled]
-             [canceled]                   （终态统一 FinishTask：任务池 → 任务历史表）
+                 ▼                        ├──审批/高危──▶ [paused] ──批准──▶ [pending]
+             [canceled]                   └──ctx 取消──▶ [canceled]
+                                              [paused] ──驳回/超时──▶ [failed]
+                 （终态统一 TransitionTask：任务池 → 任务历史表，单事务）
 
 RetryTask: 终态（历史表） ──ReviveTask（插池+删历史）──▶ [pending] ──入队──▶ …
 ```
+
+| 迁移 | 谁触发 | 输掉 CAS 时 |
+| --- | --- | --- |
+| pending → running | `ClaimTask`（原子认领） | 别人先领了，worker 静默返回 |
+| pending/paused → canceled | `CancelTask` | 重读状态最多重试 3 次；running 走 ctx cancel |
+| running → succeeded/failed/canceled | worker / cancel | 只补一条事件，**不覆盖**（尤其不能把 canceled 改回 succeeded） |
+| pending → failed | 定义被删 / 队列里找不到定义 | 忽略冲突 |
+| paused → failed | 审批超时扫描 | `continue` 跳过，下一轮再看 |
+| paused → pending | `ApproveTask` 批准 | 返回 409 `TASK_STATE_CONFLICT`，让前端刷新 |
+| paused → canceled | `ApproveTask` 驳回 | 同上 |
+
+**审批挂起是硬状态**：`ErrApprovalNeeded` 不是失败，不能触发重规划（换条路绕开审批比停下更危险），
+也不能推进计划下标。任务置 `paused`，checkpoint 的 `cursor` 里存着待批的 `ApprovalRequest`；
+批准后从原步骤续跑。审批凭据绑定「能力 + 参数哈希 + 策略版本」，改参数就失效。
 
 #### 端口与实现
 
 | 端口 | 实现 | 关键约束 |
 | --- | --- | --- |
-| `Repo` | `data/db/repo.AgentFactoryRepo` | `ClaimTask` 必须原子；`FinishTask`/`ReviveTask` 必须单事务（任务任一时刻只在一张表） |
+| `Repo` | `data/db/repo.AgentFactoryRepo` | `ClaimTask` 必须原子；`FinishTask`/`ReviveTask` 必须单事务（任务任一时刻只在一张表）；其余状态写入必须走 `TransitionTask`（CAS），终态迁移同时把行搬进历史表 |
 | `VectorStore` | `milvusdb/repo.AgentStore`（`{base}_agents`） | 只存 id + 向量 + `enabled` 等标量 |
 | `Cache` | `redis.AgentFactoryCache` | `af:agent:<id>` / `af:task:<id>`；任务快照只缓存活跃任务 |
 | `TaskLock` | `redis.TaskLock` | SET NX PX + token 校验释放/续期；多节点 Quorum |
@@ -560,7 +612,8 @@ RetryTask: 终态（历史表） ──ReviveTask（插池+删历史）──▶
 | `SyncAllVectors` | 全量重建 Agent 向量（管理端修复用） |
 | `Capabilities` | 能力目录（Agent 委派 + MCP 工具 + 技能统一 schema） |
 | `SubmitTask` / `ListTasks` / `GetTask` / `TaskEvents` | 任务提交与查询 |
-| `CancelTask` / `RetryTask` | 取消（pending 直接终态 / running 走 ctx cancel）/ 重试（历史表复活） |
+| `CancelTask` / `RetryTask` | 取消（pending/paused 走 CAS / running 走 ctx cancel）/ 重试（历史表复活，清空旧 checkpoint） |
+| `ApproveTask` | 批准或驳回挂起任务：解出 `ApprovalRequest` → 校验审批人 → 写 `ApprovalGrant` → 审计 → CAS 回 pending |
 | `Stats` | 定义数、各状态任务数、能力数 |
 | `StartWorkers` / `Drain` / `Stop` | worker 池生命周期：`BeforeStart` 启动、`BeforeStop` 排空、`AfterStop` 硬停（见下节） |
 
@@ -693,9 +746,10 @@ sequenceDiagram
 | 存储 | 键/表 | 内容 |
 | --- | --- | --- |
 | MySQL | `agent_definitions` | 定义全字段（`flow`/`members`/`capabilities` 为 JSON） |
-| MySQL | `agent_tasks` | **仅活跃任务**（pending/running） |
-| MySQL | `agent_task_history` | 终态任务（succeeded/failed/canceled），与任务池互斥 |
+| MySQL | `agent_tasks` | **仅活跃任务**（pending/running/paused），带 `tenant_id` |
+| MySQL | `agent_task_history` | 终态任务（succeeded/failed/canceled），与任务池互斥，带 `tenant_id` |
 | MySQL | `agent_task_events` | trace 事件流 |
+| MySQL | `agent_task_checkpoints` | 步骤/节点级快照（任务内 `seq` 递增，排序以自增 ID 为准） |
 | Milvus | `{base}_agents` | 定义向量（语义召回） |
 | Redis | `af:agent:<id>` | 定义热缓存 |
 | Redis | `af:task:<id>` | 活跃任务快照（前端轮询实时性） |
@@ -711,7 +765,7 @@ sequenceDiagram
 | 改 prompt 结构 | `runtime.go: buildSystemPrompt` | 会影响所有执行图，改动前跑 `graph*_test.go` |
 | 增加任务字段 | proto + `db/models/agentfactory.go` + `repo` + `types.go` | 任务表与历史表**两张都要加** |
 | 调整并发/配额 | `data.go: NewAgentFactoryOptions`（读 conf `data.agentfactory`） | `WorkerCount` 改大要考虑 MySQL 连接池 |
-| 定时任务行为 | `schedule.go: tickOneSchedule` + `cron.go` | 调度锁用 `scheduleLockBase | defID`，与任务锁共用 TaskLock |
+| 定时任务行为 | `schedule.go: tickOneSchedule` + `cron.go` | 调度锁用 `scheduleLockBase \| defID`，与任务锁共用 TaskLock |
 
 #### 坑
 
@@ -729,14 +783,27 @@ sequenceDiagram
    （default 优先 → 其他启用源 → conf 兜底）。按「模型」选源仍需改 `candidates`。
 6. **`Progress` 是估算值**：`90/maxTurns` 递增，不代表真实完成度；前端不要做精确进度条。
 7. **cron 是进程内调度**：多副本部署会重复触发，靠 `scheduleLock` 兜底；单副本无需担心。
+8. **不要裸写 `Status`**：`SaveTask` 只用于非状态字段（progress/result 等）。改状态一律
+   `TransitionTask`，否则「用户取消」会被 worker 的终态写入覆盖回 succeeded。
+   `task_state_test.go` 里有守卫用例（`transitionFroms` 断言不存在无源状态的写入）。
+9. **checkpoint 不是正确性依赖，但顺序很关键**：先记录旧主键再写新版本、先摘旧引用再插新节点；
+   写快照失败只告警，读不到 checkpoint 就从第一步重跑。
+10. **并行步骤各自落盘**：`StepState` 是「下标 → 状态」，`Done`/`StepIdx` 只是连续前缀视图；
+    重规划必须 `clearStepsFrom(failIdx)`，否则新步骤会继承旧完成状态被跳过。
+11. **审批游标不能被同波快照冲掉**：`waveCommit` 合并步骤副本时要把挂起游标粘住，
+    否则同波另一个步骤的 checkpoint 会把「在等人批什么」写成空，审批永远批不完。
+12. **`Recorder.mu` 必须是共享指针**：`derive()` 值拷贝会让每个并行分支各拿一把零值锁（等于没锁），
+    `-race` 能直接看到 `task.Progress` 并发读写。
 
 #### 测试
 
 - `agentfactory_test.go`：定义 CRUD、任务状态流转（用 fakeRepo/fakeCache）。
-- `graph_test.go` / `graphs_test.go`：DAG 解析、条件分支、各执行图骨架。
+- `task_state_test.go`：状态边表、取消不覆盖认领、并发取消拒绝审批、worker 终态守卫、租户过滤。
+- `plan_test.go`：计划依赖校验/重基、步骤独立状态、续跑跳过已完成步骤、并行步骤逐条落盘。
+- `graph_test.go` / `graphs_test.go`：DAG 解析、条件分支（判断失败不激活任何分支）、节点/边续跑、失败节点重试。
 - `workflow_test.go`：串行/并行成员、汇总。
 - `cron_test.go`：5 字段解析与 `Next`。
-- 改动执行图后**必须**跑 `go test ./internal/biz/agentfactory/...`（5 个测试文件、1600+ 行，是最可靠的回归网）。
+- 改动执行图后**必须**跑 `go test ./internal/biz/agentfactory/...`（11 个测试文件、4000+ 行，是最可靠的回归网）。
 
 ---
 
@@ -1053,7 +1120,7 @@ sequenceDiagram
 
 | 存储 | 位置 | 内容 |
 | --- | --- | --- |
-| MySQL | `rag_documents` | doc_id / source / mode / status / chars / chunks / entities / relations / checksum |
+| MySQL | `rag_documents` | doc_id / source / mode / status / chars / chunks / entities / relations / checksum / `tenant_id` |
 | Milvus | `{base}` | 文档块 + `sparse`(BM25) + `dense`；标量 `doc_id`/`source`/`chunk_idx` |
 | Milvus | `{base}_graph_entities` / `_graph_relations` | 实体（name/type/description/freq/chunk_refs/source+双向量）/ 关系（source/target/relation/description/weight/chunk_refs/dense） |
 | Redis | `rag:ans:<sha256(question\|filter) 前 12 字节的 hex>` | 问答缓存（TTL `cacheTTL`，缺省 5 分钟）；`Invalidate` 用 SCAN 前缀清空 |
@@ -1066,8 +1133,14 @@ sequenceDiagram
 - **同一 `docID` 重复入库**：`Ingest` 先记旧分块主键、写新版本、再按主键删旧版本，
   结果里的 `purged` 就是这次顶掉的行数；图谱侧由 `graphrag.Service.Ingest` 内的
   `DetachDocRefs` 摘掉旧引用。
-- **`DeleteDoc` 的顺序**：先删分块 → 删图谱孤儿 → 删元数据 → 清缓存。图谱失败只写 `graph_warning`，
-  不像分块失败那样中断。
+- **`DeleteDoc` 的顺序**：先删分块 → 摘图谱引用（`DetachDocRefs`）→ 删元数据 → 清缓存。
+  图谱失败只写 `graph_warning`，不像分块失败那样中断。
+- **图谱不能只删「孤儿节点」**：共享实体上还挂着别的文档/记忆的引用，删除行会把它们一起抹掉；
+  正确做法是 `DetachDocRefs(prefix)` 摘掉本文档的 `doc#idx` 引用，引用清空才删行，
+  还有别的来源就改写 `refs`/`freq`。且必须**先写改写行、再按旧主键删行**，避免中途失败留下空窗。
+- **租户隔离在数据面**：`DocumentRepo.List/ListDocIDs` 是 `(tenantID, userID)` 四参；
+  `Ingest` 会校验 docID 归属，属于别的租户直接报错（防止用同一个 docID 覆盖别人的文档）。
+  历史数据 `tenant_id='public'`，`sameTenant` 把空串当 `public`，升级后老数据不会「谁都能看」。
 - **`Query` 缓存键含 filter**：不同 filter 是不同缓存条目；`Invalidate` 是全清（简单粗暴，代价可接受）。
 - **提示词热更新**：`Render(prompt.KeyRAGSystem/KeyRAGUser)` 走 `prompt` 的缓存 → DB → 内置三级回落。
   改词不用重启；但改**变量名**必须同时改 `rag.go` 里传的 `vars`。
@@ -1080,8 +1153,10 @@ sequenceDiagram
 
 #### 测试
 
-`rag_test.go`（入库分流/去重/删除/统计，fake 三存储）、`chunker_test.go`（分块边界）。
-GraphRAG 无单测，靠端到端：`/api/graph/ingest` → `/api/graph/query`。
+`rag_test.go`（入库分流/去重/删除/统计/重复入库清旧版本，fake 三存储）、`chunker_test.go`（分块边界）、
+`tenant_test.go`（跨租户不可见 / 同 docID 不可覆盖 / 老数据归默认租户）、
+`graphrag/ingest_test.go`（旧引用先摘后写、他人引用不误删、频率合并）。
+其余靠端到端：`/api/graph/ingest` → `/api/graph/query`。
 
 ---
 
@@ -1264,6 +1339,15 @@ sequenceDiagram
     UC-->>CALLER: CallResult
 ```
 
+#### 安全边界（P0/P1 加固后，别拆）
+
+| 面 | 策略 | 代码 |
+| --- | --- | --- |
+| stdio 执行 | **默认全拒**；`MCP_STDIO_ENABLED=true` + 命令基名白名单 + 绝对路径目录白名单才放行；shell 类命令与 `python -c`/`node -e` 内联代码需单独开关；危险 env（`LD_PRELOAD`/`NODE_OPTIONS`/`PYTHONPATH`…）一律拒绝；参数个数/环境变量个数有上限。**落库前与 Dial 前各校验一次**（历史数据也要过）。 | `biz/mcp/stdio_policy.go` |
+| 出站（SSRF） | endpoint/spec_url/base_url 只允许 http/https；拒绝回环、私网、链路本地、元数据地址；DNS 解析后再校验一遍（防 DNS rebinding）；**重定向逐跳校验**。平台内置 `platform` 服务是唯一豁免（地址由进程自己拼）。 | `pkg/egress` + `biz/mcp/egress.go` |
+| 凭证回显 | `Headers`/`Env`/`ProxyConfig` 里的 `Authorization`/`Cookie`/`token`/`password` 等读接口一律打码；列表只给 `has_credentials`；写接口把掩码值还原成旧值（传掩码 = 不改，传空 = 清空要显式）。 | `pkg/redact` + `biz/mcp/redact.go` |
+| 管理面 | 增删改服务/工具都要 `requirePerm(ctx, authz.PermAgentDevelop, …)`；只读走 `PermAuditRead`。MCP 管理面不再「登录即可写」。 | `service/guard.go` |
+
 #### 改动指南 / 坑
 
 - **同步是「尽力而为」的**：`SyncResult.Warning` 非空表示「元数据成功、向量失败」，此时工具能出现在列表里
@@ -1276,8 +1360,14 @@ sequenceDiagram
 - **`SetToolEnabled` 必须同步 Milvus 标量**，否则向量过滤（`enabledOnly`）与 MySQL 状态不一致，
   会出现「已停用但仍被召回」。
 - **stdio 模式的子进程**由 `Manager.Disconnect/CloseAll` 结束；`main` 退出时会调 `CloseAll`，
-  自己写新入口时别忘。
-- **无单测**：改动后必须手工回归——建 http server → 同步 → 搜工具 → 调工具 → 停用工具 → 再搜（应搜不到）。
+  自己写新入口时别忘。新增 stdio 服务前先确认白名单，否则报「stdio 传输默认关闭」。
+- **不要绕过 `GuardedTransport`**：`http.Client` 如果直接 `&http.Client{}` 建，SSRF 校验与重定向校验都没了；
+  运行时 `SetClientOptions` 注入的 client 也必须走 `GuardedClient`。
+- **打码不能只在前端做**：读接口返回的是 `Server` 的脱敏副本，前端拿不到明文是设计要求；
+  需要「保持原值」时传回掩码字面量，`MergeMaskedHeaders` 会还原。
+- **测试**：`stdio_policy_test.go`（白名单/路径/内联代码/危险 env）、`egress_test.go`（私网/回环/DNS/重定向）、
+  `redact_test.go`（掩码与回写）、`risk_test.go`（高危工具判定）、`proxy_test.go`。
+  端到端仍建议手工回归：建 http server → 同步 → 搜工具 → 调工具 → 停用 → 再搜（应搜不到）。
 
 ---
 
@@ -1408,9 +1498,15 @@ sequenceDiagram
 - **`Save` 是「主表按 name 覆盖 + 文件表整体替换」**，不是增量；改文件要传全量。
 - **路径安全**：`validFilePath` 拒绝绝对路径与 `..`；`materialize` 里还有一次 `HasPrefix(target)` 校验。
   新增文件写入逻辑时必须复用这两处，别自己拼路径。
+- **技能包解压限额（zip 炸弹）**：条目数 `maxZipEntries=512`、单文件解压后 `maxZipEntrySize=2MB`、
+  总量 `maxZipTotalSize=32MB`、压缩比 `maxZipRatio=200:1`。`LimitReader` 多读 1 字节判断超限
+  （直接截断会把残缺内容当正常文件收下）；声明大小不可全信，读取时仍以 LimitReader 兜底。
+- **市场返回的 JSON 也要校验路径**：`files[].path` 与 zip 条目走同一个 `safeSkillPath`
+  （拒绝 `..`、绝对路径、盘符），不只是 `path.Clean`。
 - **名字规则**：`validName` 小写字母或数字开头，可含 `. _ -`，≤64；改名等于新建 + 删除。
 - **升级语义**：同名安装会覆盖 content/files/checksum，`Enabled` 取决于入参（`nil` 时保持原状态）。
-- **测试**：`skill_test.go`（安装/升级/启停/落盘/路径校验/市场）。
+- **测试**：`skill_test.go`（安装/升级/启停/落盘/路径校验/市场）、
+  `skillhub_test.go`（zip 路径穿越/条目数/单文件超限/压缩比/JSON 路径）。
 
 ---
 
@@ -1757,8 +1853,10 @@ func WithTask(ctx context.Context, taskID uint64, agentKey string) context.Conte
 
 | # | 事项 | 影响 | 建议 |
 | --- | --- | --- | --- |
-| 1 | `mcp` / `embedder` 无单测 | 改动回归靠手测 | `history` 与 `platformmcp` 已补齐（`history_test.go` / `platformmcp_test.go` / `server/mcp_test.go`）；`mcp.SearchTools` 的降级路径仍建议补 fake 测试 |
-| 2 | `rag.Ingest` 先写向量后写 MySQL | 极端情况留下孤儿向量 | 已用「查不到 MySQL 就跳过」兜底；可加定期对账任务 |
+| 1 | `embedder` 无单测 | 改动回归靠手测 | MCP 侧已补齐（`stdio_policy` / `egress` / `redact` / `risk` / `proxy`）；`mcp.SearchTools` 的降级路径仍建议补 fake 测试 |
+| 2 | `rag.Ingest` 先写新向量再删旧向量，MySQL 最后写 | 极端情况留下新版本向量但元数据仍旧 | 已用「查不到 MySQL 就跳过」兜底 + 下次入库按 `IDsOfDoc` 自愈；可加定期对账任务 |
+| 2.1 | Token 预算 `Check/Charge` 非原子 | 并发任务可能一起越过配额 | 改成「预留 → 结算」两段式（预留失败直接拒），落库用条件更新 |
+| 2.2 | 入库锁 `TryLock` 是 SET NX + 本地过期 | 时钟漂移/网络分区下可能双持有 | 改 Lua CAS（值比对 + PX 原子设置），续期同样走 Lua |
 | 3 | `def.LLMModel` 只是提示词前缀（`def.LLMSource` 已是真选源，见 2.x 坑 5） | 无法真正按模型选源 | 在 `llm.Manager.candidates` 加 `model` 维度过滤 |
 | 4 | 会话里 Agent 委派是同步轮询（最长 5 分钟） | 长任务会拖住 HTTP | 前端超时对齐，或改成「先返回 task_id + 前端轮询」 |
 | 5 | `GraphRecall` 不写 `graph_recall` 历史 | 会话里的图谱召回在 `op_histories` 看不到 | 若要统一，在 `rag.GraphRecall` 加 defer 记录（注意别和 `GraphQuery` 重复） |

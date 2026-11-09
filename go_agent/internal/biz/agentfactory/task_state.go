@@ -19,11 +19,11 @@ package agentfactory
 
 // taskEdges 允许的状态迁移（有向边）。终态没有出边。
 //
-//	pending  → running（认领） / canceled（未开始就取消）
+//	pending  → running（认领） / canceled（未开始就取消） / failed（定义已删除，无法执行）
 //	running  → succeeded / failed / canceled / paused
-//	paused   → pending（批准续跑） / failed（驳回） / canceled（挂起期取消）
+//	paused   → pending（批准续跑） / failed（驳回/超时） / canceled（挂起期取消）
 var taskEdges = map[string][]string{
-	TaskPending: {TaskRunning, TaskCanceled},
+	TaskPending: {TaskRunning, TaskCanceled, TaskFailed},
 	TaskRunning: {TaskSucceeded, TaskFailed, TaskCanceled, TaskPaused},
 	TaskPaused:  {TaskPending, TaskFailed, TaskCanceled},
 }

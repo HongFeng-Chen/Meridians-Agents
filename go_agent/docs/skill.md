@@ -69,6 +69,21 @@
 下载后统一走本地校验（名称、路径、单文件 ≤ `maxFileBytes`），再落库/落盘——
 市场内容不可信，校验必须在本地做。
 
+### 解压限额（防 zip 炸弹 / 目录穿越）
+
+只看「压缩包 ≤ 20MB」不够：高压缩比的小包能解出上百 GB，条目路径也可能指向技能目录之外。
+
+| 限制 | 值 | 失败行为 |
+| --- | --- | --- |
+| 条目数 | `maxZipEntries = 512` | 报错拒绝整个包 |
+| 单文件解压后 | `maxZipEntrySize = 2MB` | 报错（不是截断：截断会把残缺内容当正常文件收下） |
+| 解压总量 | `maxZipTotalSize = 32MB` | 报错 |
+| 压缩比 | `maxZipRatio = 200:1`（>1MB 的条目才检查） | 判定为可疑条目 |
+
+路径统一走 `safeSkillPath`：拒绝 `..`、绝对路径、Windows 盘符；ZIP 条目与市场 JSON 的
+`files[].path` **两条入口都要过**（只 `path.Clean` 挡不住 `C://…` 与 `/etc/passwd`）。
+读条目时仍用 `io.LimitReader(size+1)` 兜底——zip 头里的声明大小可以伪造。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
@@ -147,4 +162,5 @@ go test ./internal/biz/skill/ -v
 
 覆盖：名称/内容/路径校验（含 `..`、绝对路径、超限文件）、安装落盘与 manifest、
 启停联动删除/重建目录、sync 清理孤儿目录、市场安装（source/source_url/文件）、
-搜索结果 installed 标记、未配置市场返回 `ErrNoHub`。
+搜索结果 installed 标记、未配置市场返回 `ErrNoHub`；`skillhub_test.go` 另覆盖
+zip 路径穿越、条目数/单文件/压缩比超限、JSON 形态非法路径。

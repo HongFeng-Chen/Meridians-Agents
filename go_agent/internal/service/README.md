@@ -34,6 +34,12 @@ var (
    指针字段（`optional`）直接透传给 biz 的 `UpdateInput`。
 5. **文件上传走 `internal/pkg/httpx`**：`httpx.ResolveFile` 同时兼容
    HTTP 的 multipart 与 gRPC 的 bytes+name。
+6. **管理面写操作走 `requirePerm`**：`guard.go` 把「角色 → 权限」判定收敛到
+   `authz.Allowed`（矩阵在 `internal/pkg/authz`），拒绝时统一 403 + `denied` 审计。
+   handler 里不要再自己比较角色名；只读的管理接口用 `audit:read`，写用
+   `platform:config` / `agent:develop` / `task:approve` 等。
+7. **列表/统计要带租户**：`authScope(ctx)` / `auditScope(ctx)` 决定「看自己还是看全部」，
+   租户维度用 `auditTenant(ctx)`；biz 的查询方法签名把 `(tenantID, userID)` 显式传下去。
 
 ## 测试
 

@@ -181,7 +181,7 @@ sequenceDiagram
     R->>M: DeleteDoc(docID) → 删除该文档全部分块
     M-->>R: deleted_chunks
     R->>GS: DeleteDocGraph(docID)
-    Note over GS: 只删「引用全部来自该文档」的<br/>实体/关系（prefix=docID#），跨文档共享节点保留
+    Note over GS: 摘掉本文档的引用（prefix=docID#）<br/>引用清空才删行；还有别的来源就改写 refs/freq
     GS-->>R: deleted_entities / deleted_relations 或 error
     R->>DB: Delete(docID)
     R->>A: Invalidate()

@@ -11,7 +11,7 @@
 | 模块 | 一句话职责 | 对外入口 | 详细 |
 | --- | --- | --- | --- |
 | `conversation` | 会话目录、消息、LLM 自主编排、多角色辩论 | `/api/conversations/**` | HANDOVER 2.1 |
-| `agentfactory` | Agent 定义 / 任务 / 12 种执行图 / worker 池 / cron / 优雅停机 | `/api/agentfactory/**` | HANDOVER 2.2 |
+| `agentfactory` | Agent 定义 / 任务 / 13 种执行图（含 auto）/ worker 池 / cron / 优雅停机 | `/api/agentfactory/**` | HANDOVER 2.2 |
 | `harness` | 评测骨架（**未接线**，无 HTTP） | — | HANDOVER 2.3 |
 | `memory` | 短期 Redis + 长期 MySQL/Milvus + 记忆图谱 | `/api/memory/**` | HANDOVER 2.4 |
 | `rag` + `rag/graphrag` | 入库、混合检索问答、图谱构建与召回 | `/api/ingest` `/api/query` `/api/graph/**` | HANDOVER 2.5、`rag/DESIGN.md` |
@@ -40,7 +40,9 @@ harness      → （通过 Runner 端口）agentfactory / llm
 
 1. **ctx 传身份**：`history.WithTask` / `WithConv` 都是读改写，可叠加；worker 用 `task.ConvID` 回填，
    子任务继承父会话。改这块跑 `history_test.go` + `TestConvIDInheritance`。
-2. **状态机不跳终态**：任务任一时刻只在活跃表或历史表之一，`FinishTask` / `ReviveTask` 单事务，`ClaimTask` 原子。
+2. **状态机只能按边迁移**：任务任一时刻只在活跃表或历史表之一，`FinishTask` / `ReviveTask` 单事务，
+   `ClaimTask` 原子；其余状态变更走 `TransitionTask`（CAS），合法边见 `task_state.go`。
+   已接入租户的查询带 `(tenant_id, user_id)`。
 3. **召回 best-effort**：记忆 / RAG / GraphRAG 失败只写 `meta.*_error`，不能把对话打挂。
 
 ## 装配与测试

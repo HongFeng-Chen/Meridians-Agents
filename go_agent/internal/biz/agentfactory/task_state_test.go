@@ -13,7 +13,7 @@ import (
 // 状态机本身：非法迁移要被 CanTransit 拒绝
 func TestTaskStateMachine(t *testing.T) {
 	ok := [][2]string{
-		{TaskPending, TaskRunning}, {TaskPending, TaskCanceled},
+		{TaskPending, TaskRunning}, {TaskPending, TaskCanceled}, {TaskPending, TaskFailed},
 		{TaskRunning, TaskSucceeded}, {TaskRunning, TaskFailed},
 		{TaskRunning, TaskPaused}, {TaskRunning, TaskCanceled},
 		{TaskPaused, TaskPending}, {TaskPaused, TaskFailed}, {TaskPaused, TaskCanceled},
@@ -25,7 +25,7 @@ func TestTaskStateMachine(t *testing.T) {
 	}
 	bad := [][2]string{
 		{TaskSucceeded, TaskRunning}, {TaskCanceled, TaskPending},
-		{TaskPaused, TaskRunning}, {TaskPending, TaskFailed},
+		{TaskPaused, TaskRunning}, {TaskSucceeded, TaskPaused},
 	}
 	for _, c := range bad {
 		if CanTransit(c[0], c[1]) {

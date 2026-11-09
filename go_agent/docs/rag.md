@@ -90,6 +90,25 @@ curl -s -XPOST localhost:8000/api/query  -d '{"question":"Milvus 支持什么检
 配置文件里的 `${NAME:default}` 由 `internal/conf/loader.go` 在加载前展开
 （Kratos 自带的 file source 不做这一步）。
 
+## 后续变更（2026-11，迁移之后）
+
+这篇是迁移记录，下面这些是后来改的，读代码时以本节为准：
+
+- **文档更新是「版本替换」**：同一个 `doc_id` 重复 `Ingest` 时，先记下旧分块主键
+  （`ChunkStore.IDsOfDoc`）→ 写新版本 → 按旧主键删（`DeleteByIDs`）。写新失败则旧版本原样保留；
+  删旧失败只留重复，下次入库会自愈。返回里的 `purged` 是被顶掉的行数。
+- **图谱摘引用而不是删孤儿节点**：`DetachDocRefs(docID+"#")` 摘掉本文档的 `doc#idx` 引用，
+  引用清空才删行；还有别的文档/记忆引用就改写 `refs`/`freq`。先写改写行再删旧行，避免中途失败留下空窗。
+- **`mode` 切换自动清对面产物**：`rag → graph` 删旧分块，`graph → rag` 调 `DeleteDocGraph`，
+  不需要先手工 `DeleteDoc`。
+- **租户隔离**：`rag_documents` 加 `tenant_id`（默认 `public` 回填历史行），
+  `DocumentRepo.List/ListDocIDs` 是 `(tenantID, userID)` 四参；`Ingest` 会拒绝覆盖别的租户的 `doc_id`。
+  检索时把租户 + 用户白名单下推到 Milvus 过滤表达式。
+- **删除顺序**：先删分块 → `DetachDocRefs` 摘图谱引用 → 删 MySQL 元数据 → 清 Redis 缓存；
+  图谱这一步失败只写 `graph_warning`，不阻断删除。
+- **测试**：`rag_test.go`（分流/去重/删除/统计/重复入库清旧）、`tenant_test.go`（跨租户）、
+  `graphrag/ingest_test.go`（旧引用先摘后写、他人引用不误删）。
+
 ## 与 k8s 部署的关系
 
 Milvus 侧仍可用 `rag-system/k8s/rag-system.yaml`；MySQL/Redis 用 `deploy/compose.yaml`，

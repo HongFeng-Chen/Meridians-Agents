@@ -40,14 +40,14 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `llm.v1`（`LLMCallQueryService`） | 调用历史、token 用量与下钻排行 | `internal/biz/llm` | 3 |
 | `skill.v1` | 技能与技能市场 | `internal/biz/skill` | 21 |
 | `harness.v1` | 评测 Harness（用例集 / 用例 / 运行 / 报告） | `internal/biz/harness` | 11 |
-| `mcp.v1` | MCP 服务与工具管理面 | `internal/biz/mcp` | 21 |
-| `agentfactory.v1` | Agent 低代码工厂 + 异步任务 | `internal/biz/agentfactory` | 18 |
-| `conversation.v1` | 会话目录 + 消息 + 辩论 | `internal/biz/conversation` | 15 |
+| `mcp.v1` | MCP 服务与工具管理面 | `internal/biz/mcp` | 22 |
+| `agentfactory.v1` | Agent 低代码工厂 + 异步任务 + 审批 | `internal/biz/agentfactory` | 19 |
+| `conversation.v1` | 会话目录 + 消息 + 辩论 | `internal/biz/conversation` | 16 |
 | `history.v1` | 统一操作历史 | `internal/biz/history` | 2 |
 | `aiplatform.v1` | 外部 AI 平台（千问 / 百炼 MCP 广场） | `internal/biz/aiplatform` | 8 |
 | `todo.v1` | Kratos 脚手架样例（**未接线**，不参与契约校验） | — | 7 |
 
-合计 **160** 个对外操作（不含 `todo.v1`），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
+合计 **163** 个对外操作（不含 `todo.v1`），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
 
 ## 约定
 
@@ -56,7 +56,17 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 后端用 `encoding/json` + Go 的 snake_case tag 输出，protojson 也按该名字序列化，
 两端不需要任何命名转换。新增字段时**必须**同样声明 `json_name`。
 
-**2. 类型映射的已知偏差**
+**2. 只增字段的语义约定（近期新增）**
+
+- `IngestResult.purged` / `UploadAndIngestReply.purged`：同 `doc_id` 重复入库时被顶掉的旧分块数。
+  默认 0 = 旧行为（首次入库），前端可据此提示「已替换旧版本」。
+- `MCPServer.has_credentials`：服务是否配置了凭证。读接口**不再回显** `headers`/`env`/`proxy_config`
+  的真实值，只给这个布尔；更新时传回掩码字面量表示「保持原值」。
+- 任务 / 文档 / 操作历史 / LLM 调用记录的列表与统计都按 `(tenant_id, user_id)` 过滤：
+  同一个 `user_id` 在不同租户下互不可见。管理端看全量需要 `audit:read` 权限
+  （`memories` 目前仍只有 `user_id`，见 HANDOVER 5.5）。
+
+**3. 类型映射的已知偏差**
 
 | proto | 实际 JSON | 说明 |
 | --- | --- | --- |
@@ -65,7 +75,7 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `string`（时间） | RFC3339 字符串 | 与 Go `time.Time` 的 JSON 一致，不用 `google.protobuf.Timestamp` |
 | `optional string` | string \| null | 如 `expires_at`、`activate`，用于「不传」与「传空」的语义区分 |
 
-**3. multipart 上传**
+**4. multipart 上传**
 `ExtractText` / `UploadAndIngest` 同时支持两种调用方式：
 
 | 调用方式 | 文件怎么传 | 其余字段 |
@@ -81,17 +91,17 @@ proto 里写的是 `bytes file`（gRPC 语义正确），`body: "file"` 让生�
 会跑 `scripts/patch_openapi.py`，把这两条接口的契约补成真实的 `multipart/form-data`
 （`file: type string, format binary`），前端 SDK 据此产出 `FormData` 调用。
 
-**4. 无 body 的 POST**
+**5. 无 body 的 POST**
 启停、设为默认、回滚、清理过期等操作没有请求体，契约里不写 `body`，
 参数全部走 query/path。gnostic 会给出 `WARN: POST ... does not declare a body`，
 属预期。
 
-**5. 路由声明顺序**
+**6. 路由声明顺序**
 gorilla/mux 按注册顺序匹配，同层里静态路径必须排在 `{param}` 之前，否则
 `/api/prompts/stats` 会被 `/api/prompts/{key}` 抢走。因此 proto 里要把静态路径的 rpc
 写在前面（`contract_test.go` 的 `TestPathParamRoutesLast` 会守住这条规则）。
 
-**6. 错误**
+**7. 错误**
 handler 返回 Kratos error，由 ErrorEncoder 统一输出：
 
 | 场景 | HTTP | body |
@@ -223,7 +233,7 @@ promptv1.RegisterPromptServiceServer(srv, promptSvc)
 
 | 方法 | 路径 | RPC | 说明 |
 | --- | --- | --- | --- |
-| DELETE | `/api/admin/docs` | DeleteDoc | 删除文档（向量分块 + 图谱孤儿节点 + 元数据 + 缓存） |
+| DELETE | `/api/admin/docs` | DeleteDoc | 删除文档（向量分块 + 摘图谱引用 + 元数据 + 缓存） |
 | GET | `/api/admin/docs` | ListDocs | 文档列表 |
 | GET | `/api/admin/stats` | GetStats | 系统概览 |
 | POST | `/api/extract` | ExtractText | 解析文件为纯文本，不入库（前端预览/编辑用） |
@@ -326,7 +336,8 @@ agent_key/温度/耗时/ok/错误/字符数/token 三项）——业务通过 `l
 | GET | `/api/agentfactory/tasks` | ListTasks | 任务列表（可按父任务过滤链路树） |
 | GET | `/api/agentfactory/tasks/{id}` | GetTask | 任务详情（运行中优先 Redis 快照） |
 | POST | `/api/agentfactory/tasks/{id}/cancel` | CancelTask | 取消（pending 直接置态 / running 中断） |
-| POST | `/api/agentfactory/tasks/{id}/retry` | RetryTask | 重试终态任务（trace 保留） |
+| POST | `/api/agentfactory/tasks/{id}/retry` | RetryTask | 重试终态任务（trace 保留，清空旧 checkpoint） |
+| POST | `/api/agentfactory/tasks/{id}/approval` | ApproveTask | 审批挂起任务：`{decision: approve/reject, comment?}`；批准后回 pending 续跑 |
 | GET | `/api/agentfactory/tasks/{id}/events` | ListTaskEvents | 任务事件流（trace 链路检索） |
 
 ### ConversationService

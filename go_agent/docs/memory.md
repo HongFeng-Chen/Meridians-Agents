@@ -13,7 +13,7 @@
 
 1. **MySQL（权威）**：`memories` 表——内容、种类（fact/preference/event/insight/task）、重要度、标签、来源、`(user_id, checksum)` 唯一去重、`expires_at` 过期时间。
 2. **Milvus（召回）**：`{collection}_memories` 集合——`content` 中文分词 + BM25 Function 生成稀疏向量，dense 存 Embedding（bge-m3），检索双路召回 RRF 融合，可按 `user_id` 过滤。集合残缺（有库无索引）启动时自动补建。
-3. **GraphRAG（关联）**：记忆内容经 LLM 抽取实体/关系写入 **与 RAG 文档共享的图集合**——同一个人的记忆和文档会合并到同一批实体节点上，跨记忆、跨文档推理。单条记忆的引用前缀为 `{memory_id}#0`，删除/过期清理时只回收孤儿节点。
+3. **GraphRAG（关联）**：记忆内容经 LLM 抽取实体/关系写入 **与 RAG 文档共享的图集合**——同一个人的记忆和文档会合并到同一批实体节点上，跨记忆、跨文档推理。单条记忆的引用前缀为 `mem::<user_id>::<memory_id>#0`（`<user>` 段负责归属隔离），删除/过期清理走 `DetachDocRefs(prefix)`：只摘掉这条记忆的引用，引用清空才删节点，还有别的来源就改写 `refs`/`freq`——不会误删文档或他人记忆共享的实体。
 
 ## 写入流程（POST /api/memory/long）
 
@@ -91,6 +91,12 @@ memory:
 ## 运维要点
 
 - **过期是查询时过滤 + 手动清理**：MySQL 侧 List/Recall 自动滤掉 `expires_at <= now`；向量与图谱里的残留靠 `POST /api/memory/long/purge` 回收（也可挂定时任务）。
-- **图谱与 RAG 共享**：记忆实体与文档实体按 name 归一化合并、频率累加；删除记忆只删孤儿节点，不影响文档图谱。
+- **图谱与 RAG 共享**：记忆实体与文档实体按 name 归一化合并、频率累加；删除记忆只用
+  `DetachDocRefs` 摘掉本记忆的引用（`mem::<user>::<id>#`），不影响文档图谱与同用户的其他记忆。
+  写入时也只与「同一 user 前缀」的既有实体合并，跨用户只共享节点行、不共享内容。
+- **旧引用迁移**：升级前写入的 `<memory_id>#0` 不带用户前缀，已无法被归属判定识别——
+  这部分历史记忆的图谱增强会失效（召回仍走 Milvus，只是少了图谱那一路）。要保留需做一次前缀回填。
+- **租户维度未覆盖**：`memories` 目前只有 `user_id`，没有 `tenant_id`；不同租户使用相同 user_id
+  时记忆仍会串。租户隔离已覆盖文档/任务/操作历史/LLM 调用记录，记忆表属下一批（见 HANDOVER 5.5）。
 - **去重键**：`(user_id, checksum)` 唯一索引，checksum = sha256(user_id + "\0" + content)；同内容重复写入零成本返回已有记忆。
 - **Redis 挂掉**：短期历史按空处理（不阻断 answer），长期记忆与召回不受影响。

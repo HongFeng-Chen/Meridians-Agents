@@ -71,7 +71,7 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
 | 模块 | 职责 | 关键入口 |
 | --- | --- | --- |
 | `conversation` | 会话目录、消息、LLM 自主编排、多角色辩论 | `/api/conversations/**` |
-| `agentfactory` | Agent 定义 / 任务 / 12 种执行图 / worker / cron / 优雅停机 | `/api/agentfactory/**` |
+| `agentfactory` | Agent 定义 / 任务 / 13 种执行图（含 auto）/ worker / cron / 优雅停机 | `/api/agentfactory/**` |
 | `rag` + `rag/graphrag` | 入库、混合检索问答、图谱构建与召回 | `/api/ingest` `/api/query` `/api/graph/**` |
 | `memory` | 短期 Redis + 长期 MySQL/Milvus + 记忆图谱 | `/api/memory/**` |
 | `prompt` | 模板版本化、激活回滚、渲染 | `/api/prompts/**` |
@@ -95,16 +95,19 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
    **顺序**：先 `WithTask` 再 `WithConv`（或保证 `WithTask` 读改写语义）。改这块必须跑 `history_test.go` 与 `TestConvIDInheritance`。
 2. **GORM map 更新的 key 就是列名**：`Updates(map[string]any{"flow_json": ...})` 写错成 `"flow"` 运行时报
    `Error 1054 Unknown column`。新增 map 更新后跑 `TestMapUpdateKeysMatchModelColumns`。
-3. **异步任务状态机不能跳终态**：任务任一时刻只在一张表（活跃表 / 历史表），`FinishTask` / `ReviveTask` 必须单事务；
-   `ClaimTask` 必须原子。
+3. **异步任务状态机只能按边迁移**：任务任一时刻只在一张表（活跃表 / 历史表），`FinishTask` / `ReviveTask` 必须单事务；
+   `ClaimTask` 必须原子；其余状态变更一律走 `TransitionTask(ctx, id, from, t)`（CAS），不要裸 `SaveTask` 覆盖状态——
+   并发下会把「已取消」改回「已完成」。合法迁移边见 `task_state.go`。
 4. **优雅停机**：`StartWorkers` 在 `BeforeStart`，`Drain` 在 `BeforeStop`，`Stop` 在 `AfterStop`。
    停机期间 `SubmitTask` 返回 `ErrShuttingDown`；排空超时被打断的任务保持 `running`，交给 `RequeueInterrupted` 重跑。
    `Drain` 的等待只看 `workerWG`（不含 cron 调度器），否则会白等满超时。
 5. **召回 best-effort**：记忆 / RAG / GraphRAG 失败只写 `meta.*_error`，不得让对话失败。
 6. **写历史 / 写日志异步**：失败只 warn。
-7. **平台 MCP 只读 + 仅本机**：不要给 `/mcp/platform` 加写工具，也不要去掉 `isLoopback` 守卫。
-8. **protojson 零值省略**：新增字段默认值必须等价于旧行为，避免老前端丢字段。
-9. **错误用哨兵**：`errors.Is` 判类型，biz 用 `errors.NotFound/BadRequest` + reason 枚举，service 统一映射 HTTP 状态码。
+7. **查询必须带租户**：已接入租户的表一律 `(tenant_id, user_id)` 双条件；新表加 `tenant_id ... default 'public'`，
+   读路径用 `identity.TenantID(ctx)`，不要只按 user_id 过滤（不同租户可以有相同 user_id）。
+8. **平台 MCP 只读 + 仅本机**：不要给 `/mcp/platform` 加写工具，也不要去掉 `isLoopback` 守卫。
+9. **protojson 零值省略**：新增字段默认值必须等价于旧行为，避免老前端丢字段。
+10. **错误用哨兵**：`errors.Is` 判类型，biz 用 `errors.NotFound/BadRequest` + reason 枚举，service 统一映射 HTTP 状态码。
 
 ## 7. 测试约定
 

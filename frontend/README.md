@@ -22,9 +22,9 @@
 | | AI 平台 | 千问 / 百炼 MCP 广场：平台 CRUD（千问预设填好官方路径模板）、连通性测试、目录搜索 → 一键接入成本地 MCP 服务、按 mcpCode 直接接入 |
 | | 评测中心 | 评测 Harness：用例集管理（含七类断言编辑）、启动 / 停止异步运行（进行中 3s 自动轮询）、报告抽屉（逐例得分 + 断言明细 + 原始输出） |
 | | Agent 工厂 | Agent 定义（能力白名单、执行图、DAG 编排）、LLM 造 Agent、能力目录 |
-| | 任务中心 | 任务列表 / 详情抽屉 / 事件链路 / 子任务树 / 取消重试 |
+| | 任务中心 | 任务列表 / 详情抽屉 / 事件链路 / 子任务树 / 取消重试 / 审批（批准、驳回） |
 | 会话 | 会话 | 会话目录 + 多轮对话 + 消息链路弹层（召回明细、工具调用）+ 多角色辩论（暂停 / 恢复 / 叫停、增删角色） |
-| 管理 | 文档与系统 | 文档列表与删除（含图谱节点清理）、连接与模型信息、系统配置 |
+| 管理 | 文档与系统 | 文档列表与删除（含图谱引用摘除）、连接与模型信息、系统配置 |
 
 ## 启动
 
@@ -64,9 +64,9 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            15 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
-│                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Agents / Tasks /
-│                     Chats / Admin）
+├── pages/            16 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
+│                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
+│                     Tasks / Chats / Admin）
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、
 │                     TaskDetailDrawer、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
 ├── api/generated/    proto → SDK（不要手改）

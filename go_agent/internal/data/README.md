@@ -20,14 +20,13 @@ wire 装配集中在 `data.go` 的 `ProviderSet`；biz 层只依赖接口（port
 
 | 文件 | 表 |
 | --- | --- |
-| `document.go` | `rag_documents` |
-| `memory.go` | `memories` |
+| `document.go` | `rag_documents`（`tenant_id` 默认 `public`，列表/检索按租户+用户过滤） |
+| `memory.go` | `memories`（仅 `user_id`，`tenant_id` 待补，见 HANDOVER 5.5） |
 | `prompt.go` | `prompt_templates`、`prompt_versions` |
-| `llm.go` | `llm_providers` |
 | `skill.go` | `skills`、`skill_files`、`skill_hubs` |
 | `mcp.go` | `mcp_servers`、`tools`（MCP 服务与工具元数据；headers/args/env 是 JSON 列，空集合必须写 `{}` / `[]`，不能写空串） |
-| `llm.go` | `llm_providers`（数据源配置）、`llm_calls`（调用历史：token 用量/耗时/模型/task_id 关联，Manager 异步写入） |
-| `agentfactory.go` | `agent_definitions`、`agent_tasks`（任务池：仅 pending/running 活跃任务）、`agent_task_history`（任务历史：终态归档，FinishTask 事务迁移/ReviveTask 复活）、`agent_task_events`（capabilities 等是 JSON 列；任务时间列可空，零值写 NULL） |
+| `llm.go` | `llm_providers`（数据源配置）、`llm_calls`（调用历史：token 用量/耗时/模型/task_id/tenant_id 关联，Manager 异步写入） |
+| `agentfactory.go` | `agent_definitions`、`agent_tasks`（任务池：pending/running/paused，带 `tenant_id`）、`agent_task_history`（终态归档，`FinishTask` 事务迁移 / `ReviveTask` 复活）、`agent_task_events`、`agent_task_checkpoints`（步骤/节点级快照）；capabilities 等是 JSON 列，任务时间列可空、零值写 NULL |
 | `doc.go` | 包说明 |
 
 **`milvusdb/models/`** — 集合 Schema，一个集合一个文件（字段常量 + 构造函数同文件）：

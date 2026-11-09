@@ -10,7 +10,7 @@
 > | Agent 是数据不是代码（`agent_definitions` + 向量召回） | ✅ |
 > | 可插拔能力白名单（`agent:<key>` / `mcp:<unique_name>`） | ✅ `capability.go` |
 > | 把「创建 Agent」做成 tool（`create_agent`） | ✅ `factory.go`（配额上限 200、白名单、防自举） |
-> | 执行图可配（12 种 + DAG Flow） | ✅ `graphs.go` / `flow.go` |
+> | 执行图可配（13 种含 auto + DAG Flow） | ✅ `graphs.go` / `flow.go` / `graph.go` |
 > | 沙箱 Agent 不得委派 | ✅ `ErrSandboxDeny`（`TestSandboxDenyDelegation`） |
 > | 异步任务队列 + 崩溃恢复 + 定时调度 | ✅ `agentfactory.go` / `cron.go` |
 > | 停机不腰斩任务 | ✅ `Drain`（见 HANDOVER 2.2「优雅停机」） |
