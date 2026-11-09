@@ -36,12 +36,13 @@ security:
     # 关闭认证时使用的开发态身份（保留 "default" 以兼容历史数据）
     devUser: ${AUTH_DEV_USER:default}
     devTenant: ${AUTH_DEV_TENANT:public}
-    # 白名单：探活、指标、聊天附件、平台内置 MCP 不需要令牌
+    # 白名单：探活、指标、平台内置 MCP 不需要令牌。
+    # 聊天附件（/api/files/）不在这里：它是原始 net/http 路由，不走认证中间件，
+    # 鉴权由 filesHandler 自己做（地址签名 或 Authorization/?token=）。
     publicPaths:
       - /api/health
       - /healthz
       - /metrics
-      - /api/files/
       - /mcp/platform
     # 静态令牌 → "user:tenant"，适合巡检脚本与内网调用
     staticTokens: {}

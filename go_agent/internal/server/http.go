@@ -22,6 +22,7 @@ import (
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/health"
 	"go_agent/internal/pkg/httpx"
+	"go_agent/internal/pkg/mediaauth"
 	"go_agent/internal/pkg/metrics"
 	"go_agent/internal/service"
 
@@ -58,6 +59,7 @@ func NewHTTPServer(
 ) *http.Server {
 	g := newGate(sec)
 	warnInsecureExposure(sec, c.GetHttp().GetAddr())
+	configureMediaAuth(sec)
 	var opts = []http.ServerOption{
 		// multipart 解码器：/api/extract、/api/upload 走文件上传，
 		// Kratos 默认解码器不认 multipart/form-data（详见 internal/pkg/httpx）
@@ -121,25 +123,52 @@ func NewHTTPServer(
 	// /api/admin/audits（审计事件查询）——运维面接口，管理员限定
 	registerOpsRoutes(srv, mcpSvc, auditUC)
 	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
-	srv.HandlePrefix("/api/files/", filesHandler())
+	// 这条路由是原始 net/http 注册的，不走上面的认证中间件——鉴权在 handler 里做
+	srv.HandlePrefix("/api/files/", filesHandler(g))
 	// /healthz（MySQL / Redis / Milvus 探活，供 LB 摘流）、/metrics（Prometheus 抓取）
 	srv.Handle("/healthz", health.Handler())
 	srv.Handle("/metrics", metrics.Default.Handler())
 	return srv
 }
 
+// configureMediaAuth 附件地址签名。
+//
+// 认证开启时用 JWT 密钥给附件地址签名；没配 JWT 密钥（纯静态令牌部署）
+// 就用进程内随机密钥——地址在读取消息时现签，重启后重新签，不影响历史消息。
+func configureMediaAuth(sec *conf.Security) {
+	a := sec.GetAuth()
+	if !a.GetEnabled() {
+		mediaauth.Configure("") // 开发态不签名：打开就能看图
+		return
+	}
+	if key := strings.TrimSpace(a.GetJwtSecret()); key != "" {
+		mediaauth.Configure(key)
+		return
+	}
+	mediaauth.ConfigureRandom()
+}
+
 // filesHandler 聊天附件静态文件服务。
 // 只暴露 data/uploads 目录；http.FileServer 自带路径穿越防护；
 // 目录请求一律 404（不提供目录列表），未知扩展名按二进制流返回。
-func filesHandler() nethttp.Handler {
-	fs := nethttp.FileServer(nethttp.Dir("data/uploads"))
+//
+// 鉴权（认证开启时）：带有效签名（服务端读消息时补上）或带有效令牌才放行。
+// <img src>/<video src> 带不了 Authorization 头，所以令牌也可以走 ?token=。
+func filesHandler(g *gate) nethttp.Handler {
+	fs := nethttp.FileServer(nethttp.Dir(mediaRootDir))
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
 		if rel == "" || strings.HasSuffix(rel, "/") {
 			nethttp.NotFound(w, r)
 			return
 		}
-		if _, err := os.Stat(filepath.Join("data/uploads", filepath.FromSlash(path.Clean(rel)))); err != nil {
+		if !g.allowMedia(r) {
+			// 不区分「没签名」和「签名不对」，避免给枚举者反馈
+			w.Header().Set("Cache-Control", "no-store")
+			nethttp.Error(w, "未认证：附件地址需要签名或有效令牌", nethttp.StatusUnauthorized)
+			return
+		}
+		if _, err := os.Stat(filepath.Join(mediaRootDir, filepath.FromSlash(path.Clean(rel)))); err != nil {
 			nethttp.NotFound(w, r)
 			return
 		}
@@ -153,6 +182,9 @@ func filesHandler() nethttp.Handler {
 		nethttp.StripPrefix("/api/files/", fs).ServeHTTP(w, r)
 	})
 }
+
+// mediaRootDir 附件的磁盘根目录（与 biz/conversation 的 mediaRoot 一致；测试里会改）
+var mediaRootDir = "data/uploads"
 
 // mediaMimeTypes 附件常见扩展名 → Content-Type（与 biz/conversation 白名单一致）
 var mediaMimeTypes = map[string]string{

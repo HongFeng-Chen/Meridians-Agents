@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	nethttp "net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/auth"
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/pkg/mediaauth"
 	"go_agent/internal/pkg/metrics"
 	"go_agent/internal/pkg/ratelimit"
 
@@ -90,7 +92,7 @@ func newGate(sec *conf.Security) *gate {
 	return g
 }
 
-// isPublic 白名单前缀匹配（探活、指标、静态附件不需要令牌）
+// isPublic 白名单前缀匹配（探活、指标、内置 MCP 不需要令牌；附件走 filesHandler 自己的鉴权）
 func (g *gate) isPublic(path string) bool {
 	if path == "" {
 		return false
@@ -139,6 +141,34 @@ func (g *gate) token(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// allowMedia 附件静态访问判定（/api/files/ 是原始 net/http 路由，不经过上面的中间件）。
+//
+// 顺序：
+//  1. 认证关闭（开发态）→ 放行，保持「打开就能看图」；
+//  2. 地址带有效签名 → 放行。签名由服务端在读消息时补上，浏览器拿到的是
+//     /api/files/…?sig=…，<img src> 照用；
+//  3. 带有效令牌 → 放行（请求头，或 <img> 用的 ?token=）。
+//
+// 三条都不满足就 401。这样「拿到别人的附件地址」不再等于「能读别人的附件」，
+// 前提是地址里的签名只对那一个路径有效。
+func (g *gate) allowMedia(r *nethttp.Request) bool {
+	if g == nil || !g.authOn {
+		return true
+	}
+	if mediaauth.Verify(r.URL.Path, r.URL.Query().Get("sig")) {
+		return true
+	}
+	tok := auth.TokenFromHeader(r.Header.Get(g.header))
+	if tok == "" {
+		tok = strings.TrimSpace(r.URL.Query().Get("token"))
+	}
+	if tok == "" {
+		return false
+	}
+	_, err := g.verifier.Verify(tok)
+	return err == nil
 }
 
 // middleware 组装认证中间件。认证失败返回 401（不区分「令牌缺失」与「令牌无效」，

@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/pkg/mediaauth"
 )
 
 // Err 会话域错误
@@ -153,6 +154,7 @@ func (u *UseCase) Detail(ctx context.Context, id string) (*Conversation, []Messa
 	if err != nil {
 		return nil, nil, err
 	}
+	signAttachments(msgs)
 	return c, msgs, nil
 }
 
@@ -163,7 +165,12 @@ func (u *UseCase) ListMessagesPage(ctx context.Context, id string, limit uint32,
 	if err != nil {
 		return nil, false, err
 	}
-	return u.repo.ListMessagesPaged(ctx, c.ID, int(limit), beforeID)
+	msgs, more, err := u.repo.ListMessagesPaged(ctx, c.ID, int(limit), beforeID)
+	if err != nil {
+		return nil, false, err
+	}
+	signAttachments(msgs)
+	return msgs, more, nil
 }
 
 // Rename 重命名会话
@@ -254,5 +261,20 @@ func (u *UseCase) appendFull(ctx context.Context, conversationID, role, speaker,
 	if err := u.repo.AppendMessage(ctx, m); err != nil {
 		return nil, err
 	}
+	// 返回给调用方的这份要带签名（存储里保持裸地址，见 signAttachments）
+	signAttachments([]Message{*m})
 	return m, nil
+}
+
+// signAttachments 给附件地址补访问签名。
+//
+// 存储里始终是裸地址 /api/files/{bucket}/{name}：签名随密钥变化，
+// 落库的话换密钥/重启（随机密钥）就全失效，还得做数据迁移。
+// 读的时候现签，历史消息不用动，签名也永远是新密钥算出来的。
+func signAttachments(msgs []Message) {
+	for i := range msgs {
+		for j := range msgs[i].Attachments {
+			msgs[i].Attachments[j].URL = mediaauth.Sign(msgs[i].Attachments[j].URL)
+		}
+	}
 }

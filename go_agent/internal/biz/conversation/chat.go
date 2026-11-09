@@ -28,6 +28,7 @@ import (
 	"go_agent/internal/biz/rag"
 	"go_agent/internal/biz/rag/graphrag"
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/pkg/mediaauth"
 )
 
 const (
@@ -678,8 +679,10 @@ func imageDataURIs(atts []Attachment) ([]string, error) {
 	return out, nil
 }
 
-// mediaDiskRel /api/files/{bucket}/{name} → {bucket}/{name}（拒绝路径穿越）
+// mediaDiskRel /api/files/{bucket}/{name} → {bucket}/{name}（拒绝路径穿越）。
+// 地址可能带访问签名（?sig=…），先剥掉查询串再映射磁盘路径。
 func mediaDiskRel(url string) (string, error) {
+	url = mediaauth.PathOnly(url)
 	rel := strings.TrimPrefix(url, mediaURLPrefix)
 	if rel == url || strings.Contains(rel, "..") || strings.Contains(rel, "\\") {
 		return "", fmt.Errorf("非法附件地址 %q", url)
