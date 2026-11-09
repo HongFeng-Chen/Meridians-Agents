@@ -130,36 +130,36 @@ func (r *AgentFactoryRepo) UpdateDef(ctx context.Context, def *agentfactory.Agen
 	res := r.db.WithContext(ctx).Model(&models.AgentDefPO{}).
 		Where("id = ?", def.ID).
 		Updates(map[string]any{
-			"agent_key":         row.AgentKey,
-			"name":              row.Name,
-			"description":       row.Description,
-			"system":            row.System,
-			"llm_model":         row.LLMModel,
-			"llm_source":        row.LLMSource,
-			"graph_type":        row.GraphType,
-			"auto_compose":      row.AutoCompose,
-			"capabilities":      row.Capabilities,
-			"middlewares":       row.Middlewares,
-			"max_turns":         row.MaxTurns,
-			"role":              row.Role,
-			"orchestration":     row.Orchestration,
-			"members":           row.Members,
-			"flow_json":         row.Flow, // 注意：PO 列名是 flow_json（biz 字段叫 Flow），map 更新不走 gorm tag 映射，写错即 1054
-			"supervisor_key":    row.SupervisorKey,
-			"supervision_scope": row.SupervisionScope,
-			"risk_agent_key":    row.RiskAgentKey,
-			"require_approval":  row.RequireApproval,
+			"agent_key":              row.AgentKey,
+			"name":                   row.Name,
+			"description":            row.Description,
+			"system":                 row.System,
+			"llm_model":              row.LLMModel,
+			"llm_source":             row.LLMSource,
+			"graph_type":             row.GraphType,
+			"auto_compose":           row.AutoCompose,
+			"capabilities":           row.Capabilities,
+			"middlewares":            row.Middlewares,
+			"max_turns":              row.MaxTurns,
+			"role":                   row.Role,
+			"orchestration":          row.Orchestration,
+			"members":                row.Members,
+			"flow_json":              row.Flow, // 注意：PO 列名是 flow_json（biz 字段叫 Flow），map 更新不走 gorm tag 映射，写错即 1054
+			"supervisor_key":         row.SupervisorKey,
+			"supervision_scope":      row.SupervisionScope,
+			"risk_agent_key":         row.RiskAgentKey,
+			"require_approval":       row.RequireApproval,
 			"approval_timeout_hours": row.ApprovalTimeoutHours,
-			"risk_pause_level":  row.RiskPauseLevel,
-			"auto_run":          row.AutoRun,
-			"cron_expr":         row.CronExpr,
-			"cron_input":        row.CronInput,
-			"next_run_at":       row.NextRunAt,
-			"last_run_at":       row.LastRunAt,
-			"is_sandbox":        row.Sandbox,
-			"version":           row.Version,
-			"is_vectorized":     row.Vectorized,
-			"updated_at":        row.UpdatedAt,
+			"risk_pause_level":       row.RiskPauseLevel,
+			"auto_run":               row.AutoRun,
+			"cron_expr":              row.CronExpr,
+			"cron_input":             row.CronInput,
+			"next_run_at":            row.NextRunAt,
+			"last_run_at":            row.LastRunAt,
+			"is_sandbox":             row.Sandbox,
+			"version":                row.Version,
+			"is_vectorized":          row.Vectorized,
+			"updated_at":             row.UpdatedAt,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -243,27 +243,69 @@ func (r *AgentFactoryRepo) SaveTask(ctx context.Context, t *agentfactory.Task) e
 
 // FinishTask 任务到达终态：同一事务内「更新任务池终态字段 → 复制进历史表 →
 // 从任务池删除」，保证任一时刻任务只存在一张表中。
+//
+// 无源状态约束：只给「自己持有 running 的 worker」用（认领是原子的，写终态不会
+// 与别人抢）；跨状态的迁移一律走 TransitionTask。
 func (r *AgentFactoryRepo) FinishTask(ctx context.Context, t *agentfactory.Task) error {
+	_, err := r.finishTask(ctx, t, nil)
+	return err
+}
+
+// TransitionTask 条件迁移（CAS）：状态不匹配时一行都不改，返回 false。
+// 终态走两表迁移；非终态只更新任务池。
+func (r *AgentFactoryRepo) TransitionTask(ctx context.Context, id uint64, from []string, t *agentfactory.Task) (bool, error) {
+	if !agentfactory.IsTerminalStatus(t.Status) {
+		row := taskFromBiz(*t)
+		q := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).Where("id = ?", id)
+		if len(from) > 0 {
+			q = q.Where("status IN ?", from)
+		}
+		res := q.Updates(map[string]any{
+			"status":      row.Status,
+			"progress":    row.Progress,
+			"result":      row.Result,
+			"error_msg":   row.ErrorMsg,
+			"started_at":  row.StartedAt,
+			"finished_at": row.FinishedAt,
+		})
+		if res.Error != nil {
+			return false, res.Error
+		}
+		return res.RowsAffected == 1, nil
+	}
+	return r.finishTask(ctx, t, from)
+}
+
+// finishTask 终态迁移主体；from 非空时带源状态守卫（CAS）。
+func (r *AgentFactoryRepo) finishTask(ctx context.Context, t *agentfactory.Task, from []string) (bool, error) {
 	row := taskFromBiz(*t)
 	finished := row.FinishedAt
 	if finished == nil {
 		now := time.Now()
 		finished = &now
 	}
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	applied := true
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 先落任务池终态字段（库内数据为迁移源，避免依赖内存态）
-		res := tx.Model(&models.AgentTaskPO{}).
-			Where("id = ?", t.ID).
-			Updates(map[string]any{
-				"status":      row.Status,
-				"progress":    row.Progress,
-				"result":      row.Result,
-				"error_msg":   row.ErrorMsg,
-				"started_at":  row.StartedAt,
-				"finished_at": finished,
-			})
+		q := tx.Model(&models.AgentTaskPO{}).Where("id = ?", t.ID)
+		if len(from) > 0 {
+			q = q.Where("status IN ?", from)
+		}
+		res := q.Updates(map[string]any{
+			"status":      row.Status,
+			"progress":    row.Progress,
+			"result":      row.Result,
+			"error_msg":   row.ErrorMsg,
+			"started_at":  row.StartedAt,
+			"finished_at": finished,
+		})
 		if res.Error != nil {
 			return res.Error
+		}
+		if len(from) > 0 && res.RowsAffected == 0 {
+			// 状态已被别人改过（例如并发取消）：不动历史表，交回调用方重新决策
+			applied = false
+			return nil
 		}
 		var src models.AgentTaskPO
 		if err := tx.First(&src, t.ID).Error; err != nil {
@@ -281,6 +323,10 @@ func (r *AgentFactoryRepo) FinishTask(ctx context.Context, t *agentfactory.Task)
 		// 物理删除：历史表已留全量副本，任务池只保留活跃任务保持精简
 		return tx.Unscoped().Delete(&models.AgentTaskPO{}, t.ID).Error
 	})
+	if err != nil {
+		return false, err
+	}
+	return applied, nil
 }
 
 // ReviveTask 重试归档任务：同一事务内「插回任务池（重置 pending）+ 删历史」
@@ -598,77 +644,77 @@ func taskHistoryToBiz(row models.AgentTaskHistoryPO) agentfactory.Task {
 
 func defToBiz(row models.AgentDefPO) agentfactory.AgentDef {
 	return agentfactory.AgentDef{
-		ID:               row.ID,
-		AgentKey:         row.AgentKey,
-		Name:             row.Name,
-		Description:      row.Description,
-		System:           row.System,
-		LLMModel:         row.LLMModel,
-		LLMSource:        row.LLMSource,
-		GraphType:        row.GraphType,
-		AutoCompose:      row.AutoCompose,
-		Capabilities:     decodeStrings(row.Capabilities),
-		Middlewares:      decodeStrings(row.Middlewares),
-		MaxTurns:         row.MaxTurns,
-		Sandbox:          row.Sandbox,
-		Source:           row.Source,
-		Version:          row.Version,
-		Enabled:          row.Enabled,
-		Vectorized:       row.Vectorized,
-		Role:             row.Role,
-		Orchestration:    row.Orchestration,
-		Members:          decodeStrings(row.Members),
-		Flow:             row.Flow,
-		SupervisorKey:    row.SupervisorKey,
-		SupervisionScope: decodeStrings(row.SupervisionScope),
-		RiskAgentKey:     row.RiskAgentKey,
-		RequireApproval:  decodeStrings(row.RequireApproval),
+		ID:                   row.ID,
+		AgentKey:             row.AgentKey,
+		Name:                 row.Name,
+		Description:          row.Description,
+		System:               row.System,
+		LLMModel:             row.LLMModel,
+		LLMSource:            row.LLMSource,
+		GraphType:            row.GraphType,
+		AutoCompose:          row.AutoCompose,
+		Capabilities:         decodeStrings(row.Capabilities),
+		Middlewares:          decodeStrings(row.Middlewares),
+		MaxTurns:             row.MaxTurns,
+		Sandbox:              row.Sandbox,
+		Source:               row.Source,
+		Version:              row.Version,
+		Enabled:              row.Enabled,
+		Vectorized:           row.Vectorized,
+		Role:                 row.Role,
+		Orchestration:        row.Orchestration,
+		Members:              decodeStrings(row.Members),
+		Flow:                 row.Flow,
+		SupervisorKey:        row.SupervisorKey,
+		SupervisionScope:     decodeStrings(row.SupervisionScope),
+		RiskAgentKey:         row.RiskAgentKey,
+		RequireApproval:      decodeStrings(row.RequireApproval),
 		ApprovalTimeoutHours: row.ApprovalTimeoutHours,
-		RiskPauseLevel:   row.RiskPauseLevel,
-		AutoRun:          row.AutoRun,
-		CronExpr:         row.CronExpr,
-		CronInput:        row.CronInput,
-		NextRunAt:        timeOrZero(row.NextRunAt),
-		LastRunAt:        timeOrZero(row.LastRunAt),
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		RiskPauseLevel:       row.RiskPauseLevel,
+		AutoRun:              row.AutoRun,
+		CronExpr:             row.CronExpr,
+		CronInput:            row.CronInput,
+		NextRunAt:            timeOrZero(row.NextRunAt),
+		LastRunAt:            timeOrZero(row.LastRunAt),
+		CreatedAt:            row.CreatedAt,
+		UpdatedAt:            row.UpdatedAt,
 	}
 }
 
 func defFromBiz(d agentfactory.AgentDef) models.AgentDefPO {
 	return models.AgentDefPO{
-		ID:               d.ID,
-		AgentKey:         d.AgentKey,
-		Name:             d.Name,
-		Description:      d.Description,
-		System:           d.System,
-		LLMModel:         d.LLMModel,
-		LLMSource:        d.LLMSource,
-		GraphType:        d.GraphType,
-		AutoCompose:      d.AutoCompose,
-		Capabilities:     encodeStrings(d.Capabilities),
-		Middlewares:      encodeStrings(d.Middlewares),
-		MaxTurns:         d.MaxTurns,
-		Sandbox:          d.Sandbox,
-		Source:           d.Source,
-		Version:          d.Version,
-		Enabled:          d.Enabled,
-		Vectorized:       d.Vectorized,
-		Role:             d.Role,
-		Orchestration:    d.Orchestration,
-		Members:          encodeStrings(d.Members),
-		Flow:             d.Flow,
-		SupervisorKey:    d.SupervisorKey,
-		SupervisionScope: encodeStrings(d.SupervisionScope),
-		RiskAgentKey:     d.RiskAgentKey,
-		RequireApproval:  encodeStrings(d.RequireApproval),
+		ID:                   d.ID,
+		AgentKey:             d.AgentKey,
+		Name:                 d.Name,
+		Description:          d.Description,
+		System:               d.System,
+		LLMModel:             d.LLMModel,
+		LLMSource:            d.LLMSource,
+		GraphType:            d.GraphType,
+		AutoCompose:          d.AutoCompose,
+		Capabilities:         encodeStrings(d.Capabilities),
+		Middlewares:          encodeStrings(d.Middlewares),
+		MaxTurns:             d.MaxTurns,
+		Sandbox:              d.Sandbox,
+		Source:               d.Source,
+		Version:              d.Version,
+		Enabled:              d.Enabled,
+		Vectorized:           d.Vectorized,
+		Role:                 d.Role,
+		Orchestration:        d.Orchestration,
+		Members:              encodeStrings(d.Members),
+		Flow:                 d.Flow,
+		SupervisorKey:        d.SupervisorKey,
+		SupervisionScope:     encodeStrings(d.SupervisionScope),
+		RiskAgentKey:         d.RiskAgentKey,
+		RequireApproval:      encodeStrings(d.RequireApproval),
 		ApprovalTimeoutHours: d.ApprovalTimeoutHours,
-		RiskPauseLevel:   orDefault(d.RiskPauseLevel, "none"),
-		AutoRun:          d.AutoRun,
-		CronExpr:         d.CronExpr,
-		CronInput:        d.CronInput,
-		NextRunAt:        nilIfZero(d.NextRunAt),
-		LastRunAt:        nilIfZero(d.LastRunAt),
+		RiskPauseLevel:       orDefault(d.RiskPauseLevel, "none"),
+		AutoRun:              d.AutoRun,
+		CronExpr:             d.CronExpr,
+		CronInput:            d.CronInput,
+		NextRunAt:            nilIfZero(d.NextRunAt),
+		LastRunAt:            nilIfZero(d.LastRunAt),
 	}
 }
 

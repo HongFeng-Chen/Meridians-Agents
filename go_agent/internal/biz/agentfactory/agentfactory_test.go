@@ -28,6 +28,11 @@ type fakeRepo struct {
 	nextEvt uint64
 	// checkpoints 步骤级快照（O2/O3 测试断言用）
 	checkpoints []TaskCheckpoint
+	// transitionHook 在 TransitionTask 判定前执行一次（模拟并发写：
+	// 状态在「读」与「CAS 写」之间被别的请求改掉）
+	transitionHook func()
+	// transitionFroms 每次 CAS 的源状态集合，用于断言「没有无守卫的状态写入」
+	transitionFroms [][]string
 }
 
 func newFakeRepo() *fakeRepo {
@@ -304,6 +309,38 @@ func (r *fakeRepo) FinishTask(_ context.Context, t *Task) error {
 	}
 	r.tasks[t.ID] = *t
 	return nil
+}
+
+// TransitionTask 模拟 SQL 的 CAS：源状态不匹配时一行都不改
+func (r *fakeRepo) TransitionTask(_ context.Context, id uint64, from []string, t *Task) (bool, error) {
+	r.mu.Lock()
+	r.transitionFroms = append(r.transitionFroms, from)
+	hook := r.transitionHook
+	r.transitionHook = nil // 只触发一次
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.tasks[id]
+	if !ok {
+		return false, nil
+	}
+	if len(from) > 0 {
+		matched := false
+		for _, f := range from {
+			if cur.Status == f {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	r.tasks[id] = *t
+	return true, nil
 }
 
 func (r *fakeRepo) ReviveTask(_ context.Context, t *Task) error {

@@ -522,6 +522,34 @@ Agent 运行期同一套口径：`approvalReason` 对 `mcp:` 能力先做静态�
 需要「失败也要继续」就在边上显式写 `when: "failure"`，而不是依赖默认行为。
 跳过的分支不级联激活：条件未命中的整段下游（含再下游）都不会执行。
 
+### 任务状态迁移（CAS）
+
+任务状态原来是「先读、再判断、最后写库」，读写之间没有约束，于是有这样的竞态：
+
+```
+请求 A：读到 pending
+Worker：ClaimTask（pending → running），开始执行并产生副作用
+请求 A：按「pending 取消」分支走终态写库 → 库里的 running 被改成 canceled
+```
+
+结果就是任务显示「已取消」，副作用却已经发生，事后无从追溯。现在所有**跨状态**
+写入都带源状态下推到 SQL（`UPDATE … WHERE id = ? AND status IN (…)`，
+见 `internal/data/db/repo/agentfactory.go` 的 `TransitionTask`），影响行数为 0
+就说明状态已变，调用方重新读一次再决策，而不是覆盖别人的结论：
+
+| 迁移 | 触发方 | 输掉竞争时的行为 |
+| --- | --- | --- |
+| `pending → running` | Worker 认领（`ClaimTask`） | 直接放弃，不执行 |
+| `pending → canceled` | 取消未开始的任务 | 重读重试（最多 3 次） |
+| `running → paused` | 命中审批闸门 | 补一条事件，不再改回 paused |
+| `running → succeeded/failed/canceled` | Worker 收尾 | 只补事件，不覆盖已有终态 |
+| `paused → pending` | 人工批准续跑 | 返回 409 `TASK_STATE_CONFLICT`，提示刷新 |
+| `paused → failed` | 人工驳回 / 审批超时 | 跳过，不再写终态 |
+| `paused → canceled` | 挂起期取消 | 重读重试 |
+
+允许的边集中在 `internal/biz/agentfactory/task_state.go`（`CanTransit`），
+终态没有出边；重试走 `ReviveTask`（历史表 → 任务池，重置 pending）。
+
 ### 审计事件（`audit_events`）
 
 授权判定、管理面变更、高危工具调用都会落一条审计事件（`internal/biz/audit` + `audit_events` 表），

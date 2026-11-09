@@ -42,6 +42,10 @@ type Repo interface {
 	// FinishTask 任务到达终态：同一事务内把任务从任务池（agent_tasks）
 	// 迁移到任务历史表（agent_task_history），保证任一时刻任务只存在一张表中
 	FinishTask(ctx context.Context, t *Task) error
+	// TransitionTask 条件迁移（CAS）：仅当库内状态在 from 中时才把 t 的状态与
+	// 终态字段写进去；返回 false 表示状态已被别人改过，调用方应重新读取再决策。
+	// t.Status 为终态时同样走「任务池 → 历史表」的两表迁移。
+	TransitionTask(ctx context.Context, id uint64, from []string, t *Task) (bool, error)
 	// ReviveTask 重试归档任务：把任务历史表中的终态任务复活回任务池
 	// （重置 pending），同一事务内完成「插任务池 + 删历史」
 	ReviveTask(ctx context.Context, t *Task) error

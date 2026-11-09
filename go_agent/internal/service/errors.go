@@ -38,7 +38,13 @@ func notFound(msg string) error {
 
 // conflict 资源冲突（409）
 func conflict(msg string) error {
-	return kerrors.New(409, "ALREADY_EXISTS", msg)
+	return conflictCode("ALREADY_EXISTS", msg)
+}
+
+// conflictCode 409 但用自定义错误码：前端据此区分「重名」与「状态已变」，
+// 前者改个名字重试、后者必须刷新重新决策
+func conflictCode(code, msg string) error {
+	return kerrors.New(409, code, msg)
 }
 
 // upstreamErr 上游/三方系统故障（502）：平台不可达、鉴权失败、连接被拒
@@ -166,13 +172,16 @@ func mapAgentFactoryErr(err error) error {
 		return notFound(err.Error())
 	case errors.Is(err, agentfactory.ErrDefExists):
 		return conflict(err.Error())
+	case errors.Is(err, agentfactory.ErrTaskStateDeny):
+		// 状态机 CAS 输了：不是参数错，是「你看到的旧状态已经不是现在这个」
+		return conflictCode("TASK_STATE_CONFLICT", err.Error())
 	case errors.Is(err, agentfactory.ErrApprovalSelfApprove):
 		return forbidden("APPROVAL_SELF_APPROVE", err.Error())
 	case errors.Is(err, agentfactory.ErrApprovalForbidden):
 		return forbidden("APPROVAL_FORBIDDEN", err.Error())
 	case errors.Is(err, agentfactory.ErrInvalidDef), errors.Is(err, agentfactory.ErrInvalidTask),
 		errors.Is(err, agentfactory.ErrCapabilityDeny), errors.Is(err, agentfactory.ErrBootStrapDeny),
-		errors.Is(err, agentfactory.ErrQuotaExceeded), errors.Is(err, agentfactory.ErrTaskStateDeny),
+		errors.Is(err, agentfactory.ErrQuotaExceeded),
 		errors.Is(err, agentfactory.ErrNoChatter), errors.Is(err, agentfactory.ErrSandboxDeny),
 		errors.Is(err, agentfactory.ErrCapabilityUnset):
 		return badRequest(err.Error())

@@ -466,48 +466,57 @@ func (u *UseCase) TaskEvents(ctx context.Context, taskID uint64, limit int) ([]T
 }
 
 // CancelTask 取消任务：pending 直接置 canceled；running 通过 ctx 取消执行
+//
+// 状态判断与写库之间必须没有窗口（P1-05）：取消「读到的 pending」时，worker 可能
+// 已经认领成 running 并开始产生副作用，此时再把 running 覆盖成 canceled，
+// 库里就成了「已取消」，而事实是「已经执行过」。所以这里用 CAS：
+// 迁移失败说明状态变了，重新读一次按新状态处理。
 func (u *UseCase) CancelTask(ctx context.Context, id uint64) (*Task, error) {
-	t, err := u.repo.GetTask(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	switch t.Status {
-	case TaskPending:
-		t.Status = TaskCanceled
-		t.FinishedAt = time.Now()
-		// pending 是活跃态（任务池），取消即终态 → 迁移到任务历史表
-		if err := u.repo.FinishTask(ctx, t); err != nil {
+	for attempt := 0; attempt < 3; attempt++ {
+		t, err := u.repo.GetTask(ctx, id)
+		if err != nil {
 			return nil, err
 		}
-		return t, nil
-	case TaskRunning:
-		u.runMu.Lock()
-		cancel, ok := u.cancels[id]
-		u.runMu.Unlock()
-		if ok {
-			cancel()
+		switch t.Status {
+		case TaskPending, TaskPaused:
+			prev := t.Status
+			t.Status = TaskCanceled
+			t.FinishedAt = time.Now()
+			if prev == TaskPaused {
+				// 挂起任务取消 = 直接驳回终态（清 checkpoint，不再等审批）
+				t.ErrorMsg = "任务在审批挂起期间被取消"
+			}
+			ok, err := u.repo.TransitionTask(ctx, id, []string{prev}, t)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue // 状态被 worker / 审批改掉了，重新读一次
+			}
+			if prev == TaskPaused {
+				u.repo.TrimCheckpoints(ctx, id, 0)
+				u.emitSystemEvent(ctx, id, EventApproval, map[string]any{"decision": "cancel", "by": identity.UserID(ctx)})
+			}
+			return t, nil
+		case TaskRunning:
+			u.runMu.Lock()
+			cancel, ok := u.cancels[id]
+			u.runMu.Unlock()
+			if ok {
+				cancel()
+			}
+			return t, nil
+		case TaskSucceeded, TaskFailed, TaskCanceled:
+			return nil, fmt.Errorf("%w: 任务已是终态 %s", ErrTaskStateDeny, t.Status)
+		default:
+			return nil, ErrTaskStateDeny
 		}
-		return t, nil
-	case TaskPaused:
-		// 挂起任务取消 = 直接驳回终态（清 checkpoint，不再等审批）
-		t.Status = TaskCanceled
-		t.ErrorMsg = "任务在审批挂起期间被取消"
-		t.FinishedAt = time.Now()
-		if err := u.repo.FinishTask(ctx, t); err != nil {
-			return nil, err
-		}
-		u.repo.TrimCheckpoints(ctx, id, 0)
-		u.emitSystemEvent(ctx, id, EventApproval, map[string]any{"decision": "cancel", "by": identity.UserID(ctx)})
-		return t, nil
-	case TaskSucceeded, TaskFailed, TaskCanceled:
-		return nil, fmt.Errorf("%w: 任务已是终态 %s", ErrTaskStateDeny, t.Status)
-	default:
-		return nil, ErrTaskStateDeny
 	}
+	return nil, fmt.Errorf("%w: 任务状态反复变化，请稍后重试", ErrTaskStateDeny)
 }
 
-// ApproveTask 审批挂起中的任务（O3）：approve 置回 pending 从 checkpoint 续跑
-// （把能力记入 Approved，续跑时跳过闸门）；reject 直接终态失败。
+// ApproveTask 审批挂起中的任务（O3）：approve 为「这一次具体调用」签发凭据
+// （能力 + 参数指纹 + 策略版本）并置回 pending 从 checkpoint 续跑；reject 直接终态失败。
 func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note string) (*Task, error) {
 	t, err := u.repo.GetTask(ctx, id)
 	if err != nil {
@@ -528,8 +537,14 @@ func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note str
 		t.Status = TaskFailed
 		t.ErrorMsg = "人工驳回：" + truncateRunes(note, 300)
 		t.FinishedAt = time.Now()
-		if err := u.repo.FinishTask(ctx, t); err != nil {
+		// paused → failed 走 CAS：审批与「挂起期取消」可能同时发生，
+		// 后到的那个不能把对方的结果覆盖掉
+		ok, err := u.repo.TransitionTask(ctx, id, []string{TaskPaused}, t)
+		if err != nil {
 			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: 任务状态已变化（可能已被取消），请刷新后重试", ErrTaskStateDeny)
 		}
 		u.repo.TrimCheckpoints(ctx, id, 0)
 		u.emitSystemEvent(ctx, id, EventApproval, payload)
@@ -608,8 +623,13 @@ func (u *UseCase) ApproveTask(ctx context.Context, id uint64, decision, note str
 		cancel() // 理论上 paused 任务没有运行句柄，防御性清理
 	}
 	u.runMu.Unlock()
-	if err := u.repo.SaveTask(ctx, t); err != nil {
+	// paused → pending 走 CAS：期间可能被取消（另一个请求已经落了 canceled）
+	ok, err := u.repo.TransitionTask(ctx, id, []string{TaskPaused}, t)
+	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: 任务状态已变化（可能已被取消），请刷新后重试", ErrTaskStateDeny)
 	}
 	if err := u.cache.EnqueueTask(ctx, t.ID); err != nil {
 		return t, fmt.Errorf("重新入队失败（恢复扫描会自动拾起）: %w", err)
@@ -652,7 +672,15 @@ func (u *UseCase) approvalTimeoutScan(ctx context.Context) {
 		t.Status = TaskFailed
 		t.ErrorMsg = "审批超时自动驳回"
 		t.FinishedAt = time.Now()
-		_ = u.repo.FinishTask(ctx, t)
+		// paused → failed 走 CAS：扫描与「人工审批/取消」可能同时发生，
+		// 输掉的一方不能把对方已落库的结论覆盖成「审批超时」
+		ok, terr := u.repo.TransitionTask(ctx, t.ID, []string{TaskPaused}, t)
+		if terr != nil || !ok {
+			if terr != nil {
+				u.warn("审批超时落库失败", "task", t.ID, "err", terr)
+			}
+			continue
+		}
 		u.repo.TrimCheckpoints(ctx, t.ID, 0)
 		u.emitSystemEvent(ctx, t.ID, EventApproval, map[string]any{
 			"decision": "reject", "by": "system", "note": "审批超时自动驳回",
@@ -860,7 +888,13 @@ func (u *UseCase) claimAndRun(ctx context.Context, id uint64) {
 		t.Status = TaskFailed
 		t.ErrorMsg = "Agent 定义不存在或已删除"
 		t.FinishedAt = time.Now()
-		_ = u.repo.FinishTask(u.baseCtx, t)
+		// pending → failed 走 CAS：期间可能已被用户取消（已归档进历史表），
+		// 这里若无条件写终态会把它从「取消」改成「失败」
+		if ok, terr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskPending}, t); terr != nil || !ok {
+			if terr != nil {
+				u.warn("任务终态落库失败", "task", t.ID, "err", terr)
+			}
+		}
 		return
 	}
 	if _, err := u.executeTaskNow(ctx, t, def); err != nil {
@@ -1014,7 +1048,10 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 			t.ErrorMsg = "等待人工审批"
 			t.FinishedAt = time.Time{}
 			rec.status(TaskRunning, TaskPaused)
-			_ = u.repo.SaveTask(u.baseCtx, t)
+			// running → paused 走 CAS：期间若已被取消，就不要再把状态改回 paused
+			if ok, perr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); perr == nil && !ok {
+				rec.event(EventError, rec.turn, map[string]any{"message": "任务状态已被并发修改，放弃挂起"})
+			}
 			rec.snapshot()
 			return "", runErr
 		}
@@ -1039,7 +1076,13 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 		rec.event(EventError, rec.turn, map[string]any{"message": t.ErrorMsg})
 		rec.status(TaskRunning, t.Status)
 		t.Progress = 100
-		_ = u.repo.FinishTask(u.baseCtx, t) // 终态：任务池 → 任务历史表
+		// running → 终态走 CAS：审批驳回 / 挂起期取消可能先一步落了终态，
+		// 后到的 worker 只补事件、不覆盖别人的结论
+		if ok, terr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); terr != nil || !ok {
+			if terr != nil {
+				u.warn("任务终态落库失败", "task", t.ID, "err", terr)
+			}
+		}
 		u.repo.TrimCheckpoints(u.baseCtx, t.ID, 5)
 		rec.snapshot()
 		return "", runErr
@@ -1048,7 +1091,12 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	t.Result = answer
 	t.Progress = 100
 	rec.status(TaskRunning, TaskSucceeded)
-	_ = u.repo.FinishTask(u.baseCtx, t) // 终态：任务池 → 任务历史表
+	// 同上：只有「当前仍是 running」才允许落成功终态
+	if ok, terr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); terr != nil || !ok {
+		if terr != nil {
+			u.warn("任务终态落库失败", "task", t.ID, "err", terr)
+		}
+	}
 	u.repo.TrimCheckpoints(u.baseCtx, t.ID, 5)
 	rec.snapshot()
 	return answer, nil
