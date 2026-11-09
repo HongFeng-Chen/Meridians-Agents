@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -373,5 +374,98 @@ func TestParseSkillHubListDedup(t *testing.T) {
 	}
 	if list[0].Title != "PPT可编辑大师" {
 		t.Errorf("应保留首个条目: %+v", list[0])
+	}
+}
+
+// —— 技能包解压限额：zip 炸弹 / 路径穿越 ——
+
+func zipOf(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	zw := zip.NewWriter(buf)
+	for name, content := range files {
+		fw, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestParseZipRejectsTraversal(t *testing.T) {
+	for _, name := range []string{"../evil.md", "a/../../evil.md", "/etc/passwd", `C:/Windows/evil.md`} {
+		raw := zipOf(t, map[string]string{"SKILL.md": "# demo", name: "x"})
+		if _, err := parseZip(raw); err == nil {
+			t.Fatalf("路径 %q 应被拒绝", name)
+		} else if !strings.Contains(err.Error(), "非法路径") && !strings.Contains(err.Error(), "可疑条目") {
+			t.Fatalf("路径 %q 的报错信息应说明原因，实际 %v", name, err)
+		}
+	}
+}
+
+func TestParseZipRejectsTooManyEntries(t *testing.T) {
+	files := map[string]string{"SKILL.md": "# demo"}
+	for i := 0; i < maxZipEntries+5; i++ {
+		files[fmt.Sprintf("refs/f%03d.md", i)] = "x"
+	}
+	raw := zipOf(t, files)
+	if _, err := parseZip(raw); err == nil {
+		t.Fatal("条目数超限应被拒绝")
+	} else if !strings.Contains(err.Error(), "文件数超过上限") {
+		t.Fatalf("应提示文件数超限，实际 %v", err)
+	}
+}
+
+func TestParseZipRejectsOversizeEntry(t *testing.T) {
+	big := strings.Repeat("A", maxZipEntrySize+1)
+	raw := zipOf(t, map[string]string{"SKILL.md": "# demo", "big.md": big})
+	if _, err := parseZip(raw); err == nil {
+		t.Fatal("单文件超限应被拒绝，而不是截断后收下")
+	} else if !strings.Contains(err.Error(), "超过") && !strings.Contains(err.Error(), "可疑条目") {
+		t.Fatalf("应提示超限，实际 %v", err)
+	}
+}
+
+// 压缩比异常（高度可压缩的大文件）按炸弹处理
+func TestSafeZipEntryRatio(t *testing.T) {
+	raw := zipOf(t, map[string]string{"bomb.md": strings.Repeat("0", 4<<20)})
+	reader, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range reader.File {
+		if safeZipEntry(f) {
+			t.Fatalf("压缩比 %d:1 的条目应被判定为可疑", f.UncompressedSize64/f.CompressedSize64)
+		}
+	}
+	// 正常文本仍放行
+	ok := zipOf(t, map[string]string{"SKILL.md": "# demo"})
+	rd, _ := zip.NewReader(bytes.NewReader(ok), int64(len(ok)))
+	for _, f := range rd.File {
+		if !safeZipEntry(f) {
+			t.Fatalf("正常条目不应被拒：%s", f.Name)
+		}
+	}
+}
+
+// 市场 JSON 形态的文件路径同样要校验（不只是 zip）
+func TestParseJSONRejectsBadPath(t *testing.T) {
+	raw := []byte(`{"name":"demo","files":[{"path":"../evil.md","content":"x"}]}`)
+	if _, err := parseJSON(raw); err == nil {
+		t.Fatal("JSON 形态的非法路径应被拒绝")
+	}
+	ok := []byte(`{"name":"demo","files":[{"path":"references/a.md","content":"x"}]}`)
+	s, err := parseJSON(ok)
+	if err != nil {
+		t.Fatalf("合法路径不应报错: %v", err)
+	}
+	if len(s.Files) != 1 || s.Files[0].Path != "references/a.md" {
+		t.Fatalf("文件路径应保留，实际 %+v", s.Files)
 	}
 }

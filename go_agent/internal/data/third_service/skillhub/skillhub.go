@@ -49,14 +49,56 @@ import (
 )
 
 const (
-	maxPackageSize = 20 << 20 // 技能包上限 20MB
+	maxPackageSize = 20 << 20 // 技能包（下载后 zip 字节）上限 20MB
 	maxSnippetLen  = 200      // 报错时附带的响应片段长度
+
+	// 解压侧限额：20MB 的 zip 能解出上百 GB（zip 炸弹），
+	// 所以「压缩包多大」和「解出多少」必须分开限。
+	maxZipEntries   = 512      // 单包文件数上限
+	maxZipEntrySize = 2 << 20  // 单个文本文件上限 2MB（技能正文没这么大）
+	maxZipTotalSize = 32 << 20 // 解压后总字节上限
+	maxZipRatio     = 200      // 单文件解压比上限（超过按炸弹处理）
 )
 
 // archiveEntry zip 内的文本条目
 type archiveEntry struct {
 	name    string
 	content string
+}
+
+// safeSkillPath 校验技能包内的相对路径。
+//
+// 技能文件最终会落到技能目录下的磁盘路径，`../`、绝对路径、盘符
+// 都能把写入点搬到目录之外（覆盖 configs / 其他技能的文件）。
+func safeSkillPath(name string) (string, bool) {
+	n := strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if n == "" {
+		return "", false
+	}
+	n = path.Clean(n)
+	switch {
+	case n == "." || n == "..", strings.HasPrefix(n, "../"), strings.HasPrefix(n, "/"):
+		return "", false
+	case len(n) > 1 && n[1] == ':': // Windows 盘符（C:/…）
+		return "", false
+	}
+	return n, true
+}
+
+// safeZipEntry zip 条目限额：单文件解压后大小 + 压缩比。
+//
+// 声明大小不可全信（zip 头可以伪造），所以读的时候还有 io.LimitReader 兜底；
+// 这里先按声明值拦掉明显的炸弹，避免白花 IO。
+func safeZipEntry(f *zip.File) bool {
+	if f.UncompressedSize64 > maxZipEntrySize {
+		return false
+	}
+	if f.CompressedSize64 > 0 && f.UncompressedSize64 > 1<<20 {
+		if f.UncompressedSize64/f.CompressedSize64 > maxZipRatio {
+			return false
+		}
+	}
+	return true
 }
 
 // Client 实现 skill.HubClient
@@ -555,7 +597,12 @@ func parseJSON(raw []byte) (*skill.Skill, error) {
 		Content:     dto.Content,
 	}
 	for _, f := range dto.Files {
-		s.Files = append(s.Files, skill.File{Path: path.Clean(f.Path), Content: f.Content, Size: len(f.Content)})
+		// 市场返回的文件路径同样要校验：`../` 会把文件写到技能目录之外
+		name, ok := safeSkillPath(f.Path)
+		if !ok {
+			return nil, fmt.Errorf("%w: 技能包内含非法路径 %q", skill.ErrHubResponse, f.Path)
+		}
+		s.Files = append(s.Files, skill.File{Path: name, Content: f.Content, Size: len(f.Content)})
 	}
 	if s.Content == "" {
 		for _, f := range s.Files {
@@ -579,6 +626,7 @@ func parseZip(raw []byte) (*skill.Skill, error) {
 	}
 	type entry = archiveEntry
 	var entries []entry
+	total := int64(0)
 	for _, f := range reader.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -586,14 +634,29 @@ func parseZip(raw []byte) (*skill.Skill, error) {
 		if isMetaFile(f.Name) {
 			continue // _meta.json 之类是市场写入的元信息，不进技能目录
 		}
+		if !safeZipEntry(f) {
+			return nil, fmt.Errorf("%w: 技能包内含可疑条目 %q（过大或压缩比异常）", skill.ErrHubResponse, f.Name)
+		}
+		if len(entries) >= maxZipEntries {
+			return nil, fmt.Errorf("%w: 技能包文件数超过上限（%d）", skill.ErrHubResponse, maxZipEntries)
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, fmt.Errorf("%w: 读取 %s 失败", skill.ErrHubResponse, f.Name)
 		}
-		content, err := io.ReadAll(io.LimitReader(rc, maxPackageSize))
+		// 多读 1 字节用来判断"是否超限"：LimitReader 直接截断会把超限文件
+		// 当成正常内容收下（内容残缺但看不出来）
+		content, err := io.ReadAll(io.LimitReader(rc, maxZipEntrySize+1))
 		_ = rc.Close()
 		if err != nil {
 			return nil, fmt.Errorf("%w: 读取 %s 失败", skill.ErrHubResponse, f.Name)
+		}
+		if len(content) > maxZipEntrySize {
+			return nil, fmt.Errorf("%w: 文件 %s 超过单文件上限（%d 字节）", skill.ErrHubResponse, f.Name, maxZipEntrySize)
+		}
+		total += int64(len(content))
+		if total > maxZipTotalSize {
+			return nil, fmt.Errorf("%w: 技能包解压后超过上限（%d 字节）", skill.ErrHubResponse, maxZipTotalSize)
 		}
 		if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
 			continue // 二进制资源（图片/二进制脚本）暂不入库
@@ -612,6 +675,10 @@ func parseZip(raw []byte) (*skill.Skill, error) {
 		name := strings.TrimPrefix(e.name, prefix)
 		if name == "" {
 			continue
+		}
+		name, ok := safeSkillPath(name)
+		if !ok {
+			return nil, fmt.Errorf("%w: 技能包内含非法路径 %q", skill.ErrHubResponse, e.name)
 		}
 		if strings.EqualFold(name, "SKILL.md") {
 			s.Content = e.content
@@ -635,7 +702,7 @@ func parseZip(raw []byte) (*skill.Skill, error) {
 			}
 			continue
 		}
-		s.Files = append(s.Files, skill.File{Path: path.Clean(name), Content: e.content, Size: len(e.content)})
+		s.Files = append(s.Files, skill.File{Path: name, Content: e.content, Size: len(e.content)})
 	}
 	if s.Content == "" && len(s.Files) == 0 {
 		return nil, fmt.Errorf("%w: zip 内没有技能内容", skill.ErrHubResponse)
