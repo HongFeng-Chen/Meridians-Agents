@@ -212,8 +212,21 @@ func insecureExposure(addrs ...string) (string, bool) {
 			host = h
 		}
 		host = strings.Trim(host, "[]")
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			return addr, true
+		}
+		// localhost 是回环别名；它和 127.0.0.1 一样只对本机可达，
+		// 不能因为 ParseIP 解不出来就当成「对外监听」误杀开发配置。
+		if strings.EqualFold(host, "localhost") {
+			continue
+		}
 		ip := net.ParseIP(host)
-		if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
+		if ip == nil {
+			// 绑定了主机名（非 localhost）：启动期不确定它解析到哪个网卡，
+			// 按对外处理更安全——误杀的代价是加一个环境变量，漏放的代价是数据面裸奔。
+			return addr, true
+		}
+		if !ip.IsLoopback() {
 			return addr, true
 		}
 	}
@@ -242,8 +255,9 @@ func CheckInsecureExposure(sec *conf.Security, addrs ...string) error {
 		return nil
 	}
 	return fmt.Errorf("拒绝启动：认证未启用（AUTH_ENABLED=false）且监听 %s（非回环）。"+
-		"二选一：① 生产/任何对外环境设置 AUTH_ENABLED=true 与 AUTH_JWT_SECRET；"+
-		"② 本机开发可显式设置 AUTH_DEV_INSECURE=true（只监听 127.0.0.1 也可以，此时不触发本检查）", addr)
+		"三选一：① 生产/任何对外环境设置 AUTH_ENABLED=true 与 AUTH_JWT_SECRET；"+
+		"② 本机开发把监听收回回环：HTTP_ADDR=127.0.0.1:8000 GRPC_ADDR=127.0.0.1:9000（仓库默认值就是回环，原样启动不会触发本检查）；"+
+		"③ 确实要从别的机器访问、又暂时不开认证：AUTH_DEV_INSECURE=true（启动会打 WARN）", addr)
 }
 
 // envFlag 读取布尔环境变量（1/true/yes/on）

@@ -225,8 +225,19 @@ docker compose exec ollama ollama pull bge-m3
 
 ```bash
 cd go_agent
-# 认证关闭时监听 0.0.0.0 会被启动闸门拒绝，本机开发显式声明开发模式
-AUTH_DEV_INSECURE=true go run ./cmd/go_agent -conf ./configs    # HTTP :8000 · gRPC :9000 · 健康检查 /api/health
+# 默认监听 127.0.0.1:8000 / 127.0.0.1:9000，认证关闭也能直接启动
+kratos run
+# 或等价地：go run ./cmd/go_agent -conf ./configs
+# HTTP :8000 · gRPC :9000 · 健康检查 http://127.0.0.1:8000/api/health
+```
+
+需要从**别的机器 / 手机**访问（监听 0.0.0.0）时，二选一：
+
+```bash
+# A. 配好认证（推荐）
+AUTH_ENABLED=true AUTH_JWT_SECRET="$(openssl rand -hex 32)" HTTP_ADDR=0.0.0.0:8000 kratos run
+# B. 仍是本机/内网演示，显式声明开发模式（启动打 WARN）
+AUTH_DEV_INSECURE=true HTTP_ADDR=0.0.0.0:8000 GRPC_ADDR=0.0.0.0:9000 kratos run
 ```
 
 前端（新终端）：
@@ -267,6 +278,7 @@ docker compose up -d --build
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `HTTP_ADDR` / `GRPC_ADDR` | `127.0.0.1:8000` / `127.0.0.1:9000` | 监听地址。默认只绑回环，本机开发无需认证即可启动；容器镜像内由 Dockerfile 覆盖为 `0.0.0.0` |
 | `DATABASE_SOURCE` | `root:root@tcp(127.0.0.1:3306)/go_agent?...` | MySQL DSN |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | `127.0.0.1:6379` / `redis_pass` | Redis 地址 / 密码 |
 | `MILVUS_URI` / `MILVUS_TOKEN` / `MILVUS_COLLECTION` | `http://127.0.0.1:19530` / `root:Milvus` / `rag_docs` | 向量库连接与主集合名 |
@@ -304,12 +316,16 @@ docker compose up -d --build
 | 组合 | 结果 |
 | --- | --- |
 | `AUTH_ENABLED=true` | 正常启动 |
-| `AUTH_ENABLED=false` + 只监听 `127.0.0.1` | 正常启动（本机开发） |
-| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / 具体网卡 + `AUTH_DEV_INSECURE=true` | 启动，日志 WARN |
-| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / 具体网卡 | **拒绝启动**，错误信息给出两条出路 |
+| `AUTH_ENABLED=false` + 只监听 `127.0.0.1` / `localhost` / `[::1]`（**仓库默认**） | 正常启动（本机开发） |
+| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / `:8000` / 具体网卡 / 主机名 + `AUTH_DEV_INSECURE=true` | 启动，日志 WARN |
+| `AUTH_ENABLED=false` + 监听 `0.0.0.0` / `:8000` / 具体网卡 / 主机名 | **拒绝启动**，错误信息给出三条出路 |
 
-为什么是硬失败而不是告警：默认配置（认证关闭 + `0.0.0.0`）是最容易被整份搬上生产的一份，
-而告警在容器日志里滚两屏就没人看了。
+空 host（`:8000`）等价于 `0.0.0.0`；绑定的主机名在启动期无法确认解析到哪块网卡，同样按对外处理——
+误判的代价是加一个环境变量，漏判的代价是数据面裸奔。
+
+为什么是硬失败而不是告警：告警在容器日志里滚两屏就没人看了，而这一步一旦放过，整个数据面
+（会话、记忆、Agent 定义、token 额度）就对任何能连上端口的人开放。默认配置已收回到回环，
+所以闸门只在「有人主动把监听改成对外」时才会响——那一下正是应该停下来想清楚的地方。
 
 JWT 侧的校验规则（v1.8 加严）：
 
@@ -325,6 +341,7 @@ JWT 侧的校验规则（v1.8 加严）：
 ```bash
 export AUTH_ENABLED=true
 export AUTH_JWT_SECRET="$(openssl rand -hex 32)"
+export HTTP_ADDR=0.0.0.0:8000 GRPC_ADDR=0.0.0.0:9000   # 只绑回环就保持默认
 ./bin/go_agent -conf configs
 ```
 

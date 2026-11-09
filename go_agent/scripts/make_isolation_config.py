@@ -22,12 +22,25 @@ users = {
 }
 
 
+def set_addr(text, env_name, default_addr, port):
+    """把 server 段的 addr 占位符改成本机回环 + 指定端口。
+
+    取代早期的字面量替换：config.yaml 现在写的是 ${HTTP_ADDR:127.0.0.1:8000}，
+    写死 "addr: 0.0.0.0:8000" 会静默匹配不到，隔离环境就退回默认端口，
+    与本机已在跑的服务撞端口。
+    """
+    key = "${%s:%s}" % (env_name, default_addr)
+    if key not in text:
+        raise SystemExit("生成失败：configs/config.yaml 里没有找到 %s" % key)
+    return text.replace(key, "127.0.0.1:" + port, 1)
+
+
 def main():
     with open(SRC, encoding="utf-8") as f:
         text = f.read()
 
-    text = text.replace("addr: 0.0.0.0:8000", "addr: 0.0.0.0:" + HTTP_PORT, 1)
-    text = text.replace("addr: 0.0.0.0:9000", "addr: 0.0.0.0:" + GRPC_PORT, 1)
+    text = set_addr(text, "HTTP_ADDR", "127.0.0.1:8000", HTTP_PORT)
+    text = set_addr(text, "GRPC_ADDR", "127.0.0.1:9000", GRPC_PORT)
     # 认证打开：所有非 publicPaths 接口必须带令牌
     text = text.replace("enabled: ${AUTH_ENABLED:false}", "enabled: true", 1)
 

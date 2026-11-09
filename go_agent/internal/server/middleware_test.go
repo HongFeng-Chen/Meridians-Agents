@@ -175,6 +175,17 @@ func TestCheckInsecureExposure(t *testing.T) {
 	if err := CheckInsecureExposure(off, "127.0.0.1:8000", "127.0.0.1:9000"); err != nil {
 		t.Fatalf("仅回环监听应放行: %v", err)
 	}
+	// localhost / [::1] 同样是回环，不能因为解不出 IP 就误判成对外监听
+	if err := CheckInsecureExposure(off, "localhost:8000", "[::1]:9000"); err != nil {
+		t.Fatalf("localhost / ::1 应视为回环: %v", err)
+	}
+	// 空 host（":8000"）= 所有网卡；绑定主机名同理无法在启动期确认解析结果
+	if err := CheckInsecureExposure(off, ":8000"); err == nil {
+		t.Fatal("空 host 等价于 0.0.0.0，必须拒绝启动")
+	}
+	if err := CheckInsecureExposure(off, "devbox:8000"); err == nil {
+		t.Fatal("绑定主机名应按对外监听处理")
+	}
 	// 认证开启：放行
 	if err := CheckInsecureExposure(on, "0.0.0.0:8000"); err != nil {
 		t.Fatalf("认证开启应放行: %v", err)

@@ -1,10 +1,11 @@
 server:
   http:
-    addr: 0.0.0.0:8100
+    # 校验用配置：另起端口，只绑回环（与主配置同一条安全默认）
+    addr: ${HTTP_ADDR:127.0.0.1:8100}
     # Kratos 默认每请求 1s 超时；入库要跑 embedding + LLM，图谱抽取更慢，放到 5min
     timeout: 300s
   grpc:
-    addr: 0.0.0.0:9100
+    addr: ${GRPC_ADDR:127.0.0.1:9100}
     timeout: 300s
 data:
   database:

@@ -1,19 +1,25 @@
 server:
   http:
-    addr: 0.0.0.0:8000
+    # 默认只监听回环：`kratos run` / `go run ./cmd/go_agent -conf ./configs`
+    # 开箱即可启动，同时不会把「认证关闭 + 对外监听」这份最危险的组合
+    # 带到局域网（见下方启动闸门）。
+    #   容器 / 内网联调：HTTP_ADDR=0.0.0.0:8000（Dockerfile 已默认设好）
+    #   前端 dev server 走 localhost:8000 代理，回环足够用
+    addr: ${HTTP_ADDR:127.0.0.1:8000}
     # Kratos 默认每请求 1s 超时；入库要跑 embedding + LLM，图谱抽取更慢，放到 5min
     timeout: 300s
   grpc:
-    addr: 0.0.0.0:9000
+    addr: ${GRPC_ADDR:127.0.0.1:9000}
     timeout: 300s
 
 # 网关安全边界：认证 / 限流 / 预算。三项都可独立开关。
 #
 # ⚠ 启动闸门：认证关闭 + 监听非回环地址（0.0.0.0 / 具体网卡）时**拒绝启动**。
-#   生产：AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串>
-#   本机开发二选一：
-#     AUTH_DEV_INSECURE=true ./go_agent -conf configs   # 显式声明这是开发环境
-#     或把 addr 改成 127.0.0.1:8000 / 127.0.0.1:9000（仅回环时不触发）
+#   生产：AUTH_ENABLED=true AUTH_JWT_SECRET=<32字节随机串> HTTP_ADDR=0.0.0.0:8000
+#   本机开发：默认 addr 已是 127.0.0.1，直接跑即可，不触发本检查。
+#   需要从别的机器/手机访问时二选一：
+#     AUTH_DEV_INSECURE=true HTTP_ADDR=0.0.0.0:8000 kratos run   # 显式声明开发环境
+#     或配好 AUTH_ENABLED/AUTH_JWT_SECRET 再改 HTTP_ADDR
 #
 # JWT 附加校验（默认值即为安全值，一般不用改）：
 #   AUTH_JWT_ALLOW_NO_EXP=true   允许没有 exp 的令牌（默认 false = 强制有效期）
