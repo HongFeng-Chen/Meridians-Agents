@@ -226,7 +226,8 @@ func (s *AgentFactoryService) ListTasks(ctx context.Context, req *v1.ListTasksRe
 		ParentTaskID: req.GetParentTaskId(),
 		RootOnly:     req.GetRootOnly(),
 		ConvID:       req.GetConvId(),
-		UserID:       scopeUser(ctx), // 任务中心只列当前用户的任务
+		TenantID:     identity.TenantID(ctx), // 租户内可见（跨租户同 user_id 也不可见）
+		UserID:       scopeUser(ctx),         // 任务中心只列当前用户的任务
 		Limit:        int(req.GetLimit()),
 	})
 	if err != nil {

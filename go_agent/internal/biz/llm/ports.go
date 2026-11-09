@@ -20,7 +20,8 @@ type CallRepo interface {
 	Insert(ctx context.Context, rec CallRecord) error
 	List(ctx context.Context, f CallFilter) ([]CallRecord, int64, error)
 	// Stats userID 非空时只统计该用户（空 = 全平台）
-	Stats(ctx context.Context, userID string) (CallStats, error)
+	// Stats 调用统计；tenantID / userID 非空时分别按租户、用户收窄
+	Stats(ctx context.Context, tenantID, userID string) (CallStats, error)
 	// Breakdown token 用量下钻：按 dim（agent_key/scene/purpose/model）聚合排行
 	Breakdown(ctx context.Context, dim string, days int) ([]UsageRow, error)
 }

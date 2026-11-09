@@ -28,7 +28,7 @@ func (c *captureRepo) Insert(_ context.Context, rec *Record) error {
 
 func (c *captureRepo) List(context.Context, Filter) ([]Record, int64, error) { return nil, 0, nil }
 
-func (c *captureRepo) Stats(context.Context, string) (Stats, error) { return Stats{}, nil }
+func (c *captureRepo) Stats(context.Context, string, string) (Stats, error) { return Stats{}, nil }
 
 func (c *captureRepo) first(t *testing.T, timeout time.Duration) Record {
 	t.Helper()

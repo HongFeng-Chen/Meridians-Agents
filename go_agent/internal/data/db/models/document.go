@@ -8,7 +8,10 @@ type DocumentPO struct {
 	DocID string `gorm:"column:doc_id;size:191;not null;uniqueIndex:uk_rag_documents_doc_id"`
 	// UserID 文档归属用户（隔离键）：检索时按 doc_id 白名单做向量层过滤，
 	// 未经改造的历史文档默认 'default'（认证未启用时与开发态同作用域）。
-	UserID    string    `gorm:"column:user_id;size:128;not null;default:'default';index:idx_rag_documents_user"`
+	UserID string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_rag_documents_user"`
+	// TenantID 租户隔离键：同名校验只要求「租户内唯一」的语义，先于 user_id 生效。
+	// 默认 'public'：加列时 MySQL 会用默认值回填历史行，不会把旧数据变成「谁都能看」。
+	TenantID  string    `gorm:"column:tenant_id;size:128;not null;default:'public';index:idx_rag_documents_tenant"`
 	Source    string    `gorm:"column:source;size:512;not null;default:''"`
 	Mode      string    `gorm:"column:mode;size:16;not null;default:'rag';index:idx_rag_documents_mode"`
 	Status    string    `gorm:"column:status;size:16;not null;default:'ready';index:idx_rag_documents_status"`

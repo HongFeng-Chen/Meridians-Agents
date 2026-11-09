@@ -55,11 +55,14 @@ func newGate(sec *conf.Security) *gate {
 	static := make(map[string]identity.Info, len(a.GetStaticTokens()))
 	for tok, id := range a.GetStaticTokens() {
 		user, tenant, role := parseStaticIdentity(id)
+		// 静态令牌第三段是角色：历史上只认 admin，现在也认 RBAC 角色
+		// （operator / auditor / developer …），Admin 标记仍按管理员等价处理
 		static[tok] = identity.Info{
 			UserID:   firstNonEmpty(user, identity.DefaultUser),
 			TenantID: firstNonEmpty(tenant, identity.DefaultTenant),
 			Auth:     "static",
 			Admin:    strings.EqualFold(role, "admin"),
+			Roles:    roleList(role),
 		}
 	}
 	g.verifier = auth.New(a.GetJwtSecret(), static)
@@ -397,6 +400,15 @@ func statusLabel(err error) string {
 		return "200"
 	}
 	return strconv.Itoa(int(kerrors.FromError(err).Code))
+}
+
+// roleList 静态令牌的角色段转角色列表（空段 = 无角色 → 默认 user）
+func roleList(role string) []string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return nil
+	}
+	return []string{role}
 }
 
 func firstNonEmpty(vals ...string) string {

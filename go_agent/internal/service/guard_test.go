@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/pkg/authz"
 	"go_agent/internal/pkg/identity"
 
 	kerrors "github.com/go-kratos/kratos/v3/errors"
@@ -124,5 +125,52 @@ func TestRequireAdminAudit(t *testing.T) {
 	}
 	if !allowed || !denied {
 		t.Fatalf("审计事件缺失：allowed=%v denied=%v（rows=%+v）", allowed, denied, rows)
+	}
+}
+
+// TestRequirePerm RBAC 粒度：
+// 运维能审批任务但建不了 MCP（stdio 等于远程命令执行）；审计员能读记录但改不了配置。
+func TestRequirePerm(t *testing.T) {
+	operator := identity.With(context.Background(), identity.Info{
+		UserID: "ops", TenantID: "t1", Auth: "jwt", Roles: []string{"operator"},
+	})
+	if err := requirePerm(operator, authz.PermTaskApprove, "agentfactory.task.approve", "task", "1"); err != nil {
+		t.Fatalf("operator 应能审批任务: %v", err)
+	}
+	if err := requireAdmin(operator, "mcp.server.create"); err == nil {
+		t.Fatal("operator 不应能创建 MCP 服务")
+	}
+
+	auditor := identity.With(context.Background(), identity.Info{
+		UserID: "audit", TenantID: "t1", Auth: "jwt", Roles: []string{"auditor"},
+	})
+	if err := requirePerm(auditor, authz.PermAuditRead, "history.list", "history", ""); err != nil {
+		t.Fatalf("auditor 应能读审计记录: %v", err)
+	}
+	if err := requirePerm(auditor, authz.PermAgentDevelop, "prompt.update", "prompt", "p1"); err == nil {
+		t.Fatal("auditor 不应能改 Prompt")
+	}
+}
+
+// TestAuditScopeAllowsAuditor 审计员读全平台记录，但仍受租户约束
+func TestAuditScopeAllowsAuditor(t *testing.T) {
+	auditor := identity.With(context.Background(), identity.Info{
+		UserID: "audit", TenantID: "t1", Auth: "jwt", Roles: []string{"auditor"},
+	})
+	if got := auditScope(auditor); got != "" {
+		t.Fatalf("审计员的用户范围应为空（不限用户），实际 %q", got)
+	}
+	if got := auditTenant(auditor); got != "" {
+		t.Fatalf("审计员应能看全平台（租户范围为空），实际 %q", got)
+	}
+
+	user := identity.With(context.Background(), identity.Info{
+		UserID: "u1", TenantID: "t1", Auth: "jwt",
+	})
+	if got := auditScope(user); got != "u1" {
+		t.Fatalf("普通用户只能看自己，实际 %q", got)
+	}
+	if got := auditTenant(user); got != "t1" {
+		t.Fatalf("普通用户应限定在本租户，实际 %q", got)
 	}
 }

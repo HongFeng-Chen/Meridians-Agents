@@ -393,15 +393,27 @@ python scripts/e2e_isolation.py                  # 会话 / 任务 / 知识库�
 
 ### 管理面授权（登录 ≠ 管理员）
 
-网关的认证只回答「你是谁」。**MCP 配置、技能安装、Agent 删除这类平台级变更
-另有一道独立闸门**，判定规则见 `internal/pkg/identity`：
+网关的认证只回答「你是谁」，**授权由 `internal/pkg/authz` 的角色矩阵回答**：
+平台级变更（MCP 配置、技能安装、Agent 删除）是 `platform:config`，只有平台管理员有。
+
+| 角色 | 主要权限 |
+| --- | --- |
+| `platform_admin`（别名 `admin` / `superadmin`） | 全部：平台配置、租户管理、Agent 开发、任务运维与审批、审计读取 |
+| `tenant_admin` | 本租户成员与配额、Agent 开发、任务运维与审批、审计读取（不含平台配置） |
+| `developer` | Agent / Prompt / Skill 的开发与调试、任务运维 |
+| `operator` | 任务执行、取消、重试、审批（不含平台配置） |
+| `auditor` | 只读审计与调用记录（跨用户，但限定在本租户） |
+| `user`（默认） | 使用被授权的 Agent，只能看自己的数据 |
+
+判定规则（`authz.Allowed`）：
 
 | 情况 | 判定 |
 | --- | --- |
-| JWT / 静态令牌带 `role=admin`（`roles` 里含 `admin` 亦可） | 放行 |
+| 令牌 `role`/`roles` 里含具备该权限的角色 | 放行 |
+| JWT / 静态令牌带 `role=admin`（老写法） | 等价 `platform_admin` |
 | 认证关闭（开发态）+ 请求来自回环地址 | 放行（仅为了本机开发可用） |
 | 认证关闭 + `AUTH_DEV_TRUST_ALL=true` | 放行（演示环境逃生阀，启动打 WARN） |
-| 其余（含「已登录的普通用户」） | `403`，并落一条 `denied` 审计事件 |
+| 其余（含「已登录的普通用户」与未知角色） | `403`，并落一条 `denied` 审计事件 |
 
 被闸门覆盖的动作：`mcp.server.*`（增删改 / 连接 / 同步 / 客户端参数）、`mcp.tool.*`（启停 / 删除）、
 `mcp.proxy.preview`、`skill.install*` / `skill.uninstall` / `skill.sync` / `skill.hub.*`、
@@ -412,17 +424,32 @@ python scripts/e2e_isolation.py                  # 会话 / 任务 / 知识库�
 管理员的两种给法：
 
 ```bash
-# 1) 静态令牌：user:tenant:admin
-#    security.auth.staticTokens: { "ops-token": "ops:acme:admin" }
+# 1) 静态令牌：user:tenant:role
+#    security.auth.staticTokens: { "ops-token": "ops:acme:admin", "audit-token": "auditor1:acme:auditor" }
 curl -H "Authorization: Bearer ops-token" -X POST .../api/mcp/servers
 
-# 2) JWT：payload 里加 role=admin
+# 2) JWT：payload 里加 role（单个）或 roles（数组）
 #    {"sub":"ops","tenant_id":"acme","role":"admin","exp":...}
+#    {"sub":"auditor1","tenant_id":"acme","roles":["auditor"],"exp":...}
 ```
 
 > 单机演示时浏览器从另一台机器访问，回环判定不成立，管理按钮会全 403。
 > 要么签发一个 admin 令牌，要么显式打开 `AUTH_DEV_TRUST_ALL=true`——
 > 后者把管理面重新变成匿名可达，只在确定不对外暴露的环境里用。
+
+### 租户隔离（同 userID 不同租户也互不可见）
+
+`identity` 里的 `TenantID` 不再只用于限流与日志，已下推到数据面：
+
+| 数据 | 隔离键 | 行为 |
+| --- | --- | --- |
+| 知识库 `rag_documents` + Milvus 分块 | `tenant_id` + `user_id` | 列表、检索白名单、入库归属校验都按 `(租户, 用户)`；跨租户同名 `doc_id` 直接拒绝覆盖 |
+| 任务 `agent_tasks` / `agent_task_history` | `tenant_id` + `user_id` | 提交时固化，列表按租户过滤（跨租户同 userID 也列不到） |
+| 操作历史 `op_histories` / 调用记录 `llm_calls` | `tenant_id` + `user_id` | 列表与统计按身份过滤；非管理员只返回 240 字预览 |
+
+加列时统一用 `default 'public'`，MySQL 会用默认值回填历史行——历史数据归入默认租户，
+不会变成「谁都能看」。**跨租户共享**（MCP 服务、技能市场、提示词模板）仍按平台级资源处理，
+由 `platform:config` 权限控制写操作。
 
 ### 出站访问策略（防 SSRF）
 

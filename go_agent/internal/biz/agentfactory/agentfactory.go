@@ -422,7 +422,8 @@ func (u *UseCase) SubmitTask(ctx context.Context, in TaskInput) (*Task, error) {
 		// 归属用户取自提交时的请求身份：worker 后续用 baseCtx 执行，但归属不再变化。
 		// 委派出的子任务在同一 ctx 下提交，因此天然继承父任务身份。
 		// cron 自动排期走 baseCtx（无请求身份）→ 落在 default 作用域。
-		UserID: identity.UserID(ctx),
+		UserID:   identity.UserID(ctx),
+		TenantID: identity.TenantID(ctx),
 	}
 	if err := u.repo.CreateTask(ctx, task); err != nil {
 		return nil, err
@@ -962,7 +963,8 @@ func (u *UseCase) RunOnce(ctx context.Context, agentKey, input string) (string, 
 		Title:      truncateRunes(input, 80),
 		Input:      input,
 		Status:     TaskPending,
-		UserID:     identity.UserID(ctx), // 试运行同样归属当前请求用户
+		UserID:     identity.UserID(ctx),   // 试运行同样归属当前请求用户
+		TenantID:   identity.TenantID(ctx), // 租户同理
 	}
 	if err := u.repo.CreateTask(ctx, t); err != nil {
 		return "", err

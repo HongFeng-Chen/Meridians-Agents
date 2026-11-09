@@ -99,9 +99,12 @@ func (r *HistoryRepo) List(ctx context.Context, f history.Filter) ([]history.Rec
 }
 
 // Stats 统计：总量 + 按 kind 聚合。userID 非空时只统计该用户。
-func (r *HistoryRepo) Stats(ctx context.Context, userID string) (history.Stats, error) {
+func (r *HistoryRepo) Stats(ctx context.Context, tenantID, userID string) (history.Stats, error) {
 	var out history.Stats
 	base := r.db.WithContext(ctx).Model(&models.OpHistoryPO{})
+	if tid := strings.TrimSpace(tenantID); tid != "" {
+		base = base.Where("tenant_id = ?", tid)
+	}
 	if uid := strings.TrimSpace(userID); uid != "" {
 		base = base.Where("user_id = ?", uid)
 	}

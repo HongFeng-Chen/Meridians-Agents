@@ -190,8 +190,9 @@ func (v *Verifier) verifyHS256(token string) (identity.Info, error) {
 	// 管理员判定只看签名后的 claim：登录 ≠ 管理员，管理面必须显式授权。
 	admin := false
 	roleClaim := firstNonEmpty(v.RoleClaim, "role")
-	for _, r := range append(stringListClaim(claims, roleClaim), stringListClaim(claims, "roles")...) {
-		if strings.EqualFold(r, "admin") || strings.EqualFold(r, "superadmin") {
+	roles := append(stringListClaim(claims, roleClaim), stringListClaim(claims, "roles")...)
+	for _, r := range roles {
+		if isAdminRole(r) {
 			admin = true
 			break
 		}
@@ -199,7 +200,18 @@ func (v *Verifier) verifyHS256(token string) (identity.Info, error) {
 	if b, ok := claims["is_admin"].(bool); ok && b {
 		admin = true
 	}
-	return identity.Info{UserID: user, TenantID: tenant, Auth: "jwt", Admin: admin}, nil
+	return identity.Info{UserID: user, TenantID: tenant, Auth: "jwt", Admin: admin, Roles: roles}, nil
+}
+
+// isAdminRole 该角色是否等价于平台管理员。
+// 除历史写法 admin/superadmin 外，RBAC 里的 platform_admin 也在此列，
+// 保证「只发 platform_admin 角色」的令牌仍能通过旧的仅管理员闸门。
+func isAdminRole(r string) bool {
+	switch strings.ToLower(strings.TrimSpace(r)) {
+	case "admin", "superadmin", "platform_admin", "platform-admin", "platformadmin":
+		return true
+	}
+	return false
 }
 
 // stringClaim 读取字符串 claim（数字也转成字符串）。

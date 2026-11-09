@@ -121,11 +121,14 @@ func (r *LLMCallRepo) List(ctx context.Context, f llm.CallFilter) ([]llm.CallRec
 }
 
 // Stats 全局统计：总量 / token 三项 / 失败数 / 按模型聚合（TOP 10）
-func (r *LLMCallRepo) Stats(ctx context.Context, userID string) (llm.CallStats, error) {
+func (r *LLMCallRepo) Stats(ctx context.Context, tenantID, userID string) (llm.CallStats, error) {
 	var out llm.CallStats
 	scope := func(q *gorm.DB) *gorm.DB {
+		if tid := strings.TrimSpace(tenantID); tid != "" {
+			q = q.Where("tenant_id = ?", tid)
+		}
 		if uid := strings.TrimSpace(userID); uid != "" {
-			return q.Where("user_id = ?", uid)
+			q = q.Where("user_id = ?", uid)
 		}
 		return q
 	}

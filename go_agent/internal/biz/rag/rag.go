@@ -186,15 +186,18 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	sum := sha256.Sum256([]byte(mode + "|" + text))
 	checksum := hex.EncodeToString(sum[:])
 
-	// 归属用户：入库时固化，检索时按此过滤（认证未启用时 = default）
+	// 归属：入库时固化，检索时按 (租户, 用户) 双重过滤。
+	// 认证未启用时 = (public, default)，与历史数据同一作用域。
 	owner := identity.UserID(ctx)
+	ownerTenant := identity.TenantID(ctx)
 
 	// 内容未变化则跳过重复向量化（MySQL 元数据判定）
 	var prev *Document
 	if old, err := r.repo.Get(ctx, docID); err == nil && old != nil {
 		prev = old
-		// 隔离保护：doc_id 全局唯一，属于别人的同名文档不允许覆盖/复用
-		if old.UserID != "" && old.UserID != owner {
+		// 隔离保护：doc_id 全局唯一，属于别人的同名文档不允许覆盖/复用。
+		// 比对租户 + 用户：不同租户用同一个 user_id 也不能顶掉对方的文档。
+		if old.UserID != "" && (old.UserID != owner || !sameTenant(old.TenantID, ownerTenant)) {
 			return nil, fmt.Errorf("文档标识 %q 已被其他用户占用，请换一个文件名或 doc_id", docID)
 		}
 		if old.Checksum == checksum && old.Status == "ready" && old.Mode == mode {
@@ -255,7 +258,7 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	res.Duration = time.Since(start)
 
 	if err := r.repo.Upsert(ctx, &Document{
-		DocID: docID, UserID: owner, Source: source, Mode: mode, Status: "ready",
+		DocID: docID, UserID: owner, TenantID: ownerTenant, Source: source, Mode: mode, Status: "ready",
 		Chars: res.Chars, Chunks: res.Chunks,
 		Entities: res.Entities, Relations: res.Relations,
 		Checksum: checksum,
@@ -346,7 +349,8 @@ func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode string
 // saveFailed 记录失败状态（便于前端与管理页面排查）
 func (r *Rag) saveFailed(ctx context.Context, docID, source, mode, text string, cause error) {
 	_ = r.repo.Upsert(ctx, &Document{
-		DocID: docID, UserID: identity.UserID(ctx), Source: source, Mode: mode, Status: "failed",
+		DocID: docID, UserID: identity.UserID(ctx), TenantID: identity.TenantID(ctx),
+		Source: source, Mode: mode, Status: "failed",
 		Chars: len([]rune(text)),
 	})
 }
@@ -471,7 +475,7 @@ func (r *Rag) RetrieveForUser(ctx context.Context, question, userID string) ([]H
 
 // userDocFilter 用户文档白名单过滤表达式；empty=true 表示该用户没有任何文档
 func (r *Rag) userDocFilter(ctx context.Context, userID string) (filter string, empty bool, err error) {
-	ids, err := r.repo.ListDocIDs(ctx, userID)
+	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
 	if err != nil {
 		return "", false, fmt.Errorf("查询用户文档: %w", err)
 	}
@@ -487,7 +491,7 @@ func (r *Rag) userDocFilter(ctx context.Context, userID string) (filter string, 
 
 // GraphRecallForUser 按用户隔离的图谱召回：只保留引用了该用户文档的实体与关系。
 func (r *Rag) GraphRecallForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
-	ids, err := r.repo.ListDocIDs(ctx, userID)
+	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户文档: %w", err)
 	}
@@ -496,7 +500,7 @@ func (r *Rag) GraphRecallForUser(ctx context.Context, question, userID string) (
 
 // GraphQueryForUser 按用户隔离的图谱问答（生成式）。
 func (r *Rag) GraphQueryForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
-	ids, err := r.repo.ListDocIDs(ctx, userID)
+	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户文档: %w", err)
 	}
@@ -595,12 +599,24 @@ func (r *Rag) GraphRecall(ctx context.Context, question string) (*graphrag.Graph
 	return r.graph.Recall(ctx, question)
 }
 
-// ListDocs 文档列表（MySQL 权威数据源）；userID 非空时只返回该用户的文档
+// ListDocs 文档列表（MySQL 权威数据源）；限定当前租户，userID 非空时只返回该用户的文档
 func (r *Rag) ListDocs(ctx context.Context, userID string, limit int) ([]Document, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	return r.repo.List(ctx, userID, limit)
+	return r.repo.List(ctx, identity.TenantID(ctx), userID, limit)
+}
+
+// sameTenant 归属租户是否一致；历史数据（空租户）视为与默认租户同域，
+// 避免升级后老文档突然「不属于任何人」而被拒绝覆盖
+func sameTenant(docTenant, current string) bool {
+	if docTenant == "" {
+		docTenant = identity.DefaultTenant
+	}
+	if current == "" {
+		current = identity.DefaultTenant
+	}
+	return docTenant == current
 }
 
 // DeleteDoc 删除文档：Milvus 分块 + 图谱孤儿节点 + MySQL 元数据 + 缓存

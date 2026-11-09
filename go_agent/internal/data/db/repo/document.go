@@ -39,6 +39,7 @@ func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 	po := &models.DocumentPO{
 		DocID:     doc.DocID,
 		UserID:    ownerOr(doc.UserID),
+		TenantID:  ownerOr(doc.TenantID),
 		Source:    clip(doc.Source, 512),
 		Mode:      doc.Mode,
 		Status:    doc.Status,
@@ -50,7 +51,7 @@ func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 	}
 	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "doc_id"}},
-		// user_id 不参与更新：文档归属在首次入库时确定，重复入库不改归属
+		// user_id / tenant_id 不参与更新：文档归属在首次入库时确定，重复入库不改归属
 		DoUpdates: clause.AssignmentColumns([]string{
 			"source", "mode", "status", "chars", "chunks", "entities", "relations", "checksum", "updated_at",
 		}),
@@ -74,12 +75,13 @@ func (r *DocumentRepo) Get(ctx context.Context, docID string) (*rag.Document, er
 	return documentToBiz(&po), nil
 }
 
-// List 按更新时间倒序返回文档列表；userID 非空时只返回该用户的文档
-func (r *DocumentRepo) List(ctx context.Context, userID string, limit int) ([]rag.Document, error) {
+// List 按更新时间倒序返回文档列表；限定在租户内，userID 非空时再收窄到该用户。
+// 租户过滤是硬条件：不同租户即使用同一个 user_id，也互相看不到对方的文档。
+func (r *DocumentRepo) List(ctx context.Context, tenantID, userID string, limit int) ([]rag.Document, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	q := r.db.WithContext(ctx).Model(&models.DocumentPO{})
+	q := r.db.WithContext(ctx).Model(&models.DocumentPO{}).Where("tenant_id = ?", ownerOr(tenantID))
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
 	}
@@ -94,9 +96,9 @@ func (r *DocumentRepo) List(ctx context.Context, userID string, limit int) ([]ra
 	return out, nil
 }
 
-// ListDocIDs 该用户全部文档 ID（用于向量层白名单过滤）
-func (r *DocumentRepo) ListDocIDs(ctx context.Context, userID string) ([]string, error) {
-	q := r.db.WithContext(ctx).Model(&models.DocumentPO{})
+// ListDocIDs 该租户该用户的全部文档 ID（用于向量层白名单过滤）
+func (r *DocumentRepo) ListDocIDs(ctx context.Context, tenantID, userID string) ([]string, error) {
+	q := r.db.WithContext(ctx).Model(&models.DocumentPO{}).Where("tenant_id = ?", ownerOr(tenantID))
 	if userID != "" {
 		q = q.Where("user_id = ?", userID)
 	}
@@ -125,6 +127,7 @@ func documentToBiz(po *models.DocumentPO) *rag.Document {
 	return &rag.Document{
 		DocID:     po.DocID,
 		UserID:    po.UserID,
+		TenantID:  po.TenantID,
 		Source:    po.Source,
 		Mode:      po.Mode,
 		Status:    po.Status,

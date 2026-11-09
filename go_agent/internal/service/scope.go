@@ -15,6 +15,7 @@ import (
 
 	kerrors "github.com/go-kratos/kratos/v3/errors"
 
+	"go_agent/internal/pkg/authz"
 	"go_agent/internal/pkg/identity"
 )
 
@@ -38,14 +39,24 @@ func ensureOwned(ctx context.Context, owner, what string) error {
 	return kerrors.Forbidden("FORBIDDEN", "无权访问他人的"+what+"（当前登录用户与资源归属不一致）")
 }
 
+// auditTenant 审计视图的租户范围：管理员与审计员看全平台（空），其他人只看本租户。
+// 只按 user 过滤挡不住「跨租户同 userID」——那是租户隔离要解决的事（P1-01）。
+func auditTenant(ctx context.Context) string {
+	if identity.AdminAllowed(ctx) || authz.Allowed(ctx, authz.PermAuditRead) {
+		return ""
+	}
+	return identity.TenantID(ctx)
+}
+
 // auditScope 历史/审计类查询的归属范围：
-//   - 管理员（含开发态回环）→ 空字符串，表示全平台（审计需要）
+//   - 管理员（含开发态回环）或持有 audit:read 的审计员 → 空字符串，表示不限用户
+//     （审计员看全平台，但受 auditTenant 的租户约束）
 //   - 普通用户 → 自己的 user_id（只读自己的记录）
 //
 // 历史记录里含查询词、工具参数、召回明细、LLM 原文，默认按人过滤是硬要求；
 // 「登录了就能看全平台调用历史」是这类系统最常见也最容易被忽略的越权面。
 func auditScope(ctx context.Context) string {
-	if identity.AdminAllowed(ctx) {
+	if identity.AdminAllowed(ctx) || authz.Allowed(ctx, authz.PermAuditRead) {
 		return ""
 	}
 	return scopeUser(ctx)

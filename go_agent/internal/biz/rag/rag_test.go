@@ -132,12 +132,12 @@ func (f *fakeRepo) Get(ctx context.Context, docID string) (*Document, error) {
 	}
 	return nil, nil
 }
-func (f *fakeRepo) List(ctx context.Context, userID string, limit int) ([]Document, error) {
+func (f *fakeRepo) List(ctx context.Context, tenantID, userID string, limit int) ([]Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]Document, 0, len(f.docs))
 	for _, d := range f.docs {
-		if userID != "" && d.UserID != "" && d.UserID != userID {
+		if !visibleTo(d, tenantID, userID) {
 			continue
 		}
 		out = append(out, *d)
@@ -145,18 +145,33 @@ func (f *fakeRepo) List(ctx context.Context, userID string, limit int) ([]Docume
 	return out, nil
 }
 
-// ListDocIDs 该用户文档 ID 白名单（检索隔离用）
-func (f *fakeRepo) ListDocIDs(ctx context.Context, userID string) ([]string, error) {
+// ListDocIDs 该租户该用户文档 ID 白名单（检索隔离用）
+func (f *fakeRepo) ListDocIDs(ctx context.Context, tenantID, userID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.docs))
 	for _, d := range f.docs {
-		if userID != "" && d.UserID != "" && d.UserID != userID {
+		if !visibleTo(d, tenantID, userID) {
 			continue
 		}
 		out = append(out, d.DocID)
 	}
 	return out, nil
+}
+
+// visibleTo 模拟仓储的 (tenant, user) 双重过滤；空归属视为同域（历史数据）
+func visibleTo(d *Document, tenantID, userID string) bool {
+	dt, du := d.TenantID, d.UserID
+	if dt == "" {
+		dt = "public"
+	}
+	if tenantID != "" && dt != tenantID {
+		return false
+	}
+	if userID != "" && du != "" && du != userID {
+		return false
+	}
+	return true
 }
 func (f *fakeRepo) Delete(ctx context.Context, docID string) error {
 	f.mu.Lock()

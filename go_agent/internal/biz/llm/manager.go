@@ -742,11 +742,11 @@ func (m *Manager) ListCalls(ctx context.Context, f CallFilter) ([]CallRecord, in
 }
 
 // CallStats 调用历史统计（含按模型聚合）
-func (m *Manager) CallStats(ctx context.Context, userID string) (CallStats, error) {
+func (m *Manager) CallStats(ctx context.Context, tenantID, userID string) (CallStats, error) {
 	if m.calls == nil {
 		return CallStats{}, nil
 	}
-	return m.calls.Stats(ctx, userID)
+	return m.calls.Stats(ctx, tenantID, userID)
 }
 
 // UsageBreakdown token 用量下钻（按 agent/scene/purpose/model 维度排行）

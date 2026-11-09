@@ -27,7 +27,9 @@ type Answer struct {
 type Document struct {
 	DocID string `json:"doc_id"`
 	// UserID 归属用户（隔离键）：检索只返回本人文档，列表亦按此过滤
-	UserID    string    `json:"user_id"`
+	UserID string `json:"user_id"`
+	// TenantID 归属租户：租户之间互不可见（即使 user_id 相同）
+	TenantID  string    `json:"tenant_id"`
 	Source    string    `json:"source"`
 	Mode      string    `json:"mode"` // rag | graph
 	Status    string    `json:"status"`
@@ -88,10 +90,10 @@ type ChunkStore interface {
 type DocumentRepo interface {
 	Upsert(ctx context.Context, doc *Document) error
 	Get(ctx context.Context, docID string) (*Document, error)
-	// List 文档列表；userID 非空时只返回该用户的文档
-	List(ctx context.Context, userID string, limit int) ([]Document, error)
-	// ListDocIDs 该用户全部文档 ID（检索时拼 Milvus 白名单过滤用）
-	ListDocIDs(ctx context.Context, userID string) ([]string, error)
+	// List 文档列表；限定租户，userID 非空时再收窄到该用户
+	List(ctx context.Context, tenantID, userID string, limit int) ([]Document, error)
+	// ListDocIDs 该租户该用户全部文档 ID（检索时拼 Milvus 白名单过滤用）
+	ListDocIDs(ctx context.Context, tenantID, userID string) ([]string, error)
 	Delete(ctx context.Context, docID string) error
 	Count(ctx context.Context) (int64, error)
 }

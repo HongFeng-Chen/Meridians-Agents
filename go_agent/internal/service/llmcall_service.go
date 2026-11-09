@@ -64,7 +64,8 @@ func NewLLMCallQueryService(uc *llm.Manager) *LLMCallQueryService {
 // ListLLMCalls 调用历史。
 func (s *LLMCallQueryService) ListLLMCalls(ctx context.Context, req *v1.ListLLMCallsRequest) (*v1.ListLLMCallsReply, error) {
 	f := llm.CallFilter{
-		UserID:   auditScope(ctx), // 普通用户只看自己的调用记录；管理员可看全平台
+		TenantID: auditTenant(ctx), // 普通用户只看本租户；管理员可看全平台
+		UserID:   auditScope(ctx),  // 再收窄到本人记录
 		TaskID:   req.GetTaskId(),
 		Model:    req.GetModel(),
 		Models:   req.GetModels(),
@@ -104,7 +105,7 @@ func (s *LLMCallQueryService) ListLLMCalls(ctx context.Context, req *v1.ListLLMC
 
 // GetLLMCallStats 调用统计。
 func (s *LLMCallQueryService) GetLLMCallStats(ctx context.Context, _ *v1.GetLLMCallStatsRequest) (*v1.LLMCallStats, error) {
-	st, err := s.uc.CallStats(ctx, auditScope(ctx))
+	st, err := s.uc.CallStats(ctx, auditTenant(ctx), auditScope(ctx))
 	if err != nil {
 		return nil, mapLLMErr(err)
 	}

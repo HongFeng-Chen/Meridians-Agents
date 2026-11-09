@@ -19,6 +19,7 @@ import (
 	"go_agent/internal/biz/conversation"
 	"go_agent/internal/biz/history"
 	"go_agent/internal/biz/mcp"
+	"go_agent/internal/pkg/identity"
 )
 
 // 内置服务标识：MCP 服务名与命名空间都用 platform，
@@ -198,6 +199,9 @@ func (u *UseCase) listTasks(ctx context.Context, a args) (string, error) {
 		ConvID:   a.str("conv_id"),
 		RootOnly: !a.boolean("include_children", false),
 		Limit:    a.integer("limit", 20, 1, 100),
+		// 平台 MCP 工具同样按调用方身份收窄，避免跨租户/跨用户列出他人任务
+		TenantID: identity.TenantID(ctx),
+		UserID:   identity.UserID(ctx),
 	}
 	tasks, err := u.tasks.ListTasks(ctx, f)
 	if err != nil {

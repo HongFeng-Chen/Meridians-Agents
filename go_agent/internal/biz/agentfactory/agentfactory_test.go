@@ -212,9 +212,31 @@ func (r *fakeRepo) ListTasks(_ context.Context, f TaskFilter) ([]Task, error) {
 		if f.ParentTaskID > 0 && t.ParentTaskID != f.ParentTaskID {
 			continue
 		}
+		// 租户/用户过滤同仓储口径：空归属按默认域处理
+		if f.TenantID != "" && tenantOrDefault(t.TenantID) != f.TenantID {
+			continue
+		}
+		if f.UserID != "" && ownerOrDefault(t.UserID) != f.UserID {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// tenantOrDefault / ownerOrDefault 空归属按默认域处理（历史数据兼容）
+func tenantOrDefault(v string) string {
+	if v == "" {
+		return "public"
+	}
+	return v
+}
+
+func ownerOrDefault(v string) string {
+	if v == "" {
+		return "default"
+	}
+	return v
 }
 
 func (r *fakeRepo) GetTask(_ context.Context, id uint64) (*Task, error) {

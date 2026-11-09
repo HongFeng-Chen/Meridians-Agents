@@ -135,8 +135,8 @@ func (u *UseCase) List(ctx context.Context, f Filter) ([]Record, int64, error) {
 }
 
 // Stats 统计：userID 非空时只统计该用户（服务层按登录身份传；管理员传空）
-func (u *UseCase) Stats(ctx context.Context, userID string) (Stats, error) {
-	return u.repo.Stats(ctx, userID)
+func (u *UseCase) Stats(ctx context.Context, tenantID, userID string) (Stats, error) {
+	return u.repo.Stats(ctx, tenantID, userID)
 }
 
 // ErrInvalidKind 非法 kind

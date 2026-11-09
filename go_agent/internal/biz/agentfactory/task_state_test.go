@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"go_agent/internal/pkg/identity"
 )
 
 // 状态机本身：非法迁移要被 CanTransit 拒绝
@@ -178,5 +180,40 @@ func TestWorkerTerminalDoesNotResurrectCanceled(t *testing.T) {
 	}
 	if stored.Status != TaskCanceled {
 		t.Fatalf("已取消的任务不应被 worker 改成 %s", stored.Status)
+	}
+}
+
+// P1-01（任务侧）：提交时固化租户，列表按租户过滤。
+// 两个租户即使用同一个 userID，也互相列不到对方的任务。
+func TestTaskScopedByTenant(t *testing.T) {
+	u, _, _ := newTestUseCase(t, &fakeChatter{})
+	def, err := u.CreateDef(context.Background(), AgentInput{Name: "x", AgentKey: "tenant-agent", GraphType: GraphSimple})
+	if err != nil {
+		t.Fatalf("CreateDef: %v", err)
+	}
+
+	ctxA := identity.With(context.Background(), identity.Info{UserID: "alice", TenantID: "t1"})
+	ctxB := identity.With(context.Background(), identity.Info{UserID: "alice", TenantID: "t2"})
+	taskA, err := u.SubmitTask(ctxA, TaskInput{AgentKey: def.AgentKey, Input: "跑一下"})
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+	if taskA.TenantID != "t1" {
+		t.Fatalf("任务归属租户应为 t1，实际 %q", taskA.TenantID)
+	}
+
+	mine, err := u.ListTasks(ctxA, TaskFilter{TenantID: "t1", UserID: "alice", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListTasks A: %v", err)
+	}
+	if len(mine) != 1 {
+		t.Fatalf("租户 A 应看到自己的 1 个任务，实际 %d", len(mine))
+	}
+	other, err := u.ListTasks(ctxB, TaskFilter{TenantID: "t2", UserID: "alice", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListTasks B: %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("同 userID 的另一租户不应看到任务，实际 %d 个", len(other))
 	}
 }

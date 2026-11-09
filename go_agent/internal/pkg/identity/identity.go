@@ -31,6 +31,9 @@ type Info struct {
 	// Admin 是否为管理员（来自 JWT 的 role/roles claim 或静态令牌的第三段）。
 	// 注意：这是「权限」而不是「身份」——登录用户默认不是管理员。
 	Admin bool
+	// Roles 令牌声明的角色原文（role / roles claim）。由 pkg/authz 归一化后
+	// 映射成权限；identity 本身不解释角色含义，避免权限模型散落两处。
+	Roles []string
 	// Local 请求是否来自回环地址。仅在认证关闭的开发态下用于放行本机管理操作，
 	// 防止「AUTH_ENABLED=false + 0.0.0.0 监听」把管理面裸奔到公网。
 	Local bool

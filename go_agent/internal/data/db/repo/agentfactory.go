@@ -423,6 +423,14 @@ func (r *AgentFactoryRepo) listHistoryTasks(ctx context.Context, f agentfactory.
 	return out, nil
 }
 
+// tenantOr 归属租户兜底：空值落 'public'（与 identity.DefaultTenant 一致）
+func tenantOr(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "public"
+	}
+	return v
+}
+
 // applyTaskFilter 列表过滤条件（任务池与历史表同构列）
 func applyTaskFilter(q *gorm.DB, f agentfactory.TaskFilter) *gorm.DB {
 	if f.AgentDefID > 0 {
@@ -439,6 +447,10 @@ func applyTaskFilter(q *gorm.DB, f agentfactory.TaskFilter) *gorm.DB {
 	}
 	if cid := strings.TrimSpace(f.ConvID); cid != "" {
 		q = q.Where("conv_id = ?", cid)
+	}
+	// 租户隔离：非空时只返回本租户的任务。租户是硬条件（跨租户同 user_id 也不可见）。
+	if tid := strings.TrimSpace(f.TenantID); tid != "" {
+		q = q.Where("tenant_id = ?", tid)
 	}
 	// 用户隔离：非空时只返回归属该用户的任务（任务中心按登录用户过滤）
 	if uid := strings.TrimSpace(f.UserID); uid != "" {
@@ -608,6 +620,7 @@ func taskToHistoryPO(src models.AgentTaskPO) models.AgentTaskHistoryPO {
 		Depth:        src.Depth,
 		ConvID:       src.ConvID,
 		UserID:       src.UserID,
+		TenantID:     src.TenantID,
 		CreatedAt:    src.CreatedAt,
 		StartedAt:    src.StartedAt,
 		FinishedAt:   src.FinishedAt,
@@ -630,6 +643,7 @@ func taskHistoryToBiz(row models.AgentTaskHistoryPO) agentfactory.Task {
 		Depth:        row.Depth,
 		ConvID:       row.ConvID,
 		UserID:       row.UserID,
+		TenantID:     row.TenantID,
 		CreatedAt:    row.CreatedAt,
 		Archived:     true,
 	}
@@ -733,6 +747,7 @@ func taskToBiz(row models.AgentTaskPO) agentfactory.Task {
 		Depth:        row.Depth,
 		ConvID:       row.ConvID,
 		UserID:       row.UserID,
+		TenantID:     row.TenantID,
 		CreatedAt:    row.CreatedAt,
 	}
 	if row.StartedAt != nil {
@@ -759,6 +774,7 @@ func taskFromBiz(t agentfactory.Task) models.AgentTaskPO {
 		Depth:        t.Depth,
 		ConvID:       t.ConvID,
 		UserID:       ownerOr(t.UserID),
+		TenantID:     tenantOr(t.TenantID),
 		CreatedAt:    t.CreatedAt,
 	}
 	if !t.StartedAt.IsZero() {
