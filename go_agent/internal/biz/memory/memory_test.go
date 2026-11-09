@@ -231,7 +231,7 @@ func (f *fakeGraph) EntitiesByNames(ctx context.Context, names []string) ([]grap
 	return nil, nil
 }
 func (f *fakeGraph) Counts(ctx context.Context) (int64, int64, error) { return 0, 0, nil }
-func (f *fakeGraph) DeleteOrphanNodes(ctx context.Context, prefix string) (int, int, error) {
+func (f *fakeGraph) DetachDocRefs(ctx context.Context, prefix string) (int, int, error) {
 	f.deleted = append(f.deleted, prefix)
 	return 0, 0, nil
 }

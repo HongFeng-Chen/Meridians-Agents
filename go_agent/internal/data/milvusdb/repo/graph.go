@@ -241,76 +241,222 @@ func (g *GraphStore) Counts(ctx context.Context) (int64, int64, error) {
 	return ents, rels, nil
 }
 
-// DeleteOrphanNodes 删除仅被该文档引用（prefix 形如 "doc_id#"）的节点与边。
-// 跨文档共享的实体/关系会保留，避免误删。
-func (g *GraphStore) DeleteOrphanNodes(ctx context.Context, prefix string) (int, int, error) {
-	entIDs, err := g.orphanIDs(ctx, g.entityColl, models.EntityFieldID, models.EntityFieldRefs, prefix)
+// DetachDocRefs 移除某个来源（文档 / 记忆，prefix 形如 "doc_id#"）的全部引用。
+//
+// 引用清空后不再被任何来源支撑的节点直接删除；仍被其他来源引用的节点保留，
+// 但要把 refs / freq 改写成「剩余引用」——旧实现只删孤儿节点，共享实体上
+// 这份来源的旧引用会一直留着，下次再入库时又被合并回去，等于永远清不掉。
+//
+// 顺序是「先写新行、再删旧行」：中途失败最多留下短暂重复（召回按名字归并，
+// 不会翻倍计数），不会出现「旧的已删、新的没写」的空窗。
+func (g *GraphStore) DetachDocRefs(ctx context.Context, prefix string) (int, int, error) {
+	ents, err := g.detachEntities(ctx, prefix)
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(entIDs) > 0 {
-		if _, err := g.CLI().Delete(ctx, milvusclient.NewDeleteOption(g.entityColl).WithInt64IDs(models.EntityFieldID, entIDs)); err != nil {
-			return 0, 0, fmt.Errorf("delete entities: %w", err)
-		}
-	}
-
-	relIDs, err := g.orphanIDs(ctx, g.relationColl, models.RelationFieldID, models.RelationFieldRefs, prefix)
+	rels, err := g.detachRelations(ctx, prefix)
 	if err != nil {
-		return 0, len(relIDs), err
+		return ents, 0, err
 	}
-	if len(relIDs) > 0 {
-		if _, err := g.CLI().Delete(ctx, milvusclient.NewDeleteOption(g.relationColl).WithInt64IDs(models.RelationFieldID, relIDs)); err != nil {
-			return len(entIDs), 0, fmt.Errorf("delete relations: %w", err)
-		}
-	}
-	return len(entIDs), len(relIDs), nil
+	return ents, rels, nil
 }
 
-// orphanIDs 找出所有引用都来自该文档的节点主键
-func (g *GraphStore) orphanIDs(ctx context.Context, coll, idField, refsField, prefix string) ([]int64, error) {
-	rs, err := g.CLI().Query(ctx, milvusclient.NewQueryOption(coll).
-		WithFilter(fmt.Sprintf("%s >= 0", idField)).
-		WithOutputFields(idField, refsField).
-		WithLimit(16384))
+// detachEntities 实体侧：找出引用了该来源的行，删掉或改写
+func (g *GraphStore) detachEntities(ctx context.Context, prefix string) (int, error) {
+	rs, err := g.CLI().Query(ctx, milvusclient.NewQueryOption(g.entityColl).
+		WithFilter(fmt.Sprintf("%s >= 0", models.EntityFieldID)).
+		WithOutputFields(models.EntityFieldID, models.EntityFieldName, models.EntityFieldType,
+			models.EntityFieldDescription, models.EntityFieldFreq, models.EntityFieldRefs,
+			models.EntityFieldSource, models.EntityFieldDense).
+		WithLimit(refScanLimit))
 	if err != nil {
-		return nil, fmt.Errorf("query refs of %s: %w", coll, err)
+		return 0, fmt.Errorf("query entities for detach: %w", err)
 	}
-	idCol, _ := rs.GetColumn(idField).(*column.ColumnInt64)
-	refsCol, _ := rs.GetColumn(refsField).(*column.ColumnVarChar)
-	if idCol == nil {
-		return nil, nil
+	idCol, _ := rs.GetColumn(models.EntityFieldID).(*column.ColumnInt64)
+	refsCol, _ := rs.GetColumn(models.EntityFieldRefs).(*column.ColumnVarChar)
+	if idCol == nil || refsCol == nil {
+		return 0, nil
 	}
-	var ids []int64
+	nameCol, _ := rs.GetColumn(models.EntityFieldName).(*column.ColumnVarChar)
+	typeCol, _ := rs.GetColumn(models.EntityFieldType).(*column.ColumnVarChar)
+	descCol, _ := rs.GetColumn(models.EntityFieldDescription).(*column.ColumnVarChar)
+	srcCol, _ := rs.GetColumn(models.EntityFieldSource).(*column.ColumnVarChar)
+	vecCol, _ := rs.GetColumn(models.EntityFieldDense).(*column.ColumnFloatVector)
+
+	var delIDs, rewIDs []int64
+	var names, types, descs, srcs []string
+	var freqs []int64
+	var rewRefs []string
+	var rewVecs [][]float32
 	for i := 0; i < rs.ResultCount; i++ {
-		id, err := idCol.Value(i)
+		raw, err := refsCol.Value(i)
 		if err != nil {
 			continue
 		}
-		var refs []string
-		if refsCol != nil {
-			if v, err := refsCol.Value(i); err == nil {
-				refs = parseRefs(v)
+		refs := parseRefs(raw)
+		kept := dropRefs(refs, prefix)
+		if len(kept) == len(refs) {
+			continue // 与该来源无关
+		}
+		id, _ := idCol.Value(i)
+		if len(kept) == 0 {
+			delIDs = append(delIDs, id)
+			continue
+		}
+		name, _ := nameCol.Value(i)
+		typ, _ := typeCol.Value(i)
+		desc, _ := descCol.Value(i)
+		src, _ := srcCol.Value(i)
+		var vec []float32
+		if vecCol != nil {
+			if v, err := vecCol.Value(i); err == nil {
+				vec = v
 			}
 		}
-		if onlyRefsFrom(refs, prefix) {
-			ids = append(ids, id)
+		b, _ := json.Marshal(kept)
+		rewIDs = append(rewIDs, id)
+		names = append(names, name)
+		types = append(types, typ)
+		descs = append(descs, desc)
+		srcs = append(srcs, src)
+		freqs = append(freqs, int64(len(kept)))
+		rewRefs = append(rewRefs, string(b))
+		rewVecs = append(rewVecs, vec)
+	}
+
+	if len(names) > 0 {
+		if _, err := g.CLI().Insert(ctx, milvusclient.NewColumnBasedInsertOption(g.entityColl,
+			column.NewColumnVarChar(models.EntityFieldName, names),
+			column.NewColumnVarChar(models.EntityFieldType, types),
+			column.NewColumnVarChar(models.EntityFieldDescription, descs),
+			column.NewColumnInt64(models.EntityFieldFreq, freqs),
+			column.NewColumnVarChar(models.EntityFieldRefs, rewRefs),
+			column.NewColumnVarChar(models.EntityFieldSource, srcs),
+			column.NewColumnFloatVector(models.EntityFieldDense, g.Dim(), rewVecs),
+		)); err != nil {
+			return 0, fmt.Errorf("rewrite entities: %w", err)
+		}
+		// 改写成功后才把旧行列入删除：插入失败时旧行还在，不至于丢数据
+		delIDs = append(delIDs, rewIDs...)
+	}
+	if len(delIDs) > 0 {
+		if _, err := g.CLI().Delete(ctx, milvusclient.NewDeleteOption(g.entityColl).
+			WithInt64IDs(models.EntityFieldID, delIDs)); err != nil {
+			return 0, fmt.Errorf("delete entities: %w", err)
 		}
 	}
-	return ids, nil
+	return len(delIDs), nil
 }
 
-// onlyRefsFrom 判断引用是否全部来自该文档
-func onlyRefsFrom(refs []string, prefix string) bool {
-	if len(refs) == 0 {
-		return false
+// detachRelations 关系侧：与实体同口径（引用清空则删边，否则改写 refs）
+func (g *GraphStore) detachRelations(ctx context.Context, prefix string) (int, error) {
+	rs, err := g.CLI().Query(ctx, milvusclient.NewQueryOption(g.relationColl).
+		WithFilter(fmt.Sprintf("%s >= 0", models.RelationFieldID)).
+		WithOutputFields(models.RelationFieldID, models.RelationFieldSource, models.RelationFieldTarget,
+			models.RelationFieldRelation, models.RelationFieldDescription, models.RelationFieldWeight,
+			models.RelationFieldRefs, models.RelationFieldDense).
+		WithLimit(refScanLimit))
+	if err != nil {
+		return 0, fmt.Errorf("query relations for detach: %w", err)
 	}
-	for _, r := range refs {
-		if !strings.HasPrefix(r, prefix) {
-			return false
+	idCol, _ := rs.GetColumn(models.RelationFieldID).(*column.ColumnInt64)
+	refsCol, _ := rs.GetColumn(models.RelationFieldRefs).(*column.ColumnVarChar)
+	if idCol == nil || refsCol == nil {
+		return 0, nil
+	}
+	srcCol, _ := rs.GetColumn(models.RelationFieldSource).(*column.ColumnVarChar)
+	tgtCol, _ := rs.GetColumn(models.RelationFieldTarget).(*column.ColumnVarChar)
+	relCol, _ := rs.GetColumn(models.RelationFieldRelation).(*column.ColumnVarChar)
+	descCol, _ := rs.GetColumn(models.RelationFieldDescription).(*column.ColumnVarChar)
+	wCol, _ := rs.GetColumn(models.RelationFieldWeight).(*column.ColumnDouble)
+	vecCol, _ := rs.GetColumn(models.RelationFieldDense).(*column.ColumnFloatVector)
+
+	var delIDs, rewIDs []int64
+	var srcs, tgts, rels, descs []string
+	var weights []float64
+	var rewRefs []string
+	var rewVecs [][]float32
+	for i := 0; i < rs.ResultCount; i++ {
+		raw, err := refsCol.Value(i)
+		if err != nil {
+			continue
+		}
+		refs := parseRefs(raw)
+		kept := dropRefs(refs, prefix)
+		if len(kept) == len(refs) {
+			continue
+		}
+		id, _ := idCol.Value(i)
+		if len(kept) == 0 {
+			delIDs = append(delIDs, id)
+			continue
+		}
+		src, _ := srcCol.Value(i)
+		tgt, _ := tgtCol.Value(i)
+		rel, _ := relCol.Value(i)
+		desc, _ := descCol.Value(i)
+		weight := float64(len(kept))
+		if wCol != nil {
+			if w, err := wCol.Value(i); err == nil && w > 0 {
+				weight = w
+			}
+		}
+		var vec []float32
+		if vecCol != nil {
+			if v, err := vecCol.Value(i); err == nil {
+				vec = v
+			}
+		}
+		b, _ := json.Marshal(kept)
+		rewIDs = append(rewIDs, id)
+		srcs = append(srcs, src)
+		tgts = append(tgts, tgt)
+		rels = append(rels, rel)
+		descs = append(descs, desc)
+		weights = append(weights, weight)
+		rewRefs = append(rewRefs, string(b))
+		rewVecs = append(rewVecs, vec)
+	}
+	if len(srcs) > 0 {
+		if _, err := g.CLI().Insert(ctx, milvusclient.NewColumnBasedInsertOption(g.relationColl,
+			column.NewColumnVarChar(models.RelationFieldSource, srcs),
+			column.NewColumnVarChar(models.RelationFieldTarget, tgts),
+			column.NewColumnVarChar(models.RelationFieldRelation, rels),
+			column.NewColumnVarChar(models.RelationFieldDescription, descs),
+			column.NewColumnDouble(models.RelationFieldWeight, weights),
+			column.NewColumnVarChar(models.RelationFieldRefs, rewRefs),
+			column.NewColumnFloatVector(models.RelationFieldDense, g.Dim(), rewVecs),
+		)); err != nil {
+			return 0, fmt.Errorf("rewrite relations: %w", err)
+		}
+		delIDs = append(delIDs, rewIDs...)
+	}
+	if len(delIDs) > 0 {
+		if _, err := g.CLI().Delete(ctx, milvusclient.NewDeleteOption(g.relationColl).
+			WithInt64IDs(models.RelationFieldID, delIDs)); err != nil {
+			return 0, fmt.Errorf("delete relations: %w", err)
 		}
 	}
-	return true
+	return len(delIDs), nil
 }
+
+// dropRefs 去掉以 prefix 开头的引用（其余原样保留，顺序不变）
+func dropRefs(refs []string, prefix string) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		if strings.HasPrefix(r, prefix) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// refScanLimit 引用改写时单次扫描上限：超过这个量级说明图谱该分片了
+const refScanLimit = 16384
 
 // parseEntities 从结果集解析实体（保持结果集顺序）
 func parseEntities(rs milvusclient.ResultSet) []graphrag.Entity {

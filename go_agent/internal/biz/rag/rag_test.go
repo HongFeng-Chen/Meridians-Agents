@@ -20,13 +20,27 @@ type fakeStore struct {
 	chunks     []string
 	inserts    int
 	lastFilter string // 最近一次 HybridSearch 收到的过滤表达式（隔离断言用）
+	// 主键模拟：Milvus 是 autoID，重复入库只会新增行，旧行要显式删
+	ids        []int64
+	nextID     int64
+	deleted    []int64
+	chunkDoc   string // 最近一次入库的 docID（假存储只服务单文档测试）
+	failInsert bool   // 模拟写入失败（验证「新版本没写成，旧版本不动」）
 }
 
 func (f *fakeStore) EnsureCollection(ctx context.Context) error { return nil }
 func (f *fakeStore) Insert(ctx context.Context, docID, source string, chunks []string, vecs [][]float32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failInsert {
+		return errors.New("milvus 不可用")
+	}
 	f.chunks = append(f.chunks, chunks...)
+	f.chunkDoc = docID
+	for range chunks {
+		f.ids = append(f.ids, f.nextID)
+		f.nextID++
+	}
 	f.inserts++
 	return nil
 }
@@ -40,6 +54,21 @@ func (f *fakeStore) GetTexts(ctx context.Context, filter string, limit int) ([]H
 	return nil, nil
 }
 func (f *fakeStore) Count(ctx context.Context) (int64, error) { return int64(len(f.chunks)), nil }
+func (f *fakeStore) IDsOfDoc(ctx context.Context, docID string) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int64, len(f.ids))
+	copy(out, f.ids)
+	return out, nil
+}
+
+func (f *fakeStore) DeleteByIDs(ctx context.Context, ids []int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, ids...)
+	return int64(len(ids)), nil
+}
+
 func (f *fakeStore) DeleteDoc(ctx context.Context, docID string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -70,7 +99,7 @@ func (fakeGraphStore) EntitiesByNames(ctx context.Context, names []string) ([]gr
 	return nil, nil
 }
 func (fakeGraphStore) Counts(ctx context.Context) (int64, int64, error) { return 1, 0, nil }
-func (fakeGraphStore) DeleteOrphanNodes(ctx context.Context, prefix string) (int, int, error) {
+func (fakeGraphStore) DetachDocRefs(ctx context.Context, prefix string) (int, int, error) {
 	return 0, 0, nil
 }
 
@@ -453,5 +482,85 @@ func TestGraphIngestRecordsCounts(t *testing.T) {
 	doc, _ := repo.Get(ctx, "g1")
 	if doc == nil || doc.Mode != "graph" || doc.Entities != res.Entities {
 		t.Errorf("图谱文档元数据不正确: %+v", doc)
+	}
+}
+
+// —— P1-07：更新文档必须清掉旧版本向量 ——
+
+// 内容变化后重新入库：旧版本分块要按主键删掉，否则新旧两版会同时被召回。
+func TestReingestPurgesOldVersion(t *testing.T) {
+	r, store, _, _, _ := newTestRag(t)
+	ctx := context.Background()
+
+	v1 := strings.Repeat("旧版本内容：Milvus 只支持向量检索。", 10)
+	if _, err := r.Ingest(ctx, "doc-v", "v.txt", "rag", v1); err != nil {
+		t.Fatalf("首次入库: %v", err)
+	}
+	store.mu.Lock()
+	oldIDs := append([]int64(nil), store.ids...)
+	store.mu.Unlock()
+	if len(oldIDs) == 0 {
+		t.Fatal("首次入库没有产生分块 ID")
+	}
+
+	v2 := strings.Repeat("新版本内容：Milvus 支持 BM25 与向量混合检索。", 14)
+	res, err := r.Ingest(ctx, "doc-v", "v.txt", "rag", v2)
+	if err != nil {
+		t.Fatalf("重新入库: %v", err)
+	}
+	if res.Deduped {
+		t.Fatal("内容已变，不应命中 checksum 去重")
+	}
+
+	store.mu.Lock()
+	deleted := append([]int64(nil), store.deleted...)
+	store.mu.Unlock()
+	if len(deleted) != len(oldIDs) {
+		t.Fatalf("应删除 %d 个旧版本分块，实际 %d", len(oldIDs), len(deleted))
+	}
+	for i, id := range deleted {
+		if id != oldIDs[i] {
+			t.Fatalf("删除的 ID 与旧版本不一致: got %v want %v", deleted, oldIDs)
+		}
+	}
+	if res.Purged != len(oldIDs) {
+		t.Fatalf("Purged = %d, want %d", res.Purged, len(oldIDs))
+	}
+}
+
+// 新版本写入失败时不能动旧版本：先删后写会造成「文档还在、向量没了」。
+func TestReingestKeepsOldVersionWhenWriteFails(t *testing.T) {
+	r, store, repo, _, _ := newTestRag(t)
+	ctx := context.Background()
+
+	v1 := strings.Repeat("可用的旧版本内容。", 10)
+	if _, err := r.Ingest(ctx, "doc-f", "f.txt", "rag", v1); err != nil {
+		t.Fatalf("首次入库: %v", err)
+	}
+	store.mu.Lock()
+	oldChunks := len(store.chunks)
+	store.failInsert = true
+	store.mu.Unlock()
+
+	if _, err := r.Ingest(ctx, "doc-f", "f.txt", "rag", strings.Repeat("新版本内容。", 12)); err == nil {
+		t.Fatal("写入失败时应返回错误")
+	}
+
+	store.mu.Lock()
+	deleted := len(store.deleted)
+	chunks := len(store.chunks)
+	store.mu.Unlock()
+	if deleted != 0 {
+		t.Fatalf("写入失败时不应删除旧版本，实际删了 %d 个", deleted)
+	}
+	if chunks != oldChunks {
+		t.Fatalf("旧版本分块被改动: %d -> %d", oldChunks, chunks)
+	}
+	doc, err := repo.Get(ctx, "doc-f")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if doc.Status != "failed" {
+		t.Fatalf("失败状态应落库，实际 %s", doc.Status)
 	}
 }

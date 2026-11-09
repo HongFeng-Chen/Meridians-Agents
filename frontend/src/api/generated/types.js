@@ -1137,6 +1137,7 @@
  * @property {number} [relations] - mode=graph 时抽取的关系数
  * @property {boolean} [deduped] - 内容未变化，跳过了重复向量化
  * @property {string} [duration] - 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
+ * @property {number} [purged] - 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
  */
 
 /**
@@ -1208,6 +1209,7 @@
  * @property {number} [chunks] - mode=rag
  * @property {number} [entities] - mode=graph
  * @property {number} [relations]
+ * @property {number} [purged] - 替换掉的旧版本行数（见 IngestResult.purged）
  */
 
 /* ---------- 技能与技能市场（SkillService） ---------- */

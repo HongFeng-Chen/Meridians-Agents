@@ -55,8 +55,9 @@ type Store interface {
 	RelationsOf(ctx context.Context, names []string, limit int) ([]Relation, error)
 	EntitiesByNames(ctx context.Context, names []string) ([]Entity, error)
 	Counts(ctx context.Context) (entities int64, relations int64, err error)
-	// DeleteOrphanNodes 删除仅被该文档引用的节点与边（prefix 形如 "doc_id#"）
-	DeleteOrphanNodes(ctx context.Context, prefix string) (entities int, relations int, err error)
+	// DetachDocRefs 移除该文档的全部引用（prefix 形如 "doc_id#"）：
+	// 引用清空后无人支撑的节点/边删除，仍被其他文档引用的只改写 refs。
+	DetachDocRefs(ctx context.Context, prefix string) (entities int, relations int, err error)
 }
 
 // Embedder 文本向量化

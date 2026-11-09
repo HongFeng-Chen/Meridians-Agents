@@ -123,6 +123,9 @@ message IngestResult {
   bool deduped = 8 [json_name = "deduped"];
   // 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
   int64 duration = 9 [json_name = "duration"];
+  // 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
+  // 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
+  int32 purged = 10 [json_name = "purged"];
 }
 
 // Format 支持的文件格式。
@@ -259,6 +262,8 @@ message UploadAndIngestReply {
   // mode=graph
   int32 entities = 8 [json_name = "entities"];
   int32 relations = 9 [json_name = "relations"];
+  // 替换掉的旧版本行数（见 IngestResult.purged）
+  int32 purged = 10 [json_name = "purged"];
 }
 
 // RagService RAG 与 GraphRAG 的统一入口。

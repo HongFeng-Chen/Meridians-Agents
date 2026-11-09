@@ -643,7 +643,7 @@ func (u *UseCase) Delete(ctx context.Context, id string) (*RememberResult, error
 	} else {
 		_ = n
 	}
-	if ents, rels, err := u.graph.DeleteOrphanNodes(ctx, memoryRefDocPrefix(m.UserID, id)); err != nil {
+	if ents, rels, err := u.graph.DetachDocRefs(ctx, memoryRefDocPrefix(m.UserID, id)); err != nil {
 		res.GraphWarning = err.Error()
 	} else {
 		res.Entities, res.Relations = ents, rels
@@ -666,8 +666,8 @@ func (u *UseCase) PurgeExpired(ctx context.Context, limit int) (int, error) {
 	n := 0
 	for _, m := range expired {
 		_, _ = u.vec.DeleteByMemory(ctx, m.ID)
-		if _, _, gerr := u.graph.DeleteOrphanNodes(ctx, memoryRefDocPrefix(m.UserID, m.ID)); gerr != nil {
-			log.Warn("memory: 清理图谱孤儿节点失败", "id", m.ID, "err", gerr)
+		if _, _, gerr := u.graph.DetachDocRefs(ctx, memoryRefDocPrefix(m.UserID, m.ID)); gerr != nil {
+			log.Warn("memory: 移除记忆图谱引用失败", "id", m.ID, "err", gerr)
 		}
 		if err := u.repo.Delete(ctx, m.ID); err != nil {
 			return n, fmt.Errorf("memory: 清理 %s 失败: %w", m.ID, err)

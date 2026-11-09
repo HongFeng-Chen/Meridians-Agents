@@ -169,7 +169,10 @@ func (s *Service) Ingest(ctx context.Context, docID, source, text string) (entit
 		}
 	}
 
-	// 与库中已有实体合并（跨文档去重）
+	// 与库中已有实体合并（跨文档去重）。
+	// 合并前先摘掉「本文档自己的旧引用」：否则重新入库时旧版本引用会被原样
+	// 合并进新节点，等于把过期内容永久固化在图里。
+	docPrefix := docID + "#"
 	names := make([]string, 0, len(entMap))
 	for _, e := range entMap {
 		names = append(names, e.Name)
@@ -180,11 +183,12 @@ func (s *Service) Ingest(ctx context.Context, docID, source, text string) (entit
 	}
 	for k, e := range entMap {
 		if old, ok := existing[normName(e.Name)]; ok {
-			e.Freq += old.Freq
+			others := dropPrefixRefs(old.ChunkRefs, docPrefix)
+			e.Freq += len(others)
 			if len(old.Description) > len(e.Description) {
 				e.Description = old.Description
 			}
-			e.ChunkRefs = mergeRefs(e.ChunkRefs, old.ChunkRefs)
+			e.ChunkRefs = mergeRefs(e.ChunkRefs, others)
 			entMap[k] = e
 		}
 	}
@@ -199,11 +203,8 @@ func (s *Service) Ingest(ctx context.Context, docID, source, text string) (entit
 	if err != nil {
 		return 0, 0, fmt.Errorf("embed entities: %w", err)
 	}
-	if err := s.store.InsertEntities(ctx, ents, contents, entVecs); err != nil {
-		return 0, 0, err
-	}
 
-	// 关系向量化入库
+	// 关系向量化（与实体一起先算完，失败时旧版本图谱仍然可用）
 	rels := sortedRelations(relMap)
 	relDescs := make([]string, len(rels))
 	for i, r := range rels {
@@ -212,6 +213,17 @@ func (s *Service) Ingest(ctx context.Context, docID, source, text string) (entit
 	relVecs, err := s.embed.Embed(ctx, relDescs)
 	if err != nil {
 		return 0, 0, fmt.Errorf("embed relations: %w", err)
+	}
+
+	// 旧版本清理：摘掉本文档的全部旧引用，只删「没有别人支撑」的节点/边，
+	// 共享节点保留并改写 refs。放在所有 embedding 之后，前面任何一步失败
+	// 都不会动到已有图谱。
+	if _, _, derr := s.store.DetachDocRefs(ctx, docPrefix); derr != nil {
+		return 0, 0, fmt.Errorf("清理旧图谱引用: %w", derr)
+	}
+
+	if err := s.store.InsertEntities(ctx, ents, contents, entVecs); err != nil {
+		return 0, 0, err
 	}
 	if err := s.store.InsertRelations(ctx, rels, relVecs); err != nil {
 		return 0, 0, err
@@ -234,22 +246,22 @@ func (s *Service) Stats(ctx context.Context) (Stats, error) {
 	return Stats{Entities: ents, Relations: rels}, nil
 }
 
-// DeleteDocGraph 删除仅被指定文档引用的图谱节点与边（共享实体保留）
+// DeleteDocGraph 删除指定文档的图谱贡献：只被它引用的节点/边删除，
+// 与其他文档共享的节点保留但摘掉该文档的引用（否则删了文档、图谱里还挂着它的旧证据）
 func (s *Service) DeleteDocGraph(ctx context.Context, docID string) (entities int, relations int, err error) {
-	return s.store.DeleteOrphanNodes(ctx, docID+"#")
+	return s.store.DetachDocRefs(ctx, docID+"#")
 }
 
-// onlyRefsFrom 判断引用是否全部来自该文档（避免误删跨文档共享实体）
-func onlyRefsFrom(refs []string, prefix string) bool {
-	if len(refs) == 0 {
-		return false
-	}
+// dropPrefixRefs 去掉属于该文档的引用，保留其他来源的
+func dropPrefixRefs(refs []string, prefix string) []string {
+	out := make([]string, 0, len(refs))
 	for _, r := range refs {
-		if !strings.HasPrefix(r, prefix) {
-			return false
+		if strings.HasPrefix(r, prefix) {
+			continue
 		}
+		out = append(out, r)
 	}
-	return true
+	return out
 }
 
 // Query 图谱问答：实体混合检索 -> 关系多跳扩展 -> 子图上下文 + 原文证据 -> LLM 生成

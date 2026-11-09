@@ -936,8 +936,9 @@ sequenceDiagram
   「查不到 MySQL 就跳过」兜底。要彻底解决，需加补偿任务或先写 MySQL 再写向量。
 - **去重是内容级**：同用户同内容（checksum 相同）且未过期 → 直接返回旧记录，**不会更新 importance/tags**。
   想「记住了但想改重要性」必须换内容或先删。
-- **图谱与 RAG 共用集合**：记忆的 `chunk_refs` 形如 `<memoryID>#0`，文档的是 `<docID>#<idx>`。
-  删除记忆时调 `DeleteByMemory` / `DeleteOrphanNodes` 清理，**不要**直接删 Milvus 行。
+- **图谱与 RAG 共用集合**：记忆的 `chunk_refs` 形如 `mem::{user}::{memoryID}#0`，文档的是 `<docID>#<idx>`。
+  删除记忆时调 `DeleteByMemory` / `DetachDocRefs` 清理，**不要**直接删 Milvus 行。
+  `DetachDocRefs` 会删掉只属于该来源的节点，并把共享节点上的这份引用摘掉（改写 refs/freq）。
 - **`Recall` 的 `query` 会拼进 `history.Record.Query`（`query + "@" + userID`）**，改这里要同步前端解析逻辑。
 - `New` 启动即 `EnsureCollection`（120s 超时）：Milvus 没起来服务会**启动失败**，这是刻意的快速失败。
 
@@ -1060,8 +1061,11 @@ sequenceDiagram
 
 #### 改动指南 / 坑
 
-- **`mode` 决定一切**：同一 `docID` 从 `rag` 改成 `graph` 不会自动删旧分块——checksum 里带了 mode，
-  会重新入库，但旧的向量分块仍在。要干净切换，先 `DeleteDoc`。
+- **`mode` 切换会自动清理对面产物**：`rag → graph` 时删旧分块（`DeleteDoc`），
+  `graph → rag` 时摘旧图谱引用（`DeleteDocGraph`），不需要先手工 `DeleteDoc`。
+- **同一 `docID` 重复入库**：`Ingest` 先记旧分块主键、写新版本、再按主键删旧版本，
+  结果里的 `purged` 就是这次顶掉的行数；图谱侧由 `graphrag.Service.Ingest` 内的
+  `DetachDocRefs` 摘掉旧引用。
 - **`DeleteDoc` 的顺序**：先删分块 → 删图谱孤儿 → 删元数据 → 清缓存。图谱失败只写 `graph_warning`，
   不像分块失败那样中断。
 - **`Query` 缓存键含 filter**：不同 filter 是不同缓存条目；`Invalidate` 是全清（简单粗暴，代价可接受）。

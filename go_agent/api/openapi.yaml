@@ -7051,6 +7051,10 @@ components:
                 duration:
                     type: string
                     description: 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
+                purged:
+                    type: integer
+                    description: "本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时\r\n 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容"
+                    format: int32
             description: IngestResult 入库结果（RAG 与 GraphRAG 共用）。
         rag.v1.ListDocsReply:
             type: object
@@ -7184,6 +7188,10 @@ components:
                     format: int32
                 relations:
                     type: integer
+                    format: int32
+                purged:
+                    type: integer
+                    description: 替换掉的旧版本行数（见 IngestResult.purged）
                     format: int32
         skill.v1.CreateHubRequest:
             required:

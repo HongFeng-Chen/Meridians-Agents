@@ -192,6 +192,42 @@ func (s *ChunkStore) Count(ctx context.Context) (int64, error) {
 	return collectionCount(ctx, s.CLI(), s.collection)
 }
 
+// IDsOfDoc 该文档当前全部分块主键。
+// 主键是 autoID，重新入库不会覆盖旧行，必须显式记录旧 ID 再删。
+func (s *ChunkStore) IDsOfDoc(ctx context.Context, docID string) ([]int64, error) {
+	rs, err := s.CLI().Query(ctx, milvusclient.NewQueryOption(s.collection).
+		WithFilter(fmt.Sprintf("%s == %s", models.ChunkFieldDocID, quoteStr(docID))).
+		WithOutputFields(models.ChunkFieldID).
+		WithLimit(16384))
+	if err != nil {
+		return nil, fmt.Errorf("query chunk ids: %w", err)
+	}
+	col, _ := rs.GetColumn(models.ChunkFieldID).(*column.ColumnInt64)
+	if col == nil {
+		return nil, nil
+	}
+	ids := make([]int64, 0, rs.ResultCount)
+	for i := 0; i < rs.ResultCount; i++ {
+		if id, err := col.Value(i); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// DeleteByIDs 按主键删除分块
+func (s *ChunkStore) DeleteByIDs(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res, err := s.CLI().Delete(ctx, milvusclient.NewDeleteOption(s.collection).
+		WithInt64IDs(models.ChunkFieldID, ids))
+	if err != nil {
+		return 0, fmt.Errorf("delete chunk ids: %w", err)
+	}
+	return res.DeleteCount, nil
+}
+
 // DeleteDoc 按 doc_id 删除该文档的全部分块
 func (s *ChunkStore) DeleteDoc(ctx context.Context, docID string) (int64, error) {
 	res, err := s.CLI().Delete(ctx, milvusclient.NewDeleteOption(s.collection).

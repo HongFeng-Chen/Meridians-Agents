@@ -237,6 +237,7 @@ func (s *RagService) UploadAndIngest(ctx context.Context, req *v1.UploadAndInges
 		Chars:   int32(res.Chars),
 		Mode:    res.Mode,
 		Deduped: res.Deduped,
+		Purged:  int32(res.Purged),
 	}
 	if res.Mode == "graph" {
 		out.Entities = int32(res.Entities)
@@ -265,6 +266,7 @@ func toIngestResult(res *rag.IngestResult) *v1.IngestResult {
 		Entities:  int32(res.Entities),
 		Relations: int32(res.Relations),
 		Deduped:   res.Deduped,
+		Purged:    int32(res.Purged),
 		Duration:  int64(res.Duration),
 	}
 }

@@ -685,7 +685,10 @@ type IngestResult struct {
 	// 内容未变化，跳过了重复向量化
 	Deduped bool `protobuf:"varint,8,opt,name=deduped,proto3" json:"deduped,omitempty"`
 	// 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
-	Duration      int64 `protobuf:"varint,9,opt,name=duration,proto3" json:"duration,omitempty"`
+	Duration int64 `protobuf:"varint,9,opt,name=duration,proto3" json:"duration,omitempty"`
+	// 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
+	// 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
+	Purged        int32 `protobuf:"varint,10,opt,name=purged,proto3" json:"purged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -779,6 +782,13 @@ func (x *IngestResult) GetDeduped() bool {
 func (x *IngestResult) GetDuration() int64 {
 	if x != nil {
 		return x.Duration
+	}
+	return 0
+}
+
+func (x *IngestResult) GetPurged() int32 {
+	if x != nil {
+		return x.Purged
 	}
 	return 0
 }
@@ -1774,8 +1784,10 @@ type UploadAndIngestReply struct {
 	// mode=rag
 	Chunks int32 `protobuf:"varint,7,opt,name=chunks,proto3" json:"chunks,omitempty"`
 	// mode=graph
-	Entities      int32 `protobuf:"varint,8,opt,name=entities,proto3" json:"entities,omitempty"`
-	Relations     int32 `protobuf:"varint,9,opt,name=relations,proto3" json:"relations,omitempty"`
+	Entities  int32 `protobuf:"varint,8,opt,name=entities,proto3" json:"entities,omitempty"`
+	Relations int32 `protobuf:"varint,9,opt,name=relations,proto3" json:"relations,omitempty"`
+	// 替换掉的旧版本行数（见 IngestResult.purged）
+	Purged        int32 `protobuf:"varint,10,opt,name=purged,proto3" json:"purged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1873,6 +1885,13 @@ func (x *UploadAndIngestReply) GetRelations() int32 {
 	return 0
 }
 
+func (x *UploadAndIngestReply) GetPurged() int32 {
+	if x != nil {
+		return x.Purged
+	}
+	return 0
+}
+
 var File_rag_v1_rag_proto protoreflect.FileDescriptor
 
 const file_rag_v1_rag_proto_rawDesc = "" +
@@ -1938,7 +1957,7 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"created_at\x12\x1e\n" +
 	"\n" +
 	"updated_at\x18\v \x01(\tR\n" +
-	"updated_at\"\xf0\x01\n" +
+	"updated_at\"\x88\x02\n" +
 	"\fIngestResult\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -1948,7 +1967,9 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\bentities\x18\x06 \x01(\x05R\bentities\x12\x1c\n" +
 	"\trelations\x18\a \x01(\x05R\trelations\x12\x18\n" +
 	"\adeduped\x18\b \x01(\bR\adeduped\x12\x1a\n" +
-	"\bduration\x18\t \x01(\x03R\bduration\".\n" +
+	"\bduration\x18\t \x01(\x03R\bduration\x12\x16\n" +
+	"\x06purged\x18\n" +
+	" \x01(\x05R\x06purged\".\n" +
 	"\x06Format\x12\x10\n" +
 	"\x03ext\x18\x01 \x01(\tR\x03ext\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\"\x0f\n" +
@@ -2015,7 +2036,7 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
 	"\x06doc_id\x18\x04 \x01(\tR\x06doc_id\x12\x16\n" +
-	"\x06source\x18\x05 \x01(\tR\x06source\"\xf0\x01\n" +
+	"\x06source\x18\x05 \x01(\tR\x06source\"\x88\x02\n" +
 	"\x14UploadAndIngestReply\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -2025,7 +2046,9 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\adeduped\x18\x06 \x01(\bR\adeduped\x12\x16\n" +
 	"\x06chunks\x18\a \x01(\x05R\x06chunks\x12\x1a\n" +
 	"\bentities\x18\b \x01(\x05R\bentities\x12\x1c\n" +
-	"\trelations\x18\t \x01(\x05R\trelations2\xc9\a\n" +
+	"\trelations\x18\t \x01(\x05R\trelations\x12\x16\n" +
+	"\x06purged\x18\n" +
+	" \x01(\x05R\x06purged2\xc9\a\n" +
 	"\n" +
 	"RagService\x12I\n" +
 	"\x06Health\x12\x15.rag.v1.HealthRequest\x1a\x13.rag.v1.HealthReply\"\x13\x82\xd3\xe4\x93\x02\r\x12\v/api/health\x12M\n" +

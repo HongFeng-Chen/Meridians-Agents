@@ -25,15 +25,18 @@ import (
 
 // IngestResult 入库结果
 type IngestResult struct {
-	DocID     string        `json:"doc_id"`
-	Source    string        `json:"source"`
-	Mode      string        `json:"mode"`
-	Chars     int           `json:"chars"`
-	Chunks    int           `json:"chunks"`
-	Entities  int           `json:"entities"`
-	Relations int           `json:"relations"`
-	Deduped   bool          `json:"deduped"` // 内容未变，跳过重复向量化
-	Duration  time.Duration `json:"duration"`
+	DocID     string `json:"doc_id"`
+	Source    string `json:"source"`
+	Mode      string `json:"mode"`
+	Chars     int    `json:"chars"`
+	Chunks    int    `json:"chunks"`
+	Entities  int    `json:"entities"`
+	Relations int    `json:"relations"`
+	Deduped   bool   `json:"deduped"` // 内容未变，跳过重复向量化
+	// Purged 本次清理掉的旧版本行数（分块或图谱节点）：更新文档时写新版本
+	// 之后再删旧版本，这个数不为 0 说明确实替换了一份旧内容
+	Purged   int           `json:"purged"`
+	Duration time.Duration `json:"duration"`
 }
 
 // Rag RAG 用例：混合检索问答 + GraphRAG 图谱问答
@@ -187,7 +190,9 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	owner := identity.UserID(ctx)
 
 	// 内容未变化则跳过重复向量化（MySQL 元数据判定）
+	var prev *Document
 	if old, err := r.repo.Get(ctx, docID); err == nil && old != nil {
+		prev = old
 		// 隔离保护：doc_id 全局唯一，属于别人的同名文档不允许覆盖/复用
 		if old.UserID != "" && old.UserID != owner {
 			return nil, fmt.Errorf("文档标识 %q 已被其他用户占用，请换一个文件名或 doc_id", docID)
@@ -203,19 +208,49 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 
 	res := &IngestResult{DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text))}
 	if mode == "graph" {
+		// 图谱入库内部先摘掉本文件的旧引用再写新节点（见 graphrag.Service.Ingest）
 		ents, rels, err := r.graph.Ingest(ctx, docID, source, text)
 		if err != nil {
 			r.saveFailed(ctx, docID, source, mode, text, err)
 			return nil, err
 		}
 		res.Entities, res.Relations = ents, rels
+		// 由 rag 改成 graph：旧分块留着会被普通问答召回，删掉
+		if prev != nil && prev.Mode == "rag" {
+			if n, derr := r.store.DeleteDoc(ctx, docID); derr != nil {
+				log.Warn("[rag] 模式切换清理旧分块失败", "doc", docID, "err", derr)
+			} else {
+				res.Purged = int(n)
+			}
+		}
 	} else {
+		// 先记下旧版本主键：Milvus 主键是 autoID，重新入库只会新增行，
+		// 不删旧行的话同一 doc 会同时存在多版分块，召回时新旧混着返回
+		oldIDs, err := r.store.IDsOfDoc(ctx, docID)
+		if err != nil {
+			r.saveFailed(ctx, docID, source, mode, text, err)
+			return nil, fmt.Errorf("读取旧版本分块: %w", err)
+		}
 		chunks, err := r.ingestVectors(ctx, docID, source, text)
 		if err != nil {
+			// 新版本没写成功：旧版本原样保留，检索结果不会因此变差
 			r.saveFailed(ctx, docID, source, mode, text, err)
 			return nil, err
 		}
 		res.Chunks = chunks
+		if n, derr := r.store.DeleteByIDs(ctx, oldIDs); derr != nil {
+			// 新版本已就位。删不掉只是留下重复：下次内容变化时会连同这批
+			// ID 一起被记录并清理（IDsOfDoc 返回的是全量），属于自愈型残留
+			log.Warn("[rag] 旧版本分块清理失败，下次入库会自动清掉", "doc", docID, "err", derr)
+		} else {
+			res.Purged = int(n)
+		}
+		// 由 graph 改成 rag：旧图谱引用留着会出现在图谱问答里，摘掉
+		if prev != nil && prev.Mode == "graph" {
+			if _, _, gerr := r.graph.DeleteDocGraph(ctx, docID); gerr != nil {
+				log.Warn("[rag] 模式切换清理旧图谱失败", "doc", docID, "err", gerr)
+			}
+		}
 	}
 	res.Duration = time.Since(start)
 

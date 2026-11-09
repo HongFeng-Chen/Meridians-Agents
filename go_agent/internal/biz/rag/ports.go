@@ -77,6 +77,11 @@ type ChunkStore interface {
 	GetTexts(ctx context.Context, filter string, limit int) ([]Hit, error)
 	Count(ctx context.Context) (int64, error)
 	DeleteDoc(ctx context.Context, docID string) (int64, error)
+	// IDsOfDoc 该文档当前全部分块主键（更新时先记下旧版本，写完新版本再删）
+	IDsOfDoc(ctx context.Context, docID string) ([]int64, error)
+	// DeleteByIDs 按主键删除分块（旧版本清理；只删自己记下的那些 ID，
+	// 不会误伤同一文档刚写入的新分块）
+	DeleteByIDs(ctx context.Context, ids []int64) (int64, error)
 }
 
 // DocumentRepo 文档元数据仓库（MySQL 实现）

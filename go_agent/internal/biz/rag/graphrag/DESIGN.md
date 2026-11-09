@@ -151,7 +151,7 @@ sequenceDiagram
 3. **证据可追溯**：`evidence` 来自主线路的分块集合（`ChunkStore.GetTexts`），保证图谱答案能回到原文，降低幻觉。
 4. **图谱缓存只存文本**：实体/关系不回放（结构可能已变），命中时 `cached=true`。
 
-## 5. 流程三：随文档删除清理图谱
+## 5. 流程三：随文档删除 / 更新摘除图谱引用
 
 ```mermaid
 sequenceDiagram
@@ -159,17 +159,25 @@ sequenceDiagram
     participant S as graphrag.Service
     participant M as GraphStore(Milvus)
 
-    R->>S: DeleteDocGraph(docID)
-    S->>M: DeleteOrphanNodes(prefix = docID+"#")
-    M->>M: 扫描实体集合 id+chunk_refs（limit 16384）
-    Note over M: onlyRefsFrom(refs, prefix)<br/>仅当全部引用都来自该文档才删除
-    M->>M: 删除命中的实体行
-    M->>M: 对关系集合重复同样判定并删除
-    M-->>S: deleted_entities, deleted_relations
+    R->>S: DeleteDocGraph(docID) / Ingest(docID, …)
+    S->>M: DetachDocRefs(prefix = docID+"#")
+    M->>M: 扫描实体集合 id+chunk_refs+dense（limit 16384）
+    Note over M: 引用全部来自该文档 → 删行<br/>仍有其它文档引用 → 保留并改写 refs/freq
+    M->>M: 先写改写后的行，再按旧主键删行
+    M->>M: 对关系集合重复同样处理
+    M-->>S: entities, relations
     S-->>R: 数量（失败由上层转成 graph_warning，不阻断删除）
 ```
 
-设计意图：多篇文档提到同一实体时，删除其中一篇**不应**删掉实体（其它文档还在引用）。因此判定条件是「全部引用都属于该文档」，而不是「包含该文档引用」。
+设计意图有两层：
+
+1. **不能误删共享实体**：多篇文档提到同一实体时，删掉其中一篇不该把实体一起删掉。
+2. **也不能留下旧引用**：只删「全部引用都属于该文档」的节点是不够的——共享实体上这份文档的
+   引用会一直留着，下次入库又被合并回新节点，旧 `chunk_idx` 还可能指向新版本的另一段内容。
+   所以保留的节点要把它在这个来源下的引用摘掉（`refs` 重写、`freq` 按剩余引用重算）。
+
+同一套 `DetachDocRefs` 也用于记忆侧（prefix 形如 `mem::{user}::{memoryID}#`），删除记忆时
+不会再把「共享实体上的旧记忆引用」留下来。
 
 ## 6. 参数（`data.rag.graph*`）
 

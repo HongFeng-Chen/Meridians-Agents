@@ -50,7 +50,7 @@ func (stubVec) DeleteByMemory(context.Context, string) (int64, error) { return 0
 
 type stubGraph struct{ graphrag.Store }
 
-func (stubGraph) DeleteOrphanNodes(context.Context, string) (int, int, error) { return 0, 0, nil }
+func (stubGraph) DetachDocRefs(context.Context, string) (int, int, error) { return 0, 0, nil }
 
 func newMemoryServiceForTest(t *testing.T, repo *stubLongRepo) *MemoryService {
 	t.Helper()
