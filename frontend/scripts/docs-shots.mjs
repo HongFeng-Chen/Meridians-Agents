@@ -31,6 +31,7 @@ const PAGES = [
   ['console-dashboard', 'dashboard', '仪表盘'],
   ['console-tasks', 'tasks', '任务中心列表'],
   ['console-rag-query', 'rag-query', '混合检索问答'],
+  ['console-rag-ingest', 'rag-ingest', 'RAG 文档导入（知识作用域）'],
   ['console-graph-query', 'graph-query', '图谱问答'],
   ['console-memory', 'memory', '记忆系统'],
   ['console-agents', 'agents', 'Agent 工厂'],
@@ -38,6 +39,7 @@ const PAGES = [
   ['console-eval', 'eval', '评测中心'],
   ['console-mcp', 'mcp', 'MCP 服务与工具'],
   ['console-llm', 'llm', '大模型数据源'],
+  ['console-admin', 'admin', '文档与系统（作用域筛选）'],
 ];
 
 fs.mkdirSync(OUT, { recursive: true });
