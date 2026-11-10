@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/health"
@@ -25,6 +26,11 @@ func mysqlHint(err error) string {
 		return "（MySQL 未启动或地址不对：检查 data.database.source 的 host:port）"
 	case strings.Contains(msg, "timeout"):
 		return "（MySQL 响应超时：检查网络与 timeout 参数）"
+	case strings.Contains(msg, "invalid connection"), strings.Contains(msg, "unexpected EOF"):
+		// TCP 能建连、握手中途被对端关掉。本机用 Docker 起 MySQL 时最常见的原因是
+		// 宿主机端口映射失效（容器重启/休眠唤醒后），容器内 mysql 客户端却一切正常。
+		return "（TCP 已连通但握手被中断：多为端口映射失效，docker restart 对应容器；" +
+			"容器内 `mysql -h127.0.0.1` 正常即可确认）"
 	default:
 		return ""
 	}
@@ -62,6 +68,13 @@ func NewData(c *conf.Data) (*Data, func(), error) {
 		log.Error("failed to get sql.DB", "err", sqlErr)
 		return nil, nil, fmt.Errorf("mysql 连接失败%s: %w", mysqlHint(sqlErr), sqlErr)
 	}
+	// 连接池：默认的「永不过期」在 MySQL 侧 wait_timeout（常配 8h）或中间代理
+	// 主动掐连接时，会把死连接留在池子里，下一次取用才报 invalid connection。
+	// 主动轮换比事后重试便宜：30 分钟一轮，连接建立的开销可以忽略。
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	sqlDB.SetMaxOpenConns(50)
+	sqlDB.SetMaxIdleConns(10)
 	cleanup := func() {
 		log.Info("closing the data resources")
 		if err := sqlDB.Close(); err != nil {
