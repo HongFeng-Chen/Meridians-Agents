@@ -370,7 +370,9 @@ func (r *AgentFactoryRepo) ListTasks(ctx context.Context, f agentfactory.TaskFil
 		limit = 50
 	}
 	switch {
-	case f.Status == agentfactory.TaskPending || f.Status == agentfactory.TaskRunning:
+	// 池内状态（pending / running / paused）→ 任务池表；
+	// 终态 → 历史表。判断集中在 agentfactory.InPool，避免两处各写一份条件。
+	case agentfactory.InPool(f.Status):
 		return r.listPoolTasks(ctx, f, limit)
 	case agentfactory.IsTerminalStatus(f.Status):
 		return r.listHistoryTasks(ctx, f, limit)

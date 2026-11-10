@@ -11,7 +11,11 @@ type DocumentPO struct {
 	UserID string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_rag_documents_user"`
 	// TenantID 租户隔离键：同名校验只要求「租户内唯一」的语义，先于 user_id 生效。
 	// 默认 'public'：加列时 MySQL 会用默认值回填历史行，不会把旧数据变成「谁都能看」。
-	TenantID  string    `gorm:"column:tenant_id;size:128;not null;default:'public';index:idx_rag_documents_tenant"`
+	TenantID string `gorm:"column:tenant_id;size:128;not null;default:'public';index:idx_rag_documents_tenant"`
+	// Scope 知识作用域：system（平台通用，全租户可见）/ tenant（同租户可见）/
+	// user（个人私有）。默认 user：加列时历史行自动落到「个人私有」，
+	// 不会因为新增字段而突然对更多人可见。
+	Scope     string    `gorm:"column:scope;size:16;not null;default:'user';index:idx_rag_documents_scope"`
 	Source    string    `gorm:"column:source;size:512;not null;default:''"`
 	Mode      string    `gorm:"column:mode;size:16;not null;default:'rag';index:idx_rag_documents_mode"`
 	Status    string    `gorm:"column:status;size:16;not null;default:'ready';index:idx_rag_documents_status"`

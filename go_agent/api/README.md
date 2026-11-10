@@ -246,6 +246,15 @@ promptv1.RegisterPromptServiceServer(srv, promptSvc)
 | POST | `/api/query` | Query | 混合检索问答（Dense + BM25，RRF 融合） |
 | POST | `/api/upload` | UploadAndIngest | 上传文件并直接入库 |
 
+**知识作用域（`scope`）**：`Ingest` / `GraphIngest` / `UploadAndIngest` 都接受
+`scope = user | tenant | system`（缺省 `user`），`ListDocs` 接受同名参数做筛选，
+`Document` 会回带 `scope` / `user_id` / `tenant_id`。
+
+- `user` 个人私有、`tenant` 同租户共享、`system` 全平台可见；
+- 写 `tenant` 要 `tenant:manage`、写 `system` 要 `platform:config`，越权返回
+  `403 RAG_SCOPE_FORBIDDEN`（不是 500——这是权限判断，不是服务故障）；
+- 删除同一套规则，且按「文档既有作用域」判定，不能靠重灌改作用域把别人的文档收编。
+
 ### SkillService
 
 | 方法 | 路径 | RPC | 说明 |

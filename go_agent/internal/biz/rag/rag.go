@@ -155,12 +155,37 @@ func (r *Rag) EnsureReady(ctx context.Context) error {
 	return r.store.EnsureCollection(ctx)
 }
 
-// Ingest 入库一篇文本：分块 -> embedding -> Milvus -> MySQL 元数据 -> 清缓存
+// IngestInput 一次入库的完整参数。
+//
+// Scope 决定入库后谁能看见："" 等价于 user（个人私有），见 scope.go。
+type IngestInput struct {
+	DocID  string
+	Source string
+	Mode   string // rag | graph
+	Text   string
+	Scope  string // system | tenant | user
+}
+
+// Ingest 入库一篇文本（个人作用域的简写，保持既有调用点不变）
 func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*IngestResult, error) {
+	return r.IngestDocument(ctx, IngestInput{DocID: docID, Source: source, Mode: mode, Text: text})
+}
+
+// IngestDocument 入库一篇文本：分块 -> embedding -> Milvus -> MySQL 元数据 -> 清缓存
+func (r *Rag) IngestDocument(ctx context.Context, in IngestInput) (*IngestResult, error) {
 	start := time.Now()
+	docID, source, mode, text := in.DocID, in.Source, in.Mode, in.Text
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, fmt.Errorf("文本为空")
+	}
+	// 作用域先归一化再校验权限：非法取值不该以「降级为私有」的方式静默成功
+	scope, err := NormalizeScope(in.Scope)
+	if err != nil {
+		return nil, err
+	}
+	if !CanWriteScope(ctx, scope) {
+		return nil, fmt.Errorf("%w：%s 作用域的知识需要%s", ErrScopeForbidden, scope, scopeHint(scope))
 	}
 	if docID == "" {
 		docID = "doc-" + time.Now().Format("20060102150405")
@@ -186,8 +211,8 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	sum := sha256.Sum256([]byte(mode + "|" + text))
 	checksum := hex.EncodeToString(sum[:])
 
-	// 归属：入库时固化，检索时按 (租户, 用户) 双重过滤。
-	// 认证未启用时 = (public, default)，与历史数据同一作用域。
+	// 归属：入库时固化，检索时按 (作用域, 租户, 用户) 过滤。
+	// 认证未启用时 = (user, public, default)，与历史数据同一作用域。
 	owner := identity.UserID(ctx)
 	ownerTenant := identity.TenantID(ctx)
 
@@ -195,12 +220,13 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	var prev *Document
 	if old, err := r.repo.Get(ctx, docID); err == nil && old != nil {
 		prev = old
-		// 隔离保护：doc_id 全局唯一，属于别人的同名文档不允许覆盖/复用。
-		// 比对租户 + 用户：不同租户用同一个 user_id 也不能顶掉对方的文档。
-		if old.UserID != "" && (old.UserID != owner || !sameTenant(old.TenantID, ownerTenant)) {
-			return nil, fmt.Errorf("文档标识 %q 已被其他用户占用，请换一个文件名或 doc_id", docID)
+		// 隔离保护：doc_id 全局唯一，属于别人（或别的作用域）的文档不允许覆盖/复用。
+		// 这里按「文档既有作用域」判定而不是按本次请求的作用域，
+		// 否则任何人都能把别人的私有文档重灌成自己的 system 知识。
+		if !CanWriteDoc(ctx, old) {
+			return nil, fmt.Errorf("文档标识 %q 已被其他作用域或用户占用，请换一个文件名或 doc_id", docID)
 		}
-		if old.Checksum == checksum && old.Status == "ready" && old.Mode == mode {
+		if old.Checksum == checksum && old.Status == "ready" && old.Mode == mode && old.Scope == scope {
 			return &IngestResult{
 				DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text)),
 				Chunks: old.Chunks, Entities: old.Entities, Relations: old.Relations,
@@ -214,7 +240,7 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 		// 图谱入库内部先摘掉本文件的旧引用再写新节点（见 graphrag.Service.Ingest）
 		ents, rels, err := r.graph.Ingest(ctx, docID, source, text)
 		if err != nil {
-			r.saveFailed(ctx, docID, source, mode, text, err)
+			r.saveFailed(ctx, docID, source, mode, scope, text, err)
 			return nil, err
 		}
 		res.Entities, res.Relations = ents, rels
@@ -231,13 +257,13 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 		// 不删旧行的话同一 doc 会同时存在多版分块，召回时新旧混着返回
 		oldIDs, err := r.store.IDsOfDoc(ctx, docID)
 		if err != nil {
-			r.saveFailed(ctx, docID, source, mode, text, err)
+			r.saveFailed(ctx, docID, source, mode, scope, text, err)
 			return nil, fmt.Errorf("读取旧版本分块: %w", err)
 		}
 		chunks, err := r.ingestVectors(ctx, docID, source, text)
 		if err != nil {
 			// 新版本没写成功：旧版本原样保留，检索结果不会因此变差
-			r.saveFailed(ctx, docID, source, mode, text, err)
+			r.saveFailed(ctx, docID, source, mode, scope, text, err)
 			return nil, err
 		}
 		res.Chunks = chunks
@@ -258,7 +284,8 @@ func (r *Rag) Ingest(ctx context.Context, docID, source, mode, text string) (*In
 	res.Duration = time.Since(start)
 
 	if err := r.repo.Upsert(ctx, &Document{
-		DocID: docID, UserID: owner, TenantID: ownerTenant, Source: source, Mode: mode, Status: "ready",
+		DocID: docID, UserID: owner, TenantID: ownerTenant, Scope: scope,
+		Source: source, Mode: mode, Status: "ready",
 		Chars: res.Chars, Chunks: res.Chunks,
 		Entities: res.Entities, Relations: res.Relations,
 		Checksum: checksum,
@@ -319,7 +346,7 @@ func (r *Rag) ExtractText(name string, rd io.Reader) (string, error) {
 	return loader.ExtractReader(name, rd)
 }
 
-// IngestFile 解析本地文件后入库
+// IngestFile 解析本地文件后入库（个人作用域）
 func (r *Rag) IngestFile(ctx context.Context, path, mode string) (*IngestResult, error) {
 	text, err := loader.ExtractFile(path)
 	if err != nil {
@@ -327,11 +354,12 @@ func (r *Rag) IngestFile(ctx context.Context, path, mode string) (*IngestResult,
 	}
 	name := filepath.Base(path)
 	docID := strings.TrimSuffix(name, filepath.Ext(name))
-	return r.Ingest(ctx, docID, name, mode, text)
+	return r.IngestDocument(ctx, IngestInput{DocID: docID, Source: name, Mode: mode, Text: text})
 }
 
-// IngestReader 解析上传流后入库（HTTP 上传用）
-func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode string, rd io.Reader) (*IngestResult, string, error) {
+// IngestReader 解析上传流后入库（HTTP 上传用）。
+// scope 决定这批知识的可见范围（system / tenant / user，空值 = user）。
+func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode, scope string, rd io.Reader) (*IngestResult, string, error) {
 	text, err := loader.ExtractReader(name, rd)
 	if err != nil {
 		return nil, "", err
@@ -342,15 +370,15 @@ func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode string
 	if source == "" {
 		source = filepath.Base(name)
 	}
-	res, err := r.Ingest(ctx, docID, source, mode, text)
+	res, err := r.IngestDocument(ctx, IngestInput{DocID: docID, Source: source, Mode: mode, Text: text, Scope: scope})
 	return res, text, err
 }
 
 // saveFailed 记录失败状态（便于前端与管理页面排查）
-func (r *Rag) saveFailed(ctx context.Context, docID, source, mode, text string, cause error) {
+func (r *Rag) saveFailed(ctx context.Context, docID, source, mode, scope, text string, cause error) {
 	_ = r.repo.Upsert(ctx, &Document{
 		DocID: docID, UserID: identity.UserID(ctx), TenantID: identity.TenantID(ctx),
-		Source: source, Mode: mode, Status: "failed",
+		Scope: scope, Source: source, Mode: mode, Status: "failed",
 		Chars: len([]rune(text)),
 	})
 }
@@ -599,12 +627,13 @@ func (r *Rag) GraphRecall(ctx context.Context, question string) (*graphrag.Graph
 	return r.graph.Recall(ctx, question)
 }
 
-// ListDocs 文档列表（MySQL 权威数据源）；限定当前租户，userID 非空时只返回该用户的文档
-func (r *Rag) ListDocs(ctx context.Context, userID string, limit int) ([]Document, error) {
+// ListDocs 文档列表（MySQL 权威数据源）：按「系统 ∪ 本租户共享 ∪ 本人私有」可见性过滤，
+// scopeFilter 非空时再按作用域收窄（前端「只看系统知识 / 只看我的」）。
+func (r *Rag) ListDocs(ctx context.Context, scopeFilter string, limit int) ([]Document, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	return r.repo.List(ctx, identity.TenantID(ctx), userID, limit)
+	return r.repo.List(ctx, identity.TenantID(ctx), identity.UserID(ctx), scopeFilter, limit)
 }
 
 // sameTenant 归属租户是否一致；历史数据（空租户）视为与默认租户同域，
@@ -619,10 +648,18 @@ func sameTenant(docTenant, current string) bool {
 	return docTenant == current
 }
 
-// DeleteDoc 删除文档：Milvus 分块 + 图谱孤儿节点 + MySQL 元数据 + 缓存
+// DeleteDoc 删除文档：Milvus 分块 + 图谱引用摘除 + MySQL 元数据 + 缓存
+//
+// 归属校验放在这里而不是只放在 HTTP 层：任务 / Agent 工具等其他入口也走这个方法，
+// 校验跟着用例走才不会被新入口绕过。规则按文档自身作用域判定（见 CanWriteDoc）。
 func (r *Rag) DeleteDoc(ctx context.Context, docID string) (map[string]any, error) {
 	if docID == "" {
 		return nil, fmt.Errorf("doc_id 不能为空")
+	}
+	if doc, err := r.repo.Get(ctx, docID); err != nil {
+		return nil, fmt.Errorf("读取文档归属: %w", err)
+	} else if doc != nil && !CanWriteDoc(ctx, doc) {
+		return nil, fmt.Errorf("%w：%s 属于 %s 作用域，当前身份无权删除", ErrScopeForbidden, docID, scopeName(doc.Scope))
 	}
 	nChunks, err := r.store.DeleteDoc(ctx, docID)
 	if err != nil {

@@ -105,6 +105,11 @@ message Document {
   // RFC3339
   string created_at = 10 [json_name = "created_at"];
   string updated_at = 11 [json_name = "updated_at"];
+  // 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
+  string scope = 12 [json_name = "scope"];
+  // 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
+  string user_id = 13 [json_name = "user_id"];
+  string tenant_id = 14 [json_name = "tenant_id"];
 }
 
 // IngestResult 入库结果（RAG 与 GraphRAG 共用）。
@@ -154,6 +159,9 @@ message IngestRequest {
   string text = 3 [(google.api.field_behavior) = REQUIRED, json_name = "text"];
   // rag（默认）| graph
   string mode = 4 [json_name = "mode"];
+  // 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
+  // tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
+  string scope = 5 [json_name = "scope"];
 }
 
 message QueryRequest {
@@ -185,6 +193,8 @@ message StatsReply {
 message ListDocsRequest {
   // 缺省 200
   int32 limit = 1 [json_name = "limit"];
+  // 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
+  string scope = 2 [json_name = "scope"];
 }
 
 message ListDocsReply {
@@ -248,6 +258,8 @@ message UploadAndIngestRequest {
   string doc_id = 4 [json_name = "doc_id"];
   // 留空取文件名
   string source = 5 [json_name = "source"];
+  // 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
+  string scope = 6 [json_name = "scope"];
 }
 
 message UploadAndIngestReply {

@@ -15,7 +15,7 @@ import { call } from '../http.js';
  * ListDocs 文档列表。
  *
  * GET /api/admin/docs
- *   query 参数：limit
+ *   query 参数：limit, scope
  * @returns {Promise<ListDocsReply>}
  */
 export const listDocs = (input = {}, options) =>
@@ -113,7 +113,7 @@ export const query = (input = {}, options) =>
  * UploadAndIngest 上传文件并直接入库。
  *
  * POST /api/upload
- *   query 参数：name, mode, doc_id, source
+ *   query 参数：name, mode, doc_id, source, scope
  *   multipart：file 走表单，其余字段走 query
  * @returns {Promise<UploadAndIngestReply>}
  */

@@ -12,6 +12,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,9 +70,15 @@ func (s *RagService) ingest(ctx context.Context, req *v1.IngestRequest, mode str
 	if strings.TrimSpace(req.GetText()) == "" {
 		return nil, badRequest("请求体无效，需要 text 字段")
 	}
-	res, err := s.uc.Ingest(ctx, req.GetDocId(), req.GetSource(), mode, req.GetText())
+	res, err := s.uc.IngestDocument(ctx, rag.IngestInput{
+		DocID:  req.GetDocId(),
+		Source: req.GetSource(),
+		Mode:   mode,
+		Text:   req.GetText(),
+		Scope:  req.GetScope(),
+	})
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, ragErr(err)
 	}
 	return toIngestResult(res), nil
 }
@@ -135,7 +142,7 @@ func (s *RagService) GetStats(ctx context.Context, _ *v1.GetStatsRequest) (*v1.S
 
 // ListDocs 文档列表。
 func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1.ListDocsReply, error) {
-	list, err := s.uc.ListDocs(ctx, scopeUser(ctx), int(req.GetLimit()))
+	list, err := s.uc.ListDocs(ctx, req.GetScope(), int(req.GetLimit()))
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -151,6 +158,9 @@ func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1
 			Entities:  int32(d.Entities),
 			Relations: int32(d.Relations),
 			Checksum:  d.Checksum,
+			Scope:     d.Scope,
+			UserId:    d.UserID,
+			TenantId:  d.TenantID,
 			CreatedAt: d.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: d.UpdatedAt.Format(time.RFC3339),
 		})
@@ -170,12 +180,15 @@ func (s *RagService) DeleteDoc(ctx context.Context, req *v1.DeleteDocRequest) (*
 	if doc == nil {
 		return nil, notFound("文档不存在：" + req.GetDocId())
 	}
-	if err := ensureOwned(ctx, doc.UserID, "知识库文档"); err != nil {
-		return nil, err
+	// 删除权限按文档自身作用域判定：系统知识要平台管理员，租户共享要租户管理员
+	// 或贡献者，个人知识仅本人。规则在 biz 层（rag.CanWriteDoc），这里只负责翻译成 403。
+	if !rag.CanWriteDoc(ctx, doc) {
+		return nil, forbidden("RAG_SCOPE_FORBIDDEN",
+			"无权删除该文档（作用域与当前身份的可见范围不一致）")
 	}
 	res, err := s.uc.DeleteDoc(ctx, req.GetDocId())
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, ragErr(err)
 	}
 	return &v1.DeleteDocReply{
 		DocId:            req.GetDocId(),
@@ -226,9 +239,9 @@ func (s *RagService) UploadAndIngest(ctx context.Context, req *v1.UploadAndInges
 	if mode == "" {
 		mode = "rag"
 	}
-	res, _, err := s.uc.IngestReader(ctx, file.Filename, req.GetDocId(), req.GetSource(), mode, bytes.NewReader(file.Data))
+	res, _, err := s.uc.IngestReader(ctx, file.Filename, req.GetDocId(), req.GetSource(), mode, req.GetScope(), bytes.NewReader(file.Data))
 	if err != nil {
-		return nil, internalErr(err)
+		return nil, ragErr(err)
 	}
 	out := &v1.UploadAndIngestReply{
 		DocId:   res.DocID,
@@ -372,4 +385,19 @@ func intPtr(p *int32) *int {
 	}
 	v := int(*p)
 	return &v
+}
+
+// ragErr RAG 领域错误 → 传输层错误。
+//
+// 作用域越权是「权限问题」不是「服务器故障」：403 让前端能提示「换个作用域」，
+// 500 只会被当成后端崩了。
+func ragErr(err error) error {
+	switch {
+	case errors.Is(err, rag.ErrInvalidScope):
+		return badRequest(err.Error())
+	case errors.Is(err, rag.ErrScopeForbidden):
+		return forbidden("RAG_SCOPE_FORBIDDEN", err.Error())
+	default:
+		return internalErr(err)
+	}
 }

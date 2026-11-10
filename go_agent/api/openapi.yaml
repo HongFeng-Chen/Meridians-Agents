@@ -19,6 +19,11 @@ paths:
                   schema:
                     type: integer
                     format: int32
+                - name: scope
+                  in: query
+                  description: 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
+                  schema:
+                    type: string
             responses:
                 "200":
                     description: OK
@@ -3630,6 +3635,11 @@ paths:
                   description: 留空取文件名
                   schema:
                     type: string
+                - name: scope
+                  in: query
+                  description: 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
+                  schema:
+                    type: string
             requestBody:
                 content:
                     multipart/form-data:
@@ -7233,6 +7243,14 @@ components:
                     description: RFC3339
                 updated_at:
                     type: string
+                scope:
+                    type: string
+                    description: 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
+                user_id:
+                    type: string
+                    description: 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
+                tenant_id:
+                    type: string
             description: Document 文档元数据（MySQL rag_documents 为权威数据源）。
         rag.v1.Entity:
             type: object
@@ -7351,6 +7369,9 @@ components:
                 mode:
                     type: string
                     description: rag（默认）| graph
+                scope:
+                    type: string
+                    description: "知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。\r\n tenant 需要 tenant:manage，system 需要 platform:config，否则 403。"
         rag.v1.IngestResult:
             type: object
             properties:

@@ -26,7 +26,7 @@ func TestDocumentsIsolatedByTenant(t *testing.T) {
 		t.Fatalf("租户 A 入库: %v", err)
 	}
 
-	docsA, err := r.ListDocs(ctxA, "alice", 20)
+	docsA, err := r.ListDocs(ctxA, "", 20)
 	if err != nil {
 		t.Fatalf("ListDocs A: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestDocumentsIsolatedByTenant(t *testing.T) {
 		t.Fatalf("文档归属租户应为 t1，实际 %q", docsA[0].TenantID)
 	}
 
-	docsB, err := r.ListDocs(ctxB, "alice", 20)
+	docsB, err := r.ListDocs(ctxB, "", 20)
 	if err != nil {
 		t.Fatalf("ListDocs B: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestIngestRejectsDocIDOwnedByAnotherTenant(t *testing.T) {
 	if err == nil {
 		t.Fatal("跨租户同名 doc_id 应被拒绝覆盖")
 	}
-	if !strings.Contains(err.Error(), "已被其他用户占用") {
+	if !strings.Contains(err.Error(), "已被其他作用域或用户占用") {
 		t.Fatalf("错误信息应说明占用，实际 %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestLegacyDocumentVisibleToDefaultTenant(t *testing.T) {
 		t.Fatalf("写入历史文档: %v", err)
 	}
 	ctx := tenantCtx("alice", "public")
-	docs, err := r.ListDocs(ctx, "alice", 20)
+	docs, err := r.ListDocs(ctx, "", 20)
 	if err != nil {
 		t.Fatalf("ListDocs: %v", err)
 	}

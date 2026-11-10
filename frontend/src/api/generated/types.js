@@ -1052,6 +1052,9 @@
  * @property {string} [checksum]
  * @property {string} [created_at] - RFC3339
  * @property {string} [updated_at]
+ * @property {string} [scope] - 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
+ * @property {string} [user_id] - 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
+ * @property {string} [tenant_id]
  */
 
 /**
@@ -1123,6 +1126,7 @@
  * @property {string} [source] - 留空取 doc_id
  * @property {string} text
  * @property {string} [mode] - rag（默认）| graph
+ * @property {string} [scope] - 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。 tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
  */
 
 /**

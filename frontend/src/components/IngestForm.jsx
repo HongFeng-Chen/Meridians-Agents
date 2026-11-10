@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Alert, Panel, Spinner } from './UI.jsx';
 import { IconDoc, IconUpload } from './Icons.jsx';
+import { SCOPES, scopeHint, scopeLabel } from './Scope.jsx';
 
 const SAMPLE = `Milvus 是一款开源的向量数据库，由 Zilliz 公司主导研发，采用 Apache 2.0 协议开源。
 Milvus 3.0 引入湖原生向量搜索与 S3 存储，并增强了检索能力：BM25 索引通过块压缩 postings 与量化降低占用，
@@ -22,6 +23,8 @@ export default function IngestForm({ mode }) {
   const isGraph = mode === 'graph';
   const [docId, setDocId] = useState('');
   const [source, setSource] = useState('');
+  // 作用域决定这条知识「谁看得见」，默认个人私有（最保守）
+  const [scope, setScope] = useState('user');
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -78,6 +81,7 @@ export default function IngestForm({ mode }) {
         doc_id: docId.trim() || `doc-${Date.now()}`,
         source: source.trim() || docId.trim() || '手动输入',
         text,
+        scope,
       };
       const data = isGraph ? await api.graphIngest(payload) : await api.ragIngest(payload);
       setResult({ ...data, mode });
@@ -113,6 +117,22 @@ export default function IngestForm({ mode }) {
               onChange={(e) => setSource(e.target.value)}
             />
           </label>
+        </div>
+        <div className="grid-2" style={{ marginTop: 12 }}>
+          <label className="field">
+            <span className="field-label">知识作用域</span>
+            <select className="input" value={scope} onChange={(e) => setScope(e.target.value)}>
+              {SCOPES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="field">
+            <span className="field-label">可见范围</span>
+            <span className="muted">{scopeHint(scope)}</span>
+          </div>
         </div>
       </Panel>
 
@@ -195,7 +215,8 @@ export default function IngestForm({ mode }) {
             </>
           ) : (
             <>
-              导入成功 · 文档 <b>{result.doc_id}</b> · 共写入 <b>{result.chunks}</b> 个分块
+              导入成功 · 文档 <b>{result.doc_id}</b> · 共写入 <b>{result.chunks}</b> 个分块 ·{' '}
+              作用域 <b>{scopeLabel(scope)}</b>
             </>
           )}
         </Alert>

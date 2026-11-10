@@ -38,6 +38,19 @@ func CanTransit(from, to string) bool {
 	return false
 }
 
+// InPool 该状态的任务还在任务池表（agent_tasks）里，而不是历史表。
+//
+// 仓储的 ListTasks 用它决定查哪张表。漏掉一个「池内状态」不只是查不到数据：
+// 会走到 default 分支报「未知任务状态」，调用方（审批超时扫描）每次扫描都失败，
+// 表现为挂起任务永远不超时。
+func InPool(status string) bool {
+	switch status {
+	case TaskPending, TaskRunning, TaskPaused:
+		return true
+	}
+	return false
+}
+
 // TransitableFrom 反查某个目标状态允许从哪些状态迁入（CAS 的 from 集合）。
 // 终态（succeeded/failed/canceled）不在此列——写到终态一律以「当前状态」为准，
 // 由调用方显式给出，避免「任何状态都能变成功」。

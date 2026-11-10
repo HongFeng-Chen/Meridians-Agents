@@ -556,8 +556,13 @@ type Document struct {
 	Relations int32  `protobuf:"varint,8,opt,name=relations,proto3" json:"relations,omitempty"`
 	Checksum  string `protobuf:"bytes,9,opt,name=checksum,proto3" json:"checksum,omitempty"`
 	// RFC3339
-	CreatedAt     string `protobuf:"bytes,10,opt,name=created_at,proto3" json:"created_at,omitempty"`
-	UpdatedAt     string `protobuf:"bytes,11,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	CreatedAt string `protobuf:"bytes,10,opt,name=created_at,proto3" json:"created_at,omitempty"`
+	UpdatedAt string `protobuf:"bytes,11,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
+	// 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
+	Scope string `protobuf:"bytes,12,opt,name=scope,proto3" json:"scope,omitempty"`
+	// 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
+	UserId        string `protobuf:"bytes,13,opt,name=user_id,proto3" json:"user_id,omitempty"`
+	TenantId      string `protobuf:"bytes,14,opt,name=tenant_id,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -665,6 +670,27 @@ func (x *Document) GetCreatedAt() string {
 func (x *Document) GetUpdatedAt() string {
 	if x != nil {
 		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *Document) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *Document) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *Document) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -954,7 +980,10 @@ type IngestRequest struct {
 	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
 	Text   string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
 	// rag（默认）| graph
-	Mode          string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	// 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
+	// tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
+	Scope         string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1013,6 +1042,13 @@ func (x *IngestRequest) GetText() string {
 func (x *IngestRequest) GetMode() string {
 	if x != nil {
 		return x.Mode
+	}
+	return ""
+}
+
+func (x *IngestRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
 	}
 	return ""
 }
@@ -1256,7 +1292,9 @@ func (x *StatsReply) GetStores() map[string]string {
 type ListDocsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 缺省 200
-	Limit         int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	// 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
+	Scope         string `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1296,6 +1334,13 @@ func (x *ListDocsRequest) GetLimit() int32 {
 		return x.Limit
 	}
 	return 0
+}
+
+func (x *ListDocsRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
 }
 
 type ListDocsReply struct {
@@ -1703,7 +1748,9 @@ type UploadAndIngestRequest struct {
 	// 留空取文件名（去扩展名）
 	DocId string `protobuf:"bytes,4,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
 	// 留空取文件名
-	Source        string `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	Source string `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	// 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
+	Scope         string `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1769,6 +1816,13 @@ func (x *UploadAndIngestRequest) GetDocId() string {
 func (x *UploadAndIngestRequest) GetSource() string {
 	if x != nil {
 		return x.Source
+	}
+	return ""
+}
+
+func (x *UploadAndIngestRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
 	}
 	return ""
 }
@@ -1940,7 +1994,7 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\bentities\x18\x03 \x03(\v2\x0e.rag.v1.EntityR\bentities\x12.\n" +
 	"\trelations\x18\x04 \x03(\v2\x10.rag.v1.RelationR\trelations\x12\x1a\n" +
 	"\bevidence\x18\x05 \x03(\tR\bevidence\x12\x16\n" +
-	"\x06cached\x18\x06 \x01(\bR\x06cached\"\xaa\x02\n" +
+	"\x06cached\x18\x06 \x01(\bR\x06cached\"\xf8\x02\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -1957,7 +2011,10 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"created_at\x12\x1e\n" +
 	"\n" +
 	"updated_at\x18\v \x01(\tR\n" +
-	"updated_at\"\x88\x02\n" +
+	"updated_at\x12\x14\n" +
+	"\x05scope\x18\f \x01(\tR\x05scope\x12\x18\n" +
+	"\auser_id\x18\r \x01(\tR\auser_id\x12\x1c\n" +
+	"\ttenant_id\x18\x0e \x01(\tR\ttenant_id\"\x88\x02\n" +
 	"\fIngestResult\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -1977,12 +2034,13 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\vHealthReply\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x12\n" +
 	"\x04time\x18\x02 \x01(\tR\x04time\x12!\n" +
-	"\x03rag\x18\x03 \x01(\v2\x0f.rag.v1.RagInfoR\x03rag\"l\n" +
+	"\x03rag\x18\x03 \x01(\v2\x0f.rag.v1.RagInfoR\x03rag\"\x82\x01\n" +
 	"\rIngestRequest\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x17\n" +
 	"\x04text\x18\x03 \x01(\tB\x03\xe0A\x02R\x04text\x12\x12\n" +
-	"\x04mode\x18\x04 \x01(\tR\x04mode\"G\n" +
+	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x14\n" +
+	"\x05scope\x18\x05 \x01(\tR\x05scope\"G\n" +
 	"\fQueryRequest\x12\x1f\n" +
 	"\bquestion\x18\x01 \x01(\tB\x03\xe0A\x02R\bquestion\x12\x16\n" +
 	"\x06filter\x18\x02 \x01(\tR\x06filter\"4\n" +
@@ -2005,9 +2063,10 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x06stores\x18\b \x03(\v2\x1e.rag.v1.StatsReply.StoresEntryR\x06stores\x1a9\n" +
 	"\vStoresEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"'\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"=\n" +
 	"\x0fListDocsRequest\x12\x14\n" +
-	"\x05limit\x18\x01 \x01(\x05R\x05limit\"K\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\"K\n" +
 	"\rListDocsReply\x12$\n" +
 	"\x04docs\x18\x01 \x03(\v2\x10.rag.v1.DocumentR\x04docs\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\"/\n" +
@@ -2030,13 +2089,14 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +
 	"\x05chars\x18\x03 \x01(\x05R\x05chars\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text\"\x84\x01\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text\"\x9a\x01\n" +
 	"\x16UploadAndIngestRequest\x12\x12\n" +
 	"\x04file\x18\x01 \x01(\fR\x04file\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
 	"\x06doc_id\x18\x04 \x01(\tR\x06doc_id\x12\x16\n" +
-	"\x06source\x18\x05 \x01(\tR\x06source\"\x88\x02\n" +
+	"\x06source\x18\x05 \x01(\tR\x06source\x12\x14\n" +
+	"\x05scope\x18\x06 \x01(\tR\x05scope\"\x88\x02\n" +
 	"\x14UploadAndIngestReply\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +

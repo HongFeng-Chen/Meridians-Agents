@@ -20,7 +20,7 @@ wire 装配集中在 `data.go` 的 `ProviderSet`；biz 层只依赖接口（port
 
 | 文件 | 表 |
 | --- | --- |
-| `document.go` | `rag_documents`（`tenant_id` 默认 `public`，列表/检索按租户+用户过滤） |
+| `document.go` | `rag_documents`（`scope` 默认 `user` + `tenant_id` 默认 `public`：列表明暗为「系统 ∪ 本租户共享 ∪ 本人私有」，规则见 `biz/rag/scope.go`） |
 | `memory.go` | `memories`（仅 `user_id`，`tenant_id` 待补，见 HANDOVER 5.5） |
 | `prompt.go` | `prompt_templates`、`prompt_versions` |
 | `skill.go` | `skills`、`skill_files`、`skill_hubs` |

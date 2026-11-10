@@ -51,8 +51,8 @@ export const api = {
   // 文件解析与上传（multipart，file 字段）
   formats: () => rag.listFormats(),
   extract: (file) => rag.extractText({ file }),
-  upload: (file, { mode = 'rag', docId = '', source = '' } = {}) =>
-    rag.uploadAndIngest({ file, mode, doc_id: docId, source }),
+  upload: (file, { mode = 'rag', docId = '', source = '', scope = '' } = {}) =>
+    rag.uploadAndIngest({ file, mode, doc_id: docId, source, scope }),
 
   // 管理
   // stats 把 rag.Info() 的子字段摊平，兼容旧页面对 stats.embed_model 的直接取值
@@ -60,6 +60,6 @@ export const api = {
     const data = await rag.getStats();
     return { ...(data.rag || {}), ...data };
   },
-  docs: () => rag.listDocs(),
+  docs: (params) => rag.listDocs(params),
   deleteDoc: (docId) => rag.deleteDoc({ doc_id: docId }),
 };

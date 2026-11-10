@@ -47,12 +47,12 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 健康检查 + 运行参数 |
-| POST | `/api/ingest` | `{doc_id,source,text,mode}` 导入文本（mode=rag/graph） |
+| POST | `/api/ingest` | `{doc_id,source,text,mode,scope}` 导入文本（mode=rag/graph，scope 见下节） |
 | POST | `/api/query` | `{question,filter}` 混合检索问答 |
 | POST | `/api/graph/ingest` | 图谱构建 |
 | POST | `/api/graph/query` | 图谱问答 |
 | GET | `/api/admin/stats` | 分块/文档/实体/关系统计 |
-| GET | `/api/admin/docs` | 文档列表（来源 MySQL） |
+| GET | `/api/admin/docs?scope=system` | 文档列表（来源 MySQL；只返回当前身份可见的三层知识，`scope` 可再收窄） |
 | DELETE | `/api/admin/docs?doc_id=x` | 删除文档（向量+图谱+元数据+缓存） |
 | GET | `/api/formats` | 支持的文件格式 |
 | POST | `/api/extract` | 上传文件仅解析，不入库 |
@@ -101,13 +101,57 @@ curl -s -XPOST localhost:8000/api/query  -d '{"question":"Milvus 支持什么检
   引用清空才删行；还有别的文档/记忆引用就改写 `refs`/`freq`。先写改写行再删旧行，避免中途失败留下空窗。
 - **`mode` 切换自动清对面产物**：`rag → graph` 删旧分块，`graph → rag` 调 `DeleteDocGraph`，
   不需要先手工 `DeleteDoc`。
-- **租户隔离**：`rag_documents` 加 `tenant_id`（默认 `public` 回填历史行），
-  `DocumentRepo.List/ListDocIDs` 是 `(tenantID, userID)` 四参；`Ingest` 会拒绝覆盖别的租户的 `doc_id`。
-  检索时把租户 + 用户白名单下推到 Milvus 过滤表达式。
+- **租户隔离**：`rag_documents` 加 `tenant_id`（默认 `public` 回填历史行）；
+  `Ingest` 会拒绝覆盖别的租户的 `doc_id`。检索时把租户 + 用户白名单下推到 Milvus 过滤表达式。
+- **三层知识（作用域）**：`rag_documents.scope`，取值 `system` / `tenant` / `user`（默认）。
+  规则与实现见下节「三层知识」。
 - **删除顺序**：先删分块 → `DetachDocRefs` 摘图谱引用 → 删 MySQL 元数据 → 清 Redis 缓存；
   图谱这一步失败只写 `graph_warning`，不阻断删除。
 - **测试**：`rag_test.go`（分流/去重/删除/统计/重复入库清旧）、`tenant_test.go`（跨租户）、
   `graphrag/ingest_test.go`（旧引用先摘后写、他人引用不误删）。
+
+## 三层知识：平台通用 / 租户共享 / 个人私有
+
+一条文档的可见范围由 `scope` + `user_id` + `tenant_id` 三者共同决定，
+判定只有一处实现（`internal/biz/rag/scope.go` 的 `Visible` / `CanWriteDoc`），
+仓储 SQL（`DocumentRepo.visibilityCond`）是它的等价改写。
+
+| scope | 谁能看见 | 谁能写 / 删 | 典型内容 |
+| --- | --- | --- | --- |
+| `system` | 所有租户、所有用户 | 平台管理员（`platform:config`） | 产品手册、协议条款、通用规范 |
+| `tenant` | 同租户的所有用户 | 租户管理员（`tenant:manage`）或贡献者本人 | 部门制度、客户名单、项目背景 |
+| `user`（默认） | 仅本人 | 本人 | 个人笔记、草稿、一次性资料 |
+
+可见性判定（任一成立即可见）：
+
+```
+scope = 'system'
+OR (scope = 'tenant' AND tenant_id = 当前租户)
+OR (scope = 'user'   AND tenant_id = 当前租户 AND user_id = 当前用户)
+```
+
+几个刻意的取舍：
+
+- **作用域落在 MySQL，不进 Milvus**。检索隔离本来就是「MySQL 算 doc_id 白名单 →
+  Milvus 过滤 `doc_id in [...]`」，白名单先于向量检索生效，三层知识只是把这条规则
+  从「按人」推广成「按层」，不需要动向量库 schema（标量字段不支持在线加列，
+  改 schema 等于重建集合 + 重灌全部向量）。
+- **GraphRAG 自动跟随**。图谱节点的归属是 `chunk_refs` 里的 `doc#idx`，
+  可见文档集合一变，`RecallScoped` / `QueryScoped` 的召回边界就跟着变，
+  不需要在实体上再存一份 tenant/user。
+- **默认最保守**。不传 `scope` 一律当 `user`；未知取值直接 400 而不是静默降级——
+  「写错了但看起来成功了」会让本该私有的内容以更宽的可见性落库。
+- **不能靠换作用域抢文档**。`doc_id` 全局唯一，重灌时按「文档既有作用域」判定
+  （`CanWriteDoc`），租户管理员也不能把别人的私有文档改成租户共享。
+- **作者可以升/降自己的文档**：`scope` 参与 `ON DUPLICATE KEY UPDATE`，
+  个人笔记想共享给团队时直接重导入并改 `scope` 即可。
+
+已知边界（后续要收的话按这个方向）：
+
+- 图谱实体是**跨作用域合并**的（同名实体累加 `chunk_refs`，描述取最长的一段）。
+  因此一条私有文档可能让公共实体的描述里含一句只有作者写过的表述。
+  严格隔离需要把私有知识放到独立 collection，或给实体加 `scope` 列（要重建集合）。
+- 记忆（`memories`）还没有 `tenant_id`，与知识库的三层模型尚未对齐。
 
 ## 与 k8s 部署的关系
 

@@ -217,3 +217,18 @@ func TestTaskScopedByTenant(t *testing.T) {
 		t.Fatalf("同 userID 的另一租户不应看到任务，实际 %d 个", len(other))
 	}
 }
+
+// 池内状态必须覆盖 paused：审批超时扫描靠 ListTasks(Status=paused) 找候选，
+// 漏掉它就会一直报「未知任务状态」，挂起任务永远不超时。
+func TestInPoolCoversEveryLiveStatus(t *testing.T) {
+	for _, s := range []string{TaskPending, TaskRunning, TaskPaused} {
+		if !InPool(s) {
+			t.Fatalf("%q 应属于任务池状态", s)
+		}
+	}
+	for _, s := range []string{TaskSucceeded, TaskFailed, TaskCanceled, ""} {
+		if InPool(s) {
+			t.Fatalf("%q 不该被当成任务池状态", s)
+		}
+	}
+}

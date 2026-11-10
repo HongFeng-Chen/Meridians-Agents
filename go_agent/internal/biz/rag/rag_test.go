@@ -132,12 +132,15 @@ func (f *fakeRepo) Get(ctx context.Context, docID string) (*Document, error) {
 	}
 	return nil, nil
 }
-func (f *fakeRepo) List(ctx context.Context, tenantID, userID string, limit int) ([]Document, error) {
+func (f *fakeRepo) List(ctx context.Context, tenantID, userID, scope string, limit int) ([]Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]Document, 0, len(f.docs))
 	for _, d := range f.docs {
-		if !visibleTo(d, tenantID, userID) {
+		if !Visible(d, tenantID, userID) {
+			continue
+		}
+		if scope != "" && d.Scope != scope {
 			continue
 		}
 		out = append(out, *d)
@@ -151,7 +154,7 @@ func (f *fakeRepo) ListDocIDs(ctx context.Context, tenantID, userID string) ([]s
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.docs))
 	for _, d := range f.docs {
-		if !visibleTo(d, tenantID, userID) {
+		if !Visible(d, tenantID, userID) {
 			continue
 		}
 		out = append(out, d.DocID)
@@ -159,20 +162,6 @@ func (f *fakeRepo) ListDocIDs(ctx context.Context, tenantID, userID string) ([]s
 	return out, nil
 }
 
-// visibleTo 模拟仓储的 (tenant, user) 双重过滤；空归属视为同域（历史数据）
-func visibleTo(d *Document, tenantID, userID string) bool {
-	dt, du := d.TenantID, d.UserID
-	if dt == "" {
-		dt = "public"
-	}
-	if tenantID != "" && dt != tenantID {
-		return false
-	}
-	if userID != "" && du != "" && du != userID {
-		return false
-	}
-	return true
-}
 func (f *fakeRepo) Delete(ctx context.Context, docID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

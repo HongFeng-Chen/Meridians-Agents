@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, OPERATIONS } from '../api.js';
 import { Alert, Badge, EmptyState, Panel, Spinner, StatCard } from '../components/UI.jsx';
 import { IconDoc, IconRefresh, IconTrash } from '../components/Icons.jsx';
+import { SCOPES, ScopeBadge } from '../components/Scope.jsx';
 
 export default function Admin() {
   const [stats, setStats] = useState(null);
@@ -11,6 +12,8 @@ export default function Admin() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(null);
+  // 作用域筛选：列表本来就只返回「可见的三层知识」，这里只是换个视角
+  const [scopeFilter, setScopeFilter] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +52,10 @@ export default function Admin() {
   };
 
   const totalChunks = docs.reduce((sum, d) => sum + d.chunks, 0);
+  const shown = useMemo(
+    () => (scopeFilter ? docs.filter((d) => (d.scope || 'user') === scopeFilter) : docs),
+    [docs, scopeFilter],
+  );
 
   // 接口清单直接来自 proto 生成的契约（OPERATIONS），不再手写维护
   const ops = useMemo(
@@ -75,12 +82,33 @@ export default function Admin() {
         title="文档管理"
         desc="删除文档会一并清理仅被该文档引用的图谱节点；跨文档共享实体将保留"
         actions={
-          <button className="btn ghost sm" type="button" onClick={load} disabled={loading}>
-            {loading ? <Spinner text="加载中" /> : <><IconRefresh size={15} /> 刷新</>}
-          </button>
+          <>
+            <div className="chips">
+              <button
+                type="button"
+                className={`chip ${scopeFilter === '' ? 'active' : ''}`}
+                onClick={() => setScopeFilter('')}
+              >
+                全部
+              </button>
+              {SCOPES.map((s) => (
+                <button
+                  key={s.value}
+                  type="button"
+                  className={`chip ${scopeFilter === s.value ? 'active' : ''}`}
+                  onClick={() => setScopeFilter(s.value)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <button className="btn ghost sm" type="button" onClick={load} disabled={loading}>
+              {loading ? <Spinner text="加载中" /> : <><IconRefresh size={15} /> 刷新</>}
+            </button>
+          </>
         }
       >
-        {docs.length === 0 ? (
+        {shown.length === 0 ? (
           <EmptyState icon={IconDoc} title="暂无已入库文档" desc="前往「RAG · 文档导入」写入内容" />
         ) : (
           <div className="table-wrap">
@@ -88,15 +116,21 @@ export default function Admin() {
               <thead>
                 <tr>
                   <th>文档 ID</th>
+                  <th>作用域</th>
+                  <th>归属</th>
                   <th>来源</th>
                   <th className="num">分块数</th>
                   <th className="num">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {docs.map((d) => (
+                {shown.map((d) => (
                   <tr key={d.doc_id}>
                     <td className="mono ellipsis" title={d.doc_id}>{d.doc_id}</td>
+                    <td><ScopeBadge scope={d.scope} /></td>
+                    <td className="mono ellipsis" title={`${d.user_id || '—'} @ ${d.tenant_id || '—'}`}>
+                      {d.user_id || '—'} @ {d.tenant_id || '—'}
+                    </td>
                     <td className="ellipsis" title={d.source}>{d.source || '—'}</td>
                     <td className="num">{d.chunks}</td>
                     <td className="num">
