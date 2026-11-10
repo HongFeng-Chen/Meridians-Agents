@@ -26,6 +26,8 @@ const (
 	StatusDisabled = "disabled"
 
 	SourceManual = "manual"
+	// SourceLDAP LDAP/AD 首次登录自动建号时的来源标记
+	SourceLDAP = "ldap"
 )
 
 // 领域错误：service 层按 errors.Is 映射成 HTTP 状态码。
@@ -72,6 +74,9 @@ type User struct {
 	Role   string
 	Status string
 	Source string
+	// PasswordHash bcrypt 哈希。只在登录链路与改密接口内部流转；
+	// admin 列表/详情的 proto 映射不包含它，永远不会出现在 API 响应里。
+	PasswordHash string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -10,6 +10,7 @@ import (
 	adminv1 "go_agent/api/admin/v1"
 	agentfactoryv1 "go_agent/api/agentfactory/v1"
 	aiplatformv1 "go_agent/api/aiplatform/v1"
+	authv1 "go_agent/api/auth/v1"
 	conversationv1 "go_agent/api/conversation/v1"
 	harnessv1 "go_agent/api/harness/v1"
 	historyv1 "go_agent/api/history/v1"
@@ -57,6 +58,8 @@ func NewHTTPServer(
 	aiPlatformSvc *service.AIPlatformService,
 	harnessSvc *service.HarnessService,
 	adminSvc *service.AdminService,
+	authSvc *service.AuthService,
+	policySvc *service.PolicyService,
 	auditUC *audit.UseCase,
 ) *http.Server {
 	g := newGate(sec)
@@ -121,6 +124,10 @@ func NewHTTPServer(
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, harnessSvc)
 	// /api/admin/tenants、/api/admin/users（系统管理：多租户 + 成员名册）
 	adminv1.RegisterAdminServiceHTTPServer(srv, adminSvc)
+	// /api/auth/login（公开）、/api/auth/me（带令牌）：用户名密码登录 + 当前身份
+	authv1.RegisterAuthServiceHTTPServer(srv, authSvc)
+	// /api/auth/policies、/api/auth/bindings（Casbin 策略管理，平台管理员）
+	authv1.RegisterPolicyServiceHTTPServer(srv, policySvc)
 	// /mcp/platform（平台内置 MCP 端点：任务中心 / 会话 / 链路数据，只读、仅本机）
 	registerPlatformMCP(srv, platformSvc)
 	// /api/mcp/tool-approvals/**（高危工具调用的审批：列表 / 批准 / 驳回）、

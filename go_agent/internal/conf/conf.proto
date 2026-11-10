@@ -37,6 +37,64 @@ message Auth {
   repeated string publicPaths = 8;
   // 静态令牌 → "user:tenant"（内网脚本 / 巡检用，比签 JWT 省事）
   map<string, string> staticTokens = 9;
+  // 用户名密码登录（本地 bcrypt + LDAP/AD）
+  Login login = 10;
+}
+
+// Login 用户名密码登录配置。
+//
+// /api/auth/login 在 enabled=true 时成为公开端点（无需令牌即可调用），
+// 登录成功签发与网关同密钥的 HS256 JWT——验签逻辑完全复用现有 Verifier，
+// 不引入第二种令牌格式。
+message Login {
+  // 开放用户名密码登录；关闭时端点返回 404，行为与之前完全一致
+  bool enabled = 1;
+  // 签发令牌有效期（秒），默认 43200 = 12h；登录态不宜过长
+  int64 tokenTTLSeconds = 2;
+  // LDAP / AD 登录（password 为空或用户 source=ldap 时走这里）
+  LDAP ldap = 3;
+}
+
+// LDAP LDAP / Active Directory 登录配置。
+//
+// 验证流程：服务账号 bind → 按 user_filter 搜出用户 DN → 用「用户 DN + 用户密码」
+// 再 bind 一次（密码验证永远在 AD 侧完成，平台不落明文）→ 读 memberOf 组 →
+// 按 groupRoleMappings 映射角色，首次登录自动建号（source=ldap）。
+message LDAP {
+  // ldap://host:389 或 ldaps://host:636；ldaps 走 TLS，ldap 可配 startTLS
+  string url = 1;
+  // 对 ldap:// 连接升级 StartTLS
+  bool startTLS = 2;
+  // 自签证书的域控需要置 true（仅限内网，公网不要开）
+  bool skipTLSVerify = 3;
+  // 服务账号 DN + 密码（AD 一般不允许匿名搜索）；留空尝试匿名
+  string bindDN = 4;
+  string bindPassword = 5;
+  // 搜索起点，如 DC=corp,DC=example,DC=com
+  string baseDN = 6;
+  // 用户过滤器，%s 会替换成登录名；AD 默认按 sAMAccountName 查
+  string userFilter = 7;
+  string userIDAttr = 8;
+  string displayNameAttr = 9;
+  string emailAttr = 10;
+  // 组归属属性，AD 默认 memberOf；OpenLDAP 常见 memberOf（overlay）或需另查
+  string memberOfAttr = 11;
+  // AD 组 → 平台角色：组 DN 含 Group 关键字（大小写不敏感）即命中，自上而下取第一个
+  repeated GroupRole groupRoleMappings = 12;
+  // 未命中任何组时的兜底角色（默认 user）
+  string defaultRole = 13;
+  // 登录用户归属租户（AD 不感知租户概念，统一落一个租户）
+  string defaultTenant = 14;
+  // 首次登录自动在 users 表建号；false 时未登记用户直接拒绝
+  bool autoProvision = 15;
+}
+
+// GroupRole AD 组到平台角色的映射
+message GroupRole {
+  // 组名或组 DN 的关键片段，如 "Meridians-PlatformAdmins" 或 "CN=Meridians-Admins,"
+  string group = 1;
+  // authz 规范角色：platform_admin | tenant_admin | developer | operator | auditor | user
+  string role = 2;
 }
 
 // RateLimit 网关限流：按「租户 + 路由」做令牌桶，超限返回 429 + Retry-After。

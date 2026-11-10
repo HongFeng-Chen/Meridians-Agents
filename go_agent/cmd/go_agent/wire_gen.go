@@ -11,6 +11,7 @@ import (
 	"go_agent/internal/biz/agentfactory"
 	aiplatform2 "go_agent/internal/biz/aiplatform"
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/authn"
 	"go_agent/internal/biz/conversation"
 	"go_agent/internal/biz/embedder"
 	"go_agent/internal/biz/harness"
@@ -242,6 +243,16 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	}
 	orgUseCase := org.New(orgRepo)
 	adminService := service.NewAdminService(orgUseCase)
+	authnUseCase := authn.New(orgRepo, security)
+	authService := service.NewAuthService(authnUseCase)
+	casbinEngine, err := repo2.NewAuthzEngine(dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	policyService := service.NewPolicyService(casbinEngine)
 	auditRepo, err := repo2.NewAuditRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -250,7 +261,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 		return nil, nil, err
 	}
 	auditUseCase := audit.New(auditRepo)
-	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, auditUseCase)
+	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, policyService, auditUseCase)
 	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, platformMCPService)
 	return app, func() {
 		cleanup3()

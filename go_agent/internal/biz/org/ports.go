@@ -34,4 +34,17 @@ type Repo interface {
 	CountActiveAdmins(ctx context.Context, tenantID string, excludeID int64) (int, error)
 	// CountUsers 租户内成员数（删除租户前的守卫）
 	CountUsers(ctx context.Context, tenantID string) (int, error)
+
+	// FindUserByUsername 按（租户, 用户名）取成员——登录链路的入口查询。
+	// 返回的 User 不带密码哈希（列表/详情不该有它），验密用下面的 AuthenticatePassword。
+	// 不存在返回 ErrUserNotFound。
+	FindUserByUsername(ctx context.Context, tenantID, username string) (*User, error)
+	// GetUserCredentials 取用户的密码哈希与状态（登录验密专用，走独立方法避免
+	// 密码材料混进通用 User 结构）。不存在返回 ErrUserNotFound。
+	GetUserCredentials(ctx context.Context, tenantID, username string) (passwordHash string, status string, err error)
+	// SetPasswordHash 写入/重置密码哈希（bcrypt 之后的结果，长度有限校验在 biz 层）
+	SetPasswordHash(ctx context.Context, id int64, passwordHash string) error
+	// SyncLDAPUser LDAP 登录后的档案同步：存在则更新档案与角色，不存在且
+	// provision=true 时建号（source=ldap）。返回最终用户。
+	SyncLDAPUser(ctx context.Context, tenantID, username, displayName, email, role string, provision bool) (*User, error)
 }

@@ -18,4 +18,6 @@ var ProviderSet = wire.NewSet(
 	NewAIPlatformService,
 	NewHarnessService,
 	NewAdminService,
+	NewAuthService,
+	NewPolicyService,
 )

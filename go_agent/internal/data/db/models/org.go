@@ -37,8 +37,11 @@ type UserPO struct {
 	Role string `gorm:"column:role;size:32;not null;default:'user';index:idx_users_role" json:"role"`
 	// Status active | disabled
 	Status string `gorm:"column:status;size:16;not null;default:'active';index:idx_users_status" json:"status"`
-	// Source 来源：manual（控制台登记）
+	// Source 来源：manual（控制台登记）| ldap（AD/LDAP 首次登录自动建号）
 	Source string `gorm:"column:source;size:16;not null;default:'manual'" json:"source"`
+	// PasswordHash bcrypt 哈希（本地密码登录用）；空 = 该用户只能走 LDAP 验密。
+	// 平台永远不存明文密码，重置密码 = 写入新哈希。
+	PasswordHash string `gorm:"column:password_hash;size:128;not null;default:''" json:"-"`
 
 	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at;not null" json:"updated_at"`

@@ -4,6 +4,7 @@ import (
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/aiplatform"
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/authn"
 	"go_agent/internal/biz/conversation"
 	"go_agent/internal/biz/embedder"
 	"go_agent/internal/biz/history"
@@ -67,6 +68,9 @@ var ProviderSet = wire.NewSet(
 	// 系统管理：多租户与成员名册（tenants / users）。
 	// 规则都在用例里（public 不可删、key 不可改、最后一个管理员保护），repo 只做存取。
 	org.New,
+
+	// 登录用例：本地 bcrypt 密码 + LDAP/AD 验密，签发与网关同密钥的 JWT
+	authn.New,
 
 	// 模型客户端
 	embedder.NewEmbedding,

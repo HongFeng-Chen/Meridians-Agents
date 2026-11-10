@@ -16,8 +16,9 @@ import {
   aiplatform,
   harness,
   admin,
+  auth,
 } from './api/generated/index.js';
-import { ApiError, OPERATIONS } from './api/http.js';
+import { ApiError, OPERATIONS, setAuthToken, authToken, clearAuthToken } from './api/http.js';
 
 export {
   rag,
@@ -32,8 +33,13 @@ export {
   aiplatform,
   harness,
   admin,
+  auth,
   ApiError,
   OPERATIONS,
+  // 登录态工具：Login 页与顶栏登出按钮用
+  setAuthToken,
+  authToken,
+  clearAuthToken,
 };
 
 /** 旧版调用方式（Dashboard / Admin / 问答页仍在使用） */
@@ -62,4 +68,9 @@ export const api = {
   },
   docs: (params) => rag.listDocs(params),
   deleteDoc: (docId) => rag.deleteDoc({ doc_id: docId }),
+
+  // 登录与身份（后端未开启 login 时 me 返回 404，App 据此跳过登录门）
+  login: (payload) => auth.login(payload),
+  authMe: () => auth.me({}),
+  listPolicies: () => auth.listPolicies(),
 };

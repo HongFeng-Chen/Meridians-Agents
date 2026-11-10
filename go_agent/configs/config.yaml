@@ -52,6 +52,33 @@ security:
       - /mcp/platform
     # 静态令牌 → "user:tenant"，适合巡检脚本与内网调用
     staticTokens: {}
+    # 用户名密码登录（本地 bcrypt + LDAP/AD）。
+    # 开启需要同时配置 jwtSecret（签发与验签同密钥）。
+    login:
+      enabled: ${AUTH_LOGIN_ENABLED:false}
+      # 登录令牌有效期（秒），默认 12h
+      tokenTTLSeconds: ${AUTH_LOGIN_TTL:43200}
+      # LDAP / AD 验密（url 留空 = 只用本地密码）。
+      # 验证流程：服务账号 bind → 搜用户 DN → 用户 DN+密码再 bind（密码验证在 AD 侧）→ 读 memberOf 映射角色。
+      # ldap:
+      #   url: ldap://ad.corp.example.com:389   # 或 ldaps://host:636
+      #   startTLS: true                        # ldap:// 可升级 StartTLS
+      #   skipTLSVerify: false                  # 自签域控才开
+      #   bindDN: "CN=svc-meridians,OU=ServiceAccounts,DC=corp,DC=example,DC=com"
+      #   bindPassword: ${LDAP_BIND_PASSWORD:}
+      #   baseDN: "DC=corp,DC=example,DC=com"
+      #   userFilter: "(sAMAccountName=%s)"
+      #   displayNameAttr: displayName
+      #   emailAttr: mail
+      #   memberOfAttr: memberOf
+      #   groupRoleMappings:                    # 组 → 平台角色，自上而下取第一个命中
+      #     - group: "Meridians-PlatformAdmins"
+      #       role: platform_admin
+      #     - group: "Meridians-TenantAdmins"
+      #       role: tenant_admin
+      #   defaultRole: user
+      #   defaultTenant: public                 # AD 不感知租户，统一落一个租户
+      #   autoProvision: true                   # 首次登录自动建号（source=ldap）
   rateLimit:
     enabled: ${RATELIMIT_ENABLED:false}
     # 每个「租户 × 路由」的令牌桶

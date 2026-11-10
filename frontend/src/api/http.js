@@ -32,6 +32,11 @@ export function authToken() {
   }
 }
 
+/** 清除令牌（登出用） */
+export function clearAuthToken() {
+  return setAuthToken('');
+}
+
 /** 设置 / 清除令牌（浏览器控制台或设置页调用） */
 export function setAuthToken(token) {
   try {

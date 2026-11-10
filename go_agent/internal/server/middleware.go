@@ -53,6 +53,11 @@ func newGate(sec *conf.Security) *gate {
 		},
 		public: a.GetPublicPaths(),
 	}
+	// 登录端点本身必须免认证（不然鸡生蛋）：显式开启 login 才放行，
+	// 关闭时走 404，不给未上线功能暴露攻击面的机会
+	if a.GetLogin().GetEnabled() {
+		g.public = append(g.public, "/api/auth/login")
+	}
 
 	static := make(map[string]identity.Info, len(a.GetStaticTokens()))
 	for tok, id := range a.GetStaticTokens() {

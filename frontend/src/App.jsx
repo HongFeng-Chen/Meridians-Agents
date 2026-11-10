@@ -18,6 +18,8 @@ import Tasks from './pages/Tasks.jsx';
 import Chats from './pages/Chats.jsx';
 import Tenants from './pages/Tenants.jsx';
 import Users from './pages/Users.jsx';
+import Login from './pages/Login.jsx';
+import Policies from './pages/Policies.jsx';
 import { api } from './api.js';
 import { IconRefresh } from './components/Icons.jsx';
 
@@ -117,6 +119,11 @@ const PAGES = {
     desc: '成员名册：谁属于哪个租户、在该租户是什么角色。名册只做管理，不参与登录认证',
     component: Users,
   },
+  policies: {
+    title: '授权策略',
+    desc: 'Casbin 额外授予：权限点策略与用户角色绑定，改动即时生效（基线仍是内置角色矩阵）',
+    component: Policies,
+  },
 };
 
 function pageFromHash() {
@@ -129,6 +136,9 @@ export default function App() {
   const [page, setPage] = useState(pageFromHash);
   const [health, setHealth] = useState('checking');
   const [refreshTick, setRefreshTick] = useState(0);
+  // 认证探测：pending=查询中，ok=已登录（或后端未启用认证），need=需要登录。
+  // 未开启认证时 /api/auth/me 返回开发态身份，同样落在 ok。
+  const [authState, setAuthState] = useState('pending');
 
   const newChat = () => {
     setRefreshTick((t) => t + 1);
@@ -165,10 +175,38 @@ export default function App() {
     return () => clearInterval(timer);
   }, [checkHealth]);
 
+  // 启动探测一次登录态；登录成功 / 登出后由回调驱动
+  const checkAuth = useCallback(async () => {
+    try {
+      await api.authMe();
+      setAuthState('ok');
+    } catch (err) {
+      // 404 = 后端未开启 login（老版本行为），401 = 需要登录；403（停用）也进登录页
+      setAuthState(err?.status === 404 ? 'ok' : 'need');
+    }
+  }, []);
+
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
   const navigate = (key) => {
     if (key === page) return;
     window.location.hash = `#/${key}`;
   };
+
+  // 登录门：探测期间保持骨架（不闪登录页），需要登录时整页替换
+  if (authState !== 'ok') {
+    return (
+      <div className="app">
+        <main className="main login-main">
+          {authState === 'need' ? (
+            <Login onSuccess={() => { setAuthState('pending'); checkAuth(); window.location.hash = '#/dashboard'; }} />
+          ) : null}
+        </main>
+      </div>
+    );
+  }
 
   const meta = PAGES[page];
   const Page = meta.component;

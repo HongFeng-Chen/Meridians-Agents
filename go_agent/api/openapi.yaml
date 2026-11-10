@@ -837,6 +837,140 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/aiplatform.v1.TestResult'
+    /api/auth/bindings:
+        get:
+            tags:
+                - PolicyService
+            description: ListBindings 列出全部 g 规则（用户角色绑定）
+            operationId: PolicyService_ListBindings
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.ListBindingsReply'
+        post:
+            tags:
+                - PolicyService
+            description: AddBinding 绑定用户角色
+            operationId: PolicyService_AddBinding
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/auth.v1.AddBindingRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.EmptyReply'
+    /api/auth/bindings/remove:
+        post:
+            tags:
+                - PolicyService
+            description: RemoveBinding 解绑用户角色
+            operationId: PolicyService_RemoveBinding
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/auth.v1.RemoveBindingRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.EmptyReply'
+    /api/auth/login:
+        post:
+            tags:
+                - AuthService
+            description: |-
+                Login 用户名密码登录；认证未开启 login 时返回 404。
+                 这是公开端点（白名单直通），失败统一 401 不区分原因。
+            operationId: AuthService_Login
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/auth.v1.LoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.LoginReply'
+    /api/auth/me:
+        get:
+            tags:
+                - AuthService
+            description: Me 当前身份：需要令牌；认证关闭时返回开发态身份。
+            operationId: AuthService_Me
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.MeReply'
+    /api/auth/policies:
+        get:
+            tags:
+                - PolicyService
+            description: ListPolicies 列出全部 p 规则
+            operationId: PolicyService_ListPolicies
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.ListPoliciesReply'
+        post:
+            tags:
+                - PolicyService
+            description: AddPolicy 追加 p 规则（已存在则幂等成功）
+            operationId: PolicyService_AddPolicy
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/auth.v1.AddPolicyRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.EmptyReply'
+    /api/auth/policies/remove:
+        post:
+            tags:
+                - PolicyService
+            description: RemovePolicy 删除 p 规则
+            operationId: PolicyService_RemovePolicy
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/auth.v1.RemovePolicyRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/auth.v1.EmptyReply'
     /api/conversations:
         get:
             tags:
@@ -898,15 +1032,7 @@ paths:
                     type: string
             requestBody:
                 content:
-                    multipart/form-data:
-                        schema:
-                            type: object
-                            properties:
-                                file:
-                                    type: string
-                                    format: binary
-                            required:
-                                - file
+                    application/json: {}
                 required: true
             responses:
                 "200":
@@ -1226,15 +1352,7 @@ paths:
                     type: string
             requestBody:
                 content:
-                    multipart/form-data:
-                        schema:
-                            type: object
-                            properties:
-                                file:
-                                    type: string
-                                    format: binary
-                            required:
-                                - file
+                    application/json: {}
                 required: true
             responses:
                 "200":
@@ -3642,15 +3760,7 @@ paths:
                     type: string
             requestBody:
                 content:
-                    multipart/form-data:
-                        schema:
-                            type: object
-                            properties:
-                                file:
-                                    type: string
-                                    format: binary
-                            required:
-                                - file
+                    application/json: {}
                 required: true
             responses:
                 "200":
@@ -4747,6 +4857,138 @@ components:
                     type: boolean
                 is_default:
                     type: boolean
+        auth.v1.AddBindingRequest:
+            required:
+                - bindings
+            type: object
+            properties:
+                bindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.RoleBinding'
+        auth.v1.AddPolicyRequest:
+            required:
+                - rules
+            type: object
+            properties:
+                rules:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.PolicyRule'
+        auth.v1.EmptyReply:
+            type: object
+            properties: {}
+        auth.v1.ListBindingsReply:
+            type: object
+            properties:
+                bindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.RoleBinding'
+        auth.v1.ListPoliciesReply:
+            type: object
+            properties:
+                policies:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.PolicyRule'
+        auth.v1.LoginReply:
+            type: object
+            properties:
+                token:
+                    type: string
+                    description: 'HS256 JWT，后续请求放 Authorization: Bearer <token>'
+                expires_at:
+                    type: string
+                    description: 过期时间（RFC3339），前端据此提前刷新/重新登录
+                auth_source:
+                    type: string
+                    description: 验证方式：local | ldap
+            description: LoginReply 登录结果。
+        auth.v1.LoginRequest:
+            required:
+                - username
+                - password
+            type: object
+            properties:
+                username:
+                    type: string
+                    description: 用户名；LDAP 用户直接用 AD 账号名（sAMAccountName）
+                password:
+                    type: string
+                tenant:
+                    type: string
+                    description: |-
+                        目标租户：本地密码登录用（同租户内用户名唯一，跨租户同名是不同的人）；
+                         LDAP 登录忽略此字段（统一落 ldap.default_tenant）。留空 = public。
+            description: LoginRequest 用户名密码登录。
+        auth.v1.MeReply:
+            type: object
+            properties:
+                user_id:
+                    type: string
+                tenant_id:
+                    type: string
+                roles:
+                    type: array
+                    items:
+                        type: string
+                display_name:
+                    type: string
+                email:
+                    type: string
+                source:
+                    type: string
+                    description: 名册来源：manual | ldap（认证关闭时为空）
+            description: MeReply 当前登录身份（从令牌解出 + 名册补充档案）。
+        auth.v1.PolicyRule:
+            required:
+                - sub
+                - perm
+            type: object
+            properties:
+                sub:
+                    type: string
+                dom:
+                    type: string
+                perm:
+                    type: string
+            description: |-
+                PolicyRule 一条授权规则（casbin p 规则）：给 sub 在 dom 租户内授 perm 权限。
+                 sub 可为用户名或 role:<角色>；dom 为租户键，"*" 表示所有租户；perm 形如 "platform:config"。
+        auth.v1.RemoveBindingRequest:
+            required:
+                - bindings
+            type: object
+            properties:
+                bindings:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.RoleBinding'
+        auth.v1.RemovePolicyRequest:
+            required:
+                - rules
+            type: object
+            properties:
+                rules:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/auth.v1.PolicyRule'
+        auth.v1.RoleBinding:
+            required:
+                - username
+                - role
+            type: object
+            properties:
+                username:
+                    type: string
+                role:
+                    type: string
+                dom:
+                    type: string
+            description: |-
+                RoleBinding 一条角色绑定（casbin g 规则）：把用户在 dom 租户内绑成 role 角色。
+                 role 取 authz 规范角色或 role:<角色> 写法；dom 为租户键，"*" 表示全局。
         conversation.v1.AddDebateRoleReply:
             type: object
             properties:
@@ -7941,6 +8183,8 @@ tags:
            - 成员增删改需要 tenant:manage，且非平台管理员被限制在自己租户内。
     - name: AgentFactoryService
       description: AgentFactoryService Agent 低代码工厂 + 异步任务管理。
+    - name: AuthService
+      description: AuthService 登录与身份。
     - name: ConversationService
     - name: HarnessService
       description: HarnessService 评测 Harness：用例集 / 用例 / 运行管理。
@@ -7956,6 +8200,8 @@ tags:
 
          注意：gorilla/mux 按注册顺序匹配，/memory/long/stats 必须排在
          /memory/long/{id} 之前，因此静态路径的 RPC 先声明。
+    - name: PolicyService
+      description: PolicyService Casbin 策略管理（platform:config）。
     - name: PromptService
     - name: RagService
       description: RagService RAG 与 GraphRAG 的统一入口。

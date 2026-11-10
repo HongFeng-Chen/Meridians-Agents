@@ -350,3 +350,53 @@ func TestDeleteUserProtections(t *testing.T) {
 		t.Fatalf("删除普通成员应成功: %v", err)
 	}
 }
+
+// —— 新增的登录链路方法（memRepo 不参与登录用例的单测，空实现保证接口完整）——
+
+func (r *memRepo) FindUserByUsername(_ context.Context, tenantID, username string) (*User, error) {
+	for i := range r.users {
+		if r.users[i].TenantID == tenantID && r.users[i].Username == username {
+			u := *r.users[i]
+			return &u, nil
+		}
+	}
+	return nil, ErrUserNotFound
+}
+
+func (r *memRepo) GetUserCredentials(_ context.Context, tenantID, username string) (string, string, error) {
+	for i := range r.users {
+		if r.users[i].TenantID == tenantID && r.users[i].Username == username {
+			return r.users[i].PasswordHash, r.users[i].Status, nil
+		}
+	}
+	return "", "", ErrUserNotFound
+}
+
+func (r *memRepo) SetPasswordHash(_ context.Context, id int64, hash string) error {
+	for i := range r.users {
+		if r.users[i].ID == id {
+			r.users[i].PasswordHash = hash
+			return nil
+		}
+	}
+	return ErrUserNotFound
+}
+
+func (r *memRepo) SyncLDAPUser(_ context.Context, tenantID, username, displayName, email, role string, provision bool) (*User, error) {
+	if u, err := r.FindUserByUsername(context.Background(), tenantID, username); err == nil {
+		u.DisplayName, u.Email, u.Role = displayName, email, role
+		return u, nil
+	}
+	if !provision {
+		return nil, ErrUserNotFound
+	}
+	var maxID int64
+	for id := range r.users {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	u := &User{ID: maxID + 1, TenantID: tenantID, Username: username, DisplayName: displayName, Email: email, Role: role, Status: StatusActive, Source: SourceLDAP}
+	r.users[u.ID] = u
+	return u, nil
+}

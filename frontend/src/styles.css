@@ -1782,3 +1782,32 @@ pre.block {
   display: inline-block;
 }
 .link-btn:hover { text-decoration: underline; }
+
+/* —— 登录页 —— */
+.login-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8vh;
+}
+.login-wrap { width: min(420px, 92vw); }
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-form .btn { margin-top: 4px; }
+
+/* —— 授权策略页 —— */
+.policy-form {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.4fr auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border, #e2e8f0);
+}
+@media (max-width: 720px) {
+  .policy-form { grid-template-columns: 1fr 1fr; }
+}

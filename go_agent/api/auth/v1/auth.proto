@@ -1,0 +1,155 @@
+// Package auth.v1 定义身份与授权的对外契约。
+//
+// 两条线：
+//   - AuthService：用户名密码登录（本地 bcrypt + LDAP/AD）与当前身份查询。
+//     登录成功签发与网关同密钥的 HS256 JWT，验签逻辑完全复用现有 Verifier。
+//   - PolicyService：Casbin 策略管理。内置角色矩阵是兜底基线，这里管理的是
+//     「额外授予」——给具体用户直接授权限（p 规则）或绑角色（g 规则），
+//     改动即时生效，不需要重启。管理操作要求 platform:config。
+syntax = "proto3";
+
+package auth.v1;
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "go_agent/api/auth/v1;v1";
+
+// —— 登录 ——
+
+// LoginRequest 用户名密码登录。
+message LoginRequest {
+  // 用户名；LDAP 用户直接用 AD 账号名（sAMAccountName）
+  string username = 1 [(google.api.field_behavior) = REQUIRED, json_name = "username"];
+  string password = 2 [(google.api.field_behavior) = REQUIRED, json_name = "password"];
+  // 目标租户：本地密码登录用（同租户内用户名唯一，跨租户同名是不同的人）；
+  // LDAP 登录忽略此字段（统一落 ldap.default_tenant）。留空 = public。
+  string tenant = 3 [json_name = "tenant"];
+}
+
+// LoginReply 登录结果。
+message LoginReply {
+  // HS256 JWT，后续请求放 Authorization: Bearer <token>
+  string token = 1 [json_name = "token"];
+  // 过期时间（RFC3339），前端据此提前刷新/重新登录
+  string expires_at = 2 [json_name = "expires_at"];
+  // 验证方式：local | ldap
+  string auth_source = 3 [json_name = "auth_source"];
+}
+
+// MeReply 当前登录身份（从令牌解出 + 名册补充档案）。
+message MeReply {
+  string user_id = 1 [json_name = "user_id"];
+  string tenant_id = 2 [json_name = "tenant_id"];
+  repeated string roles = 3 [json_name = "roles"];
+  string display_name = 4 [json_name = "display_name"];
+  string email = 5 [json_name = "email"];
+  // 名册来源：manual | ldap（认证关闭时为空）
+  string source = 6 [json_name = "source"];
+}
+
+// —— Casbin 策略 ——
+
+// PolicyRule 一条授权规则（casbin p 规则）：给 sub 在 dom 租户内授 perm 权限。
+// sub 可为用户名或 role:<角色>；dom 为租户键，"*" 表示所有租户；perm 形如 "platform:config"。
+message PolicyRule {
+  string sub = 1 [(google.api.field_behavior) = REQUIRED, json_name = "sub"];
+  string dom = 2 [json_name = "dom"];
+  string perm = 3 [(google.api.field_behavior) = REQUIRED, json_name = "perm"];
+}
+
+// RoleBinding 一条角色绑定（casbin g 规则）：把用户在 dom 租户内绑成 role 角色。
+// role 取 authz 规范角色或 role:<角色> 写法；dom 为租户键，"*" 表示全局。
+message RoleBinding {
+  string username = 1 [(google.api.field_behavior) = REQUIRED, json_name = "username"];
+  string role = 2 [(google.api.field_behavior) = REQUIRED, json_name = "role"];
+  string dom = 3 [json_name = "dom"];
+}
+
+message ListPoliciesReply {
+  repeated PolicyRule policies = 1 [json_name = "policies"];
+}
+
+message ListBindingsReply {
+  repeated RoleBinding bindings = 1 [json_name = "bindings"];
+}
+
+message AddPolicyRequest {
+  repeated PolicyRule rules = 1 [(google.api.field_behavior) = REQUIRED, json_name = "rules"];
+}
+
+message AddBindingRequest {
+  repeated RoleBinding bindings = 1 [(google.api.field_behavior) = REQUIRED, json_name = "bindings"];
+}
+
+message RemovePolicyRequest {
+  repeated PolicyRule rules = 1 [(google.api.field_behavior) = REQUIRED, json_name = "rules"];
+}
+
+message RemoveBindingRequest {
+  repeated RoleBinding bindings = 1 [(google.api.field_behavior) = REQUIRED, json_name = "bindings"];
+}
+
+message EmptyReply {}
+
+// AuthService 登录与身份。
+service AuthService {
+  // Login 用户名密码登录；认证未开启 login 时返回 404。
+  // 这是公开端点（白名单直通），失败统一 401 不区分原因。
+  rpc Login(LoginRequest) returns (LoginReply) {
+    option (google.api.http) = {
+      post: "/api/auth/login"
+      body: "*"
+    };
+  }
+  // Me 当前身份：需要令牌；认证关闭时返回开发态身份。
+  rpc Me(EmptyReply) returns (MeReply) {
+    option (google.api.http) = {
+      get: "/api/auth/me"
+    };
+  }
+}
+
+// PolicyService Casbin 策略管理（platform:config）。
+service PolicyService {
+  // ListPolicies 列出全部 p 规则
+  rpc ListPolicies(EmptyReply) returns (ListPoliciesReply) {
+    option (google.api.http) = {
+      get: "/api/auth/policies"
+    };
+  }
+  // AddPolicy 追加 p 规则（已存在则幂等成功）
+  rpc AddPolicy(AddPolicyRequest) returns (EmptyReply) {
+    option (google.api.http) = {
+      post: "/api/auth/policies"
+      body: "*"
+    };
+  }
+  // RemovePolicy 删除 p 规则
+  rpc RemovePolicy(RemovePolicyRequest) returns (EmptyReply) {
+    option (google.api.http) = {
+      post: "/api/auth/policies/remove"
+      body: "*"
+    };
+  }
+  // ListBindings 列出全部 g 规则（用户角色绑定）
+  rpc ListBindings(EmptyReply) returns (ListBindingsReply) {
+    option (google.api.http) = {
+      get: "/api/auth/bindings"
+    };
+  }
+  // AddBinding 绑定用户角色
+  rpc AddBinding(AddBindingRequest) returns (EmptyReply) {
+    option (google.api.http) = {
+      post: "/api/auth/bindings"
+      body: "*"
+    };
+  }
+  // RemoveBinding 解绑用户角色
+  rpc RemoveBinding(RemoveBindingRequest) returns (EmptyReply) {
+    option (google.api.http) = {
+      post: "/api/auth/bindings/remove"
+      body: "*"
+    };
+  }
+}

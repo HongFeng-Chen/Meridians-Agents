@@ -160,6 +160,13 @@ func Allowed(ctx context.Context, p Perm) bool {
 	if identity.AdminAllowed(ctx) {
 		return true
 	}
+	// Casbin 额外授予优先（策略 / 角色绑定，运维在数据库改、即时生效）；
+	// 未命中落回内置角色矩阵——它是代码评审的基线，不会因为策略表误删而失权。
+	if info := identity.From(ctx); info.UserID != "" {
+		if engineAllow(info.UserID, info.TenantID, p) {
+			return true
+		}
+	}
 	return Can(Roles(ctx), p)
 }
 
@@ -171,4 +178,29 @@ func HasRole(ctx context.Context, want Role) bool {
 		}
 	}
 	return false
+}
+
+// KnownPerm 权限点是否是规范定义（策略管理接口的入参校验用）
+func KnownPerm(p Perm) bool {
+	switch p {
+	case PermPlatformConfig, PermTenantManage, PermAgentDevelop, PermTaskOperate, PermTaskApprove, PermAuditRead:
+		return true
+	}
+	return false
+}
+
+// KnownRole 角色是否是规范角色（策略绑定 / 登录的入参校验用）
+func KnownRole(r Role) bool {
+	_, ok := matrix[Normalize(string(r))]
+	return ok
+}
+
+// AllPerms 全部规范权限点（前端下拉用）
+func AllPerms() []Perm {
+	return []Perm{PermPlatformConfig, PermTenantManage, PermAgentDevelop, PermTaskOperate, PermTaskApprove, PermAuditRead}
+}
+
+// AllRoles 全部规范角色（前端下拉用）
+func AllRoles() []Role {
+	return []Role{RolePlatformAdmin, RoleTenantAdmin, RoleDeveloper, RoleOperator, RoleAuditor, RoleUser}
 }

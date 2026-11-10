@@ -24,6 +24,7 @@ import (
 	adminv1 "go_agent/api/admin/v1"
 	agentfactoryv1 "go_agent/api/agentfactory/v1"
 	aiplatformv1 "go_agent/api/aiplatform/v1"
+	authv1 "go_agent/api/auth/v1"
 	conversationv1 "go_agent/api/conversation/v1"
 	harnessv1 "go_agent/api/harness/v1"
 	historyv1 "go_agent/api/history/v1"
@@ -63,6 +64,8 @@ func registeredRoutes(t *testing.T) map[string]bool {
 	aiplatformv1.RegisterAIPlatformServiceHTTPServer(srv, (*AIPlatformService)(nil))
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, (*HarnessService)(nil))
 	adminv1.RegisterAdminServiceHTTPServer(srv, (*AdminService)(nil))
+	authv1.RegisterAuthServiceHTTPServer(srv, (*AuthService)(nil))
+	authv1.RegisterPolicyServiceHTTPServer(srv, (*PolicyService)(nil))
 
 	out := map[string]bool{}
 	err := srv.WalkRoute(func(ri khttp.RouteInfo) error {

@@ -327,3 +327,89 @@ func toUser(p *models.UserPO) org.User {
 		UpdatedAt:   p.UpdatedAt,
 	}
 }
+
+// —— 登录链路 ——
+
+// FindUserByUsername 按（租户, 用户名）取成员。租户隔离沿用唯一索引
+// uk_users_tenant_username：同租户内唯一，跨租户允许同名（那是不同的人）。
+func (r *OrgRepo) FindUserByUsername(ctx context.Context, tenantID, username string) (*org.User, error) {
+	var row models.UserPO
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND username = ?", ownerOr(tenantID), username).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, org.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	u := toUser(&row)
+	return &u, nil
+}
+
+// GetUserCredentials 登录验密专用：只取密码哈希与状态，不构造完整档案。
+func (r *OrgRepo) GetUserCredentials(ctx context.Context, tenantID, username string) (string, string, error) {
+	var row models.UserPO
+	err := r.db.WithContext(ctx).
+		Select("password_hash", "status").
+		Where("tenant_id = ? AND username = ?", ownerOr(tenantID), username).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", "", org.ErrUserNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return row.PasswordHash, row.Status, nil
+}
+
+// SetPasswordHash 写入/重置密码哈希
+func (r *OrgRepo) SetPasswordHash(ctx context.Context, id int64, passwordHash string) error {
+	res := r.db.WithContext(ctx).Model(&models.UserPO{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"password_hash": passwordHash, "updated_at": time.Now()})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return org.ErrUserNotFound
+	}
+	return nil
+}
+
+// SyncLDAPUser LDAP 登录后的档案同步。
+//
+// 角色以「组映射结果」为准（每次登录都会同步）：AD 里的组成员关系变了，
+// 平台角色跟着变，不需要管理员来平台手工改——这是 LDAP 接入的核心收益。
+// 停用状态不受影响（disabled 用户在登录用例里就被拒了，走不到这里）。
+func (r *OrgRepo) SyncLDAPUser(ctx context.Context, tenantID, username, displayName, email, role string, provision bool) (*org.User, error) {
+	u, err := r.FindUserByUsername(ctx, tenantID, username)
+	if err == nil {
+		u.DisplayName = displayName
+		u.Email = email
+		u.Role = role
+		if uerr := r.UpdateUser(ctx, u); uerr != nil {
+			return nil, uerr
+		}
+		return u, nil
+	}
+	if !errors.Is(err, org.ErrUserNotFound) {
+		return nil, err
+	}
+	if !provision {
+		return nil, org.ErrUserNotFound
+	}
+	nu := &org.User{
+		TenantID:    ownerOr(tenantID),
+		Username:    username,
+		DisplayName: displayName,
+		Email:       email,
+		Role:        role,
+		Status:      org.StatusActive,
+		Source:      org.SourceLDAP,
+	}
+	if err := r.CreateUser(ctx, nu); err != nil {
+		return nil, err
+	}
+	return nu, nil
+}

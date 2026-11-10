@@ -38,6 +38,8 @@ const SERVICE_GROUPS = {
   AIPlatformService: { group: 'aiplatform', label: 'AI 平台（千问 / 百炼）' },
   HarnessService: { group: 'harness', label: '评测 Harness' },
   AdminService: { group: 'admin', label: '系统管理（租户 / 成员）' },
+  AuthService: { group: 'auth', label: '登录与身份' },
+  PolicyService: { group: 'auth', label: 'Casbin 策略管理' },
 };
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
