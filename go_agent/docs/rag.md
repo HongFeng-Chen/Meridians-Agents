@@ -146,6 +146,22 @@ OR (scope = 'user'   AND tenant_id = 当前租户 AND user_id = 当前用户)
 - **作者可以升/降自己的文档**：`scope` 参与 `ON DUPLICATE KEY UPDATE`，
   个人笔记想共享给团队时直接重导入并改 `scope` 即可。
 
+### V2：空间白名单优先，三层作用域兜底
+
+V2 引入知识空间后，可见性判定多了一层前置：文档可以挂到某个空间（`rag_documents.space_id`），
+`rag.visibleDocIDs` 先问 `space.SpaceScope.AllowedSpaceIDs(ctx, …)` 拿到可读空间集合，再换算成 `doc_id` 白名单。
+
+| 情况 | 判定 |
+| --- | --- |
+| 文档有 `space_id` | 按空间树 + 继承（home / container / isolated）+ 显式共享判定；个人空间 `isolated` 不继承父级 |
+| 文档无 `space_id`（旧数据） | 回落到上面的三层作用域表达式，行为与 V2 之前完全一致 |
+
+- 白名单仍在 MySQL 算、仍然下推成 Milvus 的 `doc_id in [...]` 过滤——**没有改向量库 schema**，
+  所以升级不需要重建集合。
+- GraphRAG 共用同一份白名单（`visibleDocIDs`），因此图谱召回边界与检索一致。
+- 已知边界：白名单是表达式，文档量大到超过 Milvus 表达式长度上限时要改「按空间分集合」或标量过滤
+  （`docs/architecture-v2.md` §13 第 1 条）。
+
 已知边界（后续要收的话按这个方向）：
 
 - 图谱实体是**跨作用域合并**的（同名实体累加 `chunk_refs`，描述取最长的一段）。

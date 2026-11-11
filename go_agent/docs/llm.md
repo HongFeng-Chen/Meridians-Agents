@@ -129,6 +129,30 @@ data:
   优先级/兜底继续回答（只打 warn 日志）
 - **多实例**：变更只在当前实例立即生效，其余实例最多 `reloadTTL` 后收敛
 
+## 调用记账与链路（V2）
+
+所有调用通道（主链路 `Chat` / 指定数据源 `ChatSource` / conf 兜底 / `ChatWith` 带 options）最终都走
+`Manager.callOnce`：**一次真实请求 = 一条 `llm.chat` span = 一条 `usage_records`**（重试 / 降级各算一条）。
+
+| 环节 | 做什么 |
+| --- | --- |
+| 埋点 | `trace.Start(ctx, "llm.chat")`，写 `llm.model / llm.source / llm.purpose / prompt_tokens / completion_tokens / duration_ms` |
+| 记账 | `tokens × 单价 = 微元`（整数域），`price_version` 由单价自动生成；异步写 `usage_records`，失败只 warn |
+| 归属 | `llm.WithMeta` 把 `TaskID`（任务链路）或 `RefKind/RefID`（如 `harness_run:14`）带进记录；`WithMeta` 按字段合并，零值不改 |
+| 落点 | `llm.CostSink` → `data/db/repo.CostSink` → `usage.Repo.Add`；绕过 `usage.UseCase.Record`（那是需要 principal 的用户自助上报） |
+
+```bash
+# 单任务成本 / 单次评测成本
+curl -s 'localhost:8000/api/v2/usage/summary?task_id=112&group_by=kind'
+curl -s 'localhost:8000/api/v2/usage/summary?ref_kind=harness_run&ref_id=14'
+
+# 该任务的链路（span 树里 llm.chat 的条数应与上面 calls 相等）
+curl -s 'localhost:8000/api/v2/traces?task_id=112'
+```
+
+新增调用通道时**必须**经过 `callOnce`，否则既没有链路也没有账单——
+P4 首次实现就把 `chat()` 漏在外面，评测的模型直连调用在 trace 里完全不可见。
+
 ## 测试
 
 ```bash
@@ -136,4 +160,5 @@ go test ./internal/biz/llm/ -v
 ```
 
 覆盖：conf 播种、场景路由、多源失败自动切换（httptest 模拟上游 500/200）、
-密钥脱敏、创建校验（名称/base_url/模型）、删除唯一启用源被拒、连通性测试。
+密钥脱敏、创建校验（名称/base_url/模型）、删除唯一启用源被拒、连通性测试、
+成本换算与 `price_version`、`WithMeta` 字段合并（ref 不被下游覆盖）。

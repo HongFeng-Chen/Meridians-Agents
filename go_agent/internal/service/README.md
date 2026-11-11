@@ -47,6 +47,17 @@ var (
   并校验「静态路径必须排在 `{param}` 之前」；
 - 业务逻辑的测试在各 biz 包里，本包只做冒烟（起 server 打真实 HTTP）。
 
+## 例外：/api/v2（手写路由）
+
+`/api/v2/**`（身份、空间与共享、资源与授权、成本、任务运维、链路、Agent 快照）目前**不走 proto**，
+handler 直接写在 `internal/server/v2.go`，所以：
+
+- 不产生 gRPC，也不在 `contract_test.go` 的 openapi 比对范围内（路由与字段以代码为准）；
+- 鉴权走 `withMiddleware`（Principal 注入），读他人数据要校验归属、越权读走 `requireOperator`；
+- 返回是稳定字段名的 JSON 对象，前端 `src/api.js` 的 `v2` 命名空间按字段名取值，改名等于破坏契约。
+
+迁移到 proto 是路线图里的持续项（见 `docs/architecture-v2.md` §12）。
+
 ## 例外：平台 MCP 服务（非 proto）
 
 `platform_mcp_service.go` **不对应任何 proto**，是 `/mcp/platform` 的适配层：

@@ -9,24 +9,24 @@
 
 ## 1. 结论先行
 
-V2 的十二个改造方向里，本次落地了「地基」五件事：
+V2 的十二个改造方向，逐项状态如下（P1 地基 → P2 执行链路 → P3 快照与委派 → P4 可观测与评估）：
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | External Identity / Principal | ✅ 已落地 | 多 Provider（HS256 / JWKS / OIDC discovery / Introspection / API Key），与 V1 令牌兼容 |
 | 统一资源模型 + 资源授权 | ✅ 已落地 | `resource_metadata` / `resource_permissions` / `resource_versions`，默认拒绝 |
 | Knowledge Space | ✅ 已落地 | 树形空间、三种继承模式、显式共享、统一 RetrievalScope，RAG/GraphRAG 共用 |
-| Cost Center | ✅ 基础版 | `usage_records` 追加式用量 + 多维聚合 |
+| Cost Center | ✅ 已落地 | `usage_records` 追加式用量 + 多维聚合；LLM 调用自动记账，`task_id` / `ref_kind+ref_id` 双键归属（§7） |
 | Worker 分布式执行 | ✅ 已落地 | `worker_instances` 注册/心跳 + 任务租约 + `retry_wait`/`timeout` 状态 + 死信 |
 | 工具调用幂等 | ✅ 已落地 | `mcp_call_records` + `WithIdemKey`：任务重试链路命中即回放，失败不缓存 |
 | Agent 配置快照 | ✅ 已落地 | `agent_snapshots`（checksum 去重、只增不改）；任务钉 `snapshot_id`，执行按快照加载配置 |
 | 运行时二次授权 | ✅ 已落地 | `agent`/`tool`/`skill` 登记资源执行前重新判权（快照 ≠ 永久权限） |
 | 委派上下文 | ✅ 已落地 | 子任务 `delegated_caps`：多级委派单调收紧、深度闸门、归属继承 |
-| Agent 不可变快照 | ⏳ 待做 | 现有 `agent_definitions.version` 只是递增号，未冻结依赖 |
-| Evaluation / Observability | ⏳ 待做 | 已有 harness 与 metrics，缺统一 Trace 与评估快照 |
-| API v2 / SDK | 🟡 部分 | `/api/v2` 已可用（空间/资源/成本/me），未走 proto/OpenAPI 生成 |
+| Agent 不可变快照 | 🟡 部分 | 快照已冻结 Agent 自身配置（含依赖清单），但 Prompt / Skill / MCP 依赖资源仍无版本号（§13 第 10 条） |
+| Evaluation / Observability | ✅ 已落地 | OpenTelemetry Trace（进程内环形缓冲 + 可选 OTLP）；评测运行绑定快照/数据集版本/模型/Trace，并带心跳回收（§11） |
+| API v2 / SDK | 🟡 部分 | `/api/v2` 已可用（身份/空间/资源/成本/任务/链路），未走 proto/OpenAPI 生成 |
 
-为什么先做这五件：它们是其余模块的前置依赖。没有统一资源与空间，
+为什么先做前面那批：它们是其余模块的前置依赖。没有统一资源与空间，
 Worker 拿到的任务无法判断「这个 Agent 还能不能检索这个知识库」；
 没有 Principal，第三方系统接入只能继续复用平台内部用户体系；
 没有租约，多副本部署时「进程被 kill 掉的任务」会永远停在 running。
@@ -42,12 +42,12 @@ Worker 拿到的任务无法判断「这个 Agent 还能不能检索这个知识
 | 5. Knowledge Space | 三层 scope（system/tenant/user） | 空间树 + 继承 + 共享 + 迁移映射；文档双写 `space_id` | 空间配额、跨空间引用计数、控制台页面 |
 | 6. RAG | MySQL 算 doc_id 白名单 → Milvus 过滤 | 白名单改由空间授权计算；旧数据自动回落三层作用域 | 空间级 embedding 配置、按库路由 |
 | 7. GraphRAG | 图谱靠 `chunk_refs` 跟随文档可见性 | 与 RAG 共用同一份白名单（`visibleDocIDs`） | 实体级 ACL、跨空间实体映射 |
-| 8. Agent 快照 | 定义版本号、能力白名单 | 资源版本表可承载快照 | 发布时冻结 Prompt/Skill/MCP/RAG 版本 |
-| 9. Skill / MCP 安全 | 审批、egress、redact、凭证脱敏 | — | Skill 沙箱（容器/WASM）、Tool 级 ACL 接入 |
-| 10. Worker | Redis 队列 + 进程内 worker 池 + CAS 状态机 | `worker_instances` 注册/心跳；任务租约续期与回收；`retry_wait`/`timeout`、死信；启动恢复按 attempt 限制 | 外部副作用幂等键、跨节点任务分片（当前靠 Redis 队列竞争） |
-| 11. Evaluation | harness 四张表 + 评分 | — | 评估与 Agent 快照/数据集版本绑定 |
-| 12. Cost Center | `llm_calls` 记录 token | `usage_records` + 聚合 API | 计价规则版本管理、账单结算 |
-| 13. Observability | access log + metrics | — | OpenTelemetry Trace（跨 LLM/RAG/MCP 子调用） |
+| 8. Agent 快照 | 定义版本号、能力白名单 | `agent_snapshots`（定义全文 + checksum + 依赖清单），任务/RunOnce/子任务钉 `snapshot_id` | 发布时冻结 Prompt/Skill/MCP 依赖资源的版本号 |
+| 9. Skill / MCP 安全 | 审批、egress、redact、凭证脱敏 | 任务链路工具调用幂等键（`mcp_call_records`） | Skill 沙箱（容器/WASM）、Tool 级 ACL 接入 |
+| 10. Worker | Redis 队列 + 进程内 worker 池 + CAS 状态机 | `worker_instances` 注册/心跳；任务租约续期与回收；`retry_wait`/`timeout`、死信；启动恢复按 attempt 限制；工具调用幂等 | 跨节点任务分片（当前靠 Redis 队列竞争） |
+| 11. Evaluation | harness 四张表 + 评分 | 运行绑定快照/数据集版本与校验和/模型/Trace；运行期心跳 + 失联回收；成本按 `ref_kind=harness_run` 归集 | 断点续跑（回收只收尾不重跑） |
+| 12. Cost Center | `llm_calls` 记录 token | `usage_records` 自动记账（`llm.CostSink`）+ 聚合 API；`task_id` 与 `ref_kind/ref_id` 双归属键 | 计价规则版本管理、账单结算 |
+| 13. Observability | access log + metrics | OpenTelemetry：一次执行一条 Trace，Span 覆盖 task/llm/mcp/skill/rag/graphrag；进程内环形缓冲 + 可选 OTLP 双落点 | 跨进程 `traceparent` 透传、长期留存依赖 collector |
 
 ---
 
@@ -69,6 +69,11 @@ Worker 拿到的任务无法判断「这个 Agent 还能不能检索这个知识
 | 模型 | `internal/data/db/models/{resource,space,usage}.go` | 五张表 |
 | 仓储 | `internal/data/db/repo/{resource,space,usage}.go` | gorm 实现（含 sqlite 可跑的测试） |
 | 接入 | `internal/server/v2.go`、`internal/server/middleware.go` | /api/v2 路由；网关 Principal 注入与外部 Provider |
+| 链路追踪 | `internal/pkg/trace/`（`trace.go` / `store.go` / `otlp.go`） | span 构造、进程内环形缓冲（含运行中占位）、可选 OTLP/gRPC 导出 |
+| 埋点落点 | `agentfactory.go`（`task.run`）、`capability.go`（`skill.run`）、`mcp/mcp.go`（`mcp.call`）、`llm/manager.go`（`callOnce` → `llm.chat`）、`rag/rag.go`、`harness/harness.go` | 一次真实子调用一个 span；`llm.chat` 与用量记录一一对应 |
+| 成本记账 | `internal/biz/llm/cost.go`、`internal/data/db/repo/usage_sink.go` | `tokens × 单价 = 微元`（整数域）；`task_id` / `ref_kind+ref_id` 归属 |
+| 评测绑定与恢复 | `internal/biz/harness/{harness,ref,recovery}.go`、`internal/data/harnessrunner/runner.go` | 版本/快照绑定、ref 归属、心跳续跳与失联回收 |
+| 评测仓储 | `internal/data/db/repo/harness.go`、`internal/data/db/models/harness.go` | 四表 + 版本/绑定/心跳列 + 回收 SQL（`COALESCE(heartbeat_at, created_at)`） |
 | RAG 集成 | `internal/biz/rag/rag.go`（`visibleDocIDs`）、`internal/data/db/repo/document.go` | 空间白名单 + 旧数据回退 |
 
 测试：
@@ -76,14 +81,18 @@ Worker 拿到的任务无法判断「这个 Agent 还能不能检索这个知识
 ```bash
 go test ./internal/biz/space/ ./internal/biz/resource/ \
         ./internal/biz/usage/ ./internal/pkg/principal/ \
-        ./internal/biz/agentfactory/ \
-        ./internal/data/db/repo/ ./internal/biz/rag/
+        ./internal/biz/agentfactory/ ./internal/biz/harness/ \
+        ./internal/data/db/repo/ ./internal/biz/rag/ \
+        ./internal/pkg/trace/ ./internal/biz/llm/
 ```
 
 覆盖的核心语义：默认拒绝、显式 Deny 优先、跨租户硬隔离、
 restricted 不继承、个人空间 isolated、子树成环拦截、版本不可覆盖、
 空间白名单与旧作用域回退；租约回收后进 retry_wait、超上限进死信、
-超截止时间落 timeout 并归档、执行体心跳过期判离线。
+超截止时间落 timeout 并归档、执行体心跳过期判离线；
+span 树父子与运行中可见、无初始化时不产生假 TraceID、环形缓冲淘汰、
+评测版本推进与历史 Run 保留旧 checksum、ref 归属穿透 agentfactory、
+僵尸运行被回收为 failed。
 
 ---
 
@@ -721,7 +730,8 @@ ALTER TABLE harness_runs
    进程内环形存储 + 可选 OTLP 导出双落点，`/api/v2/traces` 按 task_id 查 span 树。
 2. ✅ Evaluation Run 绑定 Agent 快照 + 数据集版本/哈希 + 模型 + Trace，保证分数可复现。
 3. ✅ 成本与 Trace 通过 `task_id` 关联：LLM 调用自动写 `usage_records`，
-   `group_by=task` 支持单任务成本看板。
+   `group_by=task` 支持单任务成本看板；没有任务行的调用（评测 `model:` 目标、Judge）
+   用 `ref_kind/ref_id` 归集，`group_by=ref` 支持单次运行成本（§7、§11.6）。
 4. ✅ 所有 LLM 调用收敛到 `Manager.callOnce`（一次真实请求 = 一条 span = 一条用量记录）：
    主链路 / 指定数据源 / conf 兜底三条路径共用同一处埋点与记账，
    同时消掉了 `chat()` 与 `chatWithOptOnce()` 两套重复的候选源循环。
@@ -729,7 +739,9 @@ ALTER TABLE harness_runs
 **持续项**
 - 各业务资源（agent/prompt/skill/mcp/kb）在创建时调用 `resource.Register`，逐步收口。
 - `/api/v2` 迁移到 proto 生成（与现有 `api/*/v1` 一致），产出 OpenAPI 与前端 SDK。
-- Console 增加空间树、共享、成本三个页面（当前只有接口）。
+- Console 增加空间树、共享、成本、Worker/死信四个页面（当前只有接口）。
+- 评测断点续跑：复用已完成的 `harness_run_items`，只补缺失用例（现在是「回收不重跑」）。
+- `usage_records` 的 `ref` 写进任务行，让「一次评测跨异步任务」的成本也能汇总（见 §13 第 21 条）。
 
 ---
 
@@ -741,7 +753,8 @@ ALTER TABLE harness_runs
    同一实体被两个空间引用时会合并展示，来源权限仍各自生效——但社区摘要
    可能包含用户看不到的文档内容，接入 Community Summary 前必须补来源过滤。
 3. **资源注册尚未全覆盖**：新接口可登记资源，但旧业务表不会自动出现。
-   在全部接入前，`Check` 对未登记资源一律返回 false（默认拒绝）。
+   直接调 `Check` 时未登记资源一律返回 false（默认拒绝）；任务执行边界为避免存量任务全失败，
+   会先问 `Registered`，未登记按旧数据放行（见第 9 条）。两处行为不同，是有意的。
 4. **`/api/v2` 未进 OpenAPI**：前端 SDK 目前不包含这些接口。
 5. **显式授权不做「权限上限」推导**：授权人只要具备 `manage_permission` 就能授出
    `execute` 等动作；如需「不能授出比自己更大的权限」，要引入权限偏序表。

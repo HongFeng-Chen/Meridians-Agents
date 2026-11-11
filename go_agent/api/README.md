@@ -350,6 +350,10 @@ agent_key/温度/耗时/ok/错误/字符数/token 三项）——业务通过 `l
 | POST | `/api/agentfactory/tasks/{id}/approval` | ApproveTask | 审批挂起任务：`{decision: approve/reject, comment?}`；批准后回 pending 续跑 |
 | GET | `/api/agentfactory/tasks/{id}/events` | ListTaskEvents | 任务事件流（trace 链路检索） |
 
+**V2 契约补充**：`AgentTask` 追加 `snapshot_id`(18) / `delegated_caps`(19, repeated) /
+`delegated_restricted`(20, bool) / `trace_id`(21)。委派清单用 `repeated + bool` 而不是一个 JSON 字符串：
+proto3 的 `repeated` 区分不了 `nil`（未受限）与空清单（限制全禁），而这两者对权限边界意义完全不同。
+
 ### ConversationService
 
 会话 id 即任务 id；`/api/conversations/{id}/debates/current` 下的静态段
@@ -445,6 +449,10 @@ agent_key/温度/耗时/ok/错误/字符数/token 三项）——业务通过 `l
 | GET | `/api/harness/runs` | ListRuns | 运行列表（按用例集 / 状态过滤） |
 | GET | `/api/harness/runs/{id}` | GetRun | 运行报告（运行行 + 逐例结果） |
 | DELETE | `/api/harness/runs/{id}` | DeleteRun | 删除运行及其逐例结果 |
+
+**V2 运行字段**（只读，服务端写入）：`snapshot_id` / `snapshot_version` / `dataset_version` /
+`dataset_checksum` / `model` / `trace_id`（可复现），以及 `runner_id` / `heartbeat_at`（心跳与失联回收）。
+`succeeded` 之外新增 `failed`（含「执行体失联」）态；回收后的运行不会自动重跑。
 
 ## 工作流
 

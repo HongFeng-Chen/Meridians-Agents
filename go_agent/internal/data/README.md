@@ -6,7 +6,8 @@
 
 | 目录 | 存储 | 内容 |
 | --- | --- | --- |
-| `db/` | MySQL | `db.go` 连接（`Data`）；`models/` PO 表映射；`repo/` 文档、提示词、记忆、技能、MCP 仓储 |
+| `db/` | MySQL | `db.go` 连接（`Data`）；`models/` PO 表映射；`repo/` 各域仓储（含 `harness.go` 评测四表、`usage.go` 用量、`resource.go` / `space.go` 授权与空间） |
+| `harnessrunner/` | 适配器 | 评测执行端口实现：`agent:` → `agentfactory.RunOnce`，`model:` → `llm.Manager`；`Resolve` 解释 target 并给出快照信息 |
 | `redis/` | Redis | `rdb.go` 连接（`RDBData`）；`models/` 键空间定义；`cache_*.go` 各业务缓存实现；`lock.go` 任务 Redlock（Quorum 加锁 + token CAS 释放/续期） |
 | `milvusdb/` | Milvus | `client.go` 连接（`Client`）；`models/` 集合 Schema 与索引定义；`repo/` 分块、图谱、记忆、MCP 工具向量 Store |
 | `esdb/` `clickhousedb/` | ES / CH | 预留客户端，未接入 wire（启动即强连，按需启用） |
@@ -21,13 +22,21 @@ wire 装配集中在 `data.go` 的 `ProviderSet`；biz 层只依赖接口（port
 | 文件 | 表 |
 | --- | --- |
 | `document.go` | `rag_documents`（`scope` 默认 `user` + `tenant_id` 默认 `public`：列表明暗为「系统 ∪ 本租户共享 ∪ 本人私有」，规则见 `biz/rag/scope.go`） |
-| `memory.go` | `memories`（仅 `user_id`，`tenant_id` 待补，见 HANDOVER 5.5） |
-| `prompt.go` | `prompt_templates`、`prompt_versions` |
+| `memory.go` | `memories`（仅 `user_id`，`tenant_id` 待补，见 HANDOVER 5.5）、`memory_rules`、`memory_recall_logs` |
+| `prompt.go` | `prompt_templates`、`prompt_versions`、`prompt_version_scores`（评测得分回写） |
 | `skill.go` | `skills`、`skill_files`、`skill_hubs` |
-| `mcp.go` | `mcp_servers`、`tools`（MCP 服务与工具元数据；headers/args/env 是 JSON 列，空集合必须写 `{}` / `[]`，不能写空串） |
+| `mcp.go` | `mcp_servers`、`tools`（MCP 服务与工具元数据；headers/args/env 是 JSON 列，空集合必须写 `{}` / `[]`，不能写空串）、`mcp_call_records`（任务链路的工具调用幂等记录，命中即回放） |
 | `llm.go` | `llm_providers`（数据源配置）、`llm_calls`（调用历史：token 用量/耗时/模型/task_id/tenant_id 关联，Manager 异步写入） |
-| `agentfactory.go` | `agent_definitions`、`agent_tasks`（任务池：pending/running/paused，带 `tenant_id`）、`agent_task_history`（终态归档，`FinishTask` 事务迁移 / `ReviveTask` 复活）、`agent_task_events`、`agent_task_checkpoints`（步骤/节点级快照）；capabilities 等是 JSON 列，任务时间列可空、零值写 NULL |
-| `org.go` | `tenants`（隔离域，`tenant_key` 主键、创建后不可改）、`users`（成员名册，`(tenant_id, username)` 唯一；只做管理，不参与登录认证） |
+| `agentfactory.go` | `agent_definitions`、`agent_snapshots`（配置快照：全文 + checksum + 依赖清单，只增不改）、`worker_instances`（执行体注册与心跳）、`agent_tasks`（任务池：pending/running/retry_wait/paused，带 `tenant_id` / 租约 / `attempt` / `snapshot_id` / `delegated_caps` / `trace_id`）、`agent_task_history`（终态归档，`FinishTask` 事务迁移 / `ReviveTask` 复活；含死信原因与委派清单）、`agent_task_events`、`agent_task_checkpoints`（步骤/节点级快照）；capabilities 等是 JSON 列，任务时间列可空、零值写 NULL |
+| `org.go` | `tenants`（隔离域，`tenant_key` 主键、创建后不可改）、`users`（成员名册，`(tenant_id, username)` 唯一；只做管理，参与登录校验） |
+| `conversation.go` | `conversations`、`conversation_messages`、`debates` |
+| `history.go` | `op_histories` |
+| `ai_platform.go` | `ai_platforms`（外部 AI 平台登记，API Key 只进不出） |
+| `harness.go` | `harness_sets`（含 `version/checksum`）、`harness_cases`、`harness_runs`（含快照/数据集版本/模型/trace/心跳列）、`harness_run_items` |
+| `resource.go` | `resource_metadata`、`resource_permissions`、`resource_versions`（统一资源与显式授权） |
+| `space.go` | `knowledge_spaces`、`knowledge_space_shares`（知识空间树与共享） |
+| `usage.go` | `usage_records`（追加式用量：token/成本/`task_id`/`ref_kind`+`ref_id`） |
+| `audit.go` | `audit_events`（授权判定 / 管理面变更 / 高危工具调用） |
 | `doc.go` | 包说明 |
 
 **`milvusdb/models/`** — 集合 Schema，一个集合一个文件（字段常量 + 构造函数同文件）：
@@ -75,3 +84,7 @@ GORM 的 **map 更新不走 struct tag 映射，key 直接当列名**：
   该测试扫描 repo 层所有 map 字面量 key 与全部模型列名比对，写错即失败。
 - 空值与零值语义：`""` 与 `NULL` 不等价。`flow_json` 允许为空（空编排列值为 NULL），
   业务侧「清空编排」需显式写 `NULL` 而不是跳过字段。
+- **时间零值不能进 map 更新**：`time.Time{}` 会被序列化成 `'0000-00-00'`，MySQL 的 `NO_ZERO_DATE`
+  会拒掉**整条 UPDATE**（1292），而调用方往往看不到错误。`repo` 里统一用 `nilIfZero` 转 `*time.Time`；
+  这条规则是被 `harness_runs` 的进度写入坑出来的（状态永远 pending、进度条不动），
+  排查记录见 `docs/architecture-v2.md` §11.6。

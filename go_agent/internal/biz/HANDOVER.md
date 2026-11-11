@@ -1,10 +1,12 @@
 # biz 层交接文档（Handover）
 
 > 适用范围：`go_agent/internal/biz` 全部模块
-> 代码基线：2026-11-01（含会话辩论暂停/恢复、统一操作历史 `conv_id` 继承、评测 harness 骨架、
-> AgentFactory 优雅停机 draining、平台只读 MCP 端点 `platformmcp`）
+> 代码基线：2026-11-11（V2 P2–P4 已落地：任务租约与死信、工具幂等、Agent 快照与二次授权、委派收紧、
+> OpenTelemetry 链路、成本自动记账、评测版本绑定与失联回收）
 > 读者：接手本仓库的后端同学、需要改 biz 行为的平台开发、排查线上问题的值班同学
-> 配套文档：`biz/rag/DESIGN.md`（RAG 详解）、`biz/rag/graphrag/DESIGN.md`（GraphRAG 详解）、`biz/harness/设计方案.md`（评测体系设计）、`biz/agentfactory/DESIGN.md`（Agent 低代码工厂讨论稿）
+> 配套文档：`docs/architecture-v2.md`（V2 现状/上线 SQL/已知边界，**改执行链路或可观测前必读**）、
+> `biz/rag/DESIGN.md`（RAG 详解）、`biz/rag/graphrag/DESIGN.md`（GraphRAG 详解）、
+> `biz/harness/设计方案.md`（评测体系设计）、`biz/agentfactory/DESIGN.md`（Agent 低代码工厂讨论稿）
 
 ---
 
@@ -93,8 +95,8 @@ flowchart LR
 | 模块 | 一句话职责 | 对外入口（HTTP） | 主要存储 | 测试 |
 | --- | --- | --- | --- | --- |
 | `conversation` | 会话目录 + 消息 + LLM 编排对话 + 多角色辩论 | `/api/conversations/**` | MySQL `conversations` `conversation_messages` `debates` | `conversation_test.go` `chat_test.go` |
-| `agentfactory` | Agent 低代码工厂：定义/任务/事件/13 种执行图（含 auto）/worker 池/定时调度 | `/api/agentfactory/**` | MySQL `agent_definitions` `agent_tasks` `agent_task_history` `agent_task_events` `agent_task_checkpoints`；Milvus `{base}_agents`；Redis `af:*` | `agentfactory_test.go` `graph*_test.go` `workflow_test.go` `plan_test.go` `task_state_test.go` `cron_test.go` |
-| `harness` | 评测用例集：黑盒执行 + 规则断言 + LLM Judge + 报告 | `/api/harness/**` | MySQL `harness_sets` `harness_cases` `harness_runs` `harness_run_items` | `harness_test.go` |
+| `agentfactory` | Agent 低代码工厂：定义/任务/13 种执行图（含 auto）/worker 池/定时调度/租约与快照 | `/api/agentfactory/**` `/api/v2/tasks/*` `/api/v2/agents/snapshots` | MySQL `agent_definitions` `agent_snapshots` `worker_instances` `agent_tasks` `agent_task_history` `agent_task_events` `agent_task_checkpoints`；Milvus `{base}_agents`；Redis `af:*` | `agentfactory_test.go` `graph*_test.go` `workflow_test.go` `plan_test.go` `task_state_test.go` `lease_test.go` `snapshot_test.go` `delegation_test.go` `authz_test.go` `cron_test.go` |
+| `harness` | 评测用例集：黑盒执行 + 规则断言 + LLM Judge + 报告；运行绑定快照/数据集版本，带心跳与失联回收 | `/api/harness/**` | MySQL `harness_sets` `harness_cases` `harness_runs` `harness_run_items` | `harness_test.go` `version_test.go` `ref_test.go` `recovery_test.go` |
 | `memory` | 短期（Redis）+ 长期（MySQL+Milvus）+ 记忆图谱 | `/api/memory/**` | MySQL `memories`；Redis `mem:short:*`；Milvus `{base}_memories` | `memory_test.go` |
 | `rag` | 文档入库 + 混合检索问答 + GraphRAG 图谱 | `/api/ingest` `/api/query` `/api/graph/**` | MySQL `rag_documents`；Milvus `{base}`；Redis `rag:ans:*` `rag:lock:ingest:*` | `rag_test.go` `chunker_test.go` |
 | `prompt` | 提示词模板版本化 + 在线生效 + 渲染 | `/api/prompts/**` | MySQL `prompt_templates` `prompt_versions`；Redis `prompt:ver:*` | `prompt_test.go` `template_test.go` |
@@ -104,6 +106,12 @@ flowchart LR
 | `skill` | 技能安装/启停/卸载 + 技能市场 + 落盘 + URL 安装 | `/api/skills/**` `/api/skillhub/**` | MySQL `skills` `skill_files` `skill_hubs`；磁盘 `sync_dir` | `skill_test.go` |
 | `aiplatform` | 外部 AI 平台（千问 / 百炼）：平台登记 + 目录搜索 + MCP 一键接入 + 技能市场联动 | `/api/aiplatform/**` | MySQL `ai_platforms` | `aiplatform_test.go` |
 | `history` | 统一操作历史（5 类「用到了什么」） | `/api/histories` | MySQL `op_histories` | `history_test.go`（ctx 身份叠加） |
+| `space` | 知识空间：树形组织 + 继承（home/container/isolated）+ 显式共享，给 RAG 与资源授权算白名单 | `/api/v2/spaces*` | MySQL `knowledge_spaces` `knowledge_space_shares` | `space_test.go` |
+| `resource` | 统一资源模型与资源级授权：默认拒绝、显式 deny 优先、跨租户硬隔离、版本不可覆盖 | `/api/v2/resources*` | MySQL `resource_metadata` `resource_permissions` `resource_versions` | `resource_test.go` |
+| `usage` | 成本中心：追加式用量 + 多维聚合（task/ref/model/kind/day），LLM 自动记账的落点 | `/api/v2/usage/*` | MySQL `usage_records` | `usage_test.go` |
+| `authn` | 账号与登录：用户名密码 + LDAP/AD 验密，签发本平台令牌 | `/api/auth/**` | MySQL `users` | `authn_test.go` |
+| `org` | 租户与成员名册（规则在用例里，repo 只存取） | `/api/admin/**` | MySQL `tenants` `users` | `org_test.go` |
+| `audit` | 审计事件：授权判定 / 管理面变更 / 高危工具调用，异步批量写 + 保留期清理 | `/api/admin/audits` | MySQL `audit_events` | `audit_test.go` |
 | `embedder` | OpenAI 兼容 Embedding 客户端 | 无（内部能力） | 无 | 无单测 |
 | `agent` | **空目录**（历史残留，无 Go 文件） | — | — | — |
 
@@ -304,6 +312,15 @@ sequenceDiagram
 11. **状态变更一律 CAS**：任务的任何状态迁移都走 `TransitionTask(ctx, id, from, t)`，
     不要 `SaveTask` 直接写 `Status`。`from` 必须列出「这次迁移允许的源状态」，
     输掉 CAS 时按语义处理：取消重读重试、审批返回 409、worker 只补事件不覆盖。
+12. **LLM 调用只走 `Manager.callOnce`**：一次真实请求 = 一条 `llm.chat` span = 一条 `usage_records`。
+    绕开它的新通道既没有链路也没有账单；trace 里 `llm.chat` 条数与用量条数应始终相等。
+13. **成本归属走 `llm.WithMeta`，且是按字段合并**：`TaskID` 服务任务链路，`RefKind/RefID`
+    服务「没有任务行」的调用（如 `harness_run:14`）。零值表示不改，下游设置不得冲掉上游归属。
+14. **map 更新里的时间字段先判零值**：`Updates(map[string]any{"finished_at": t})` 在 `t` 为零值时
+    序列化成 `'0000-00-00'`，MySQL `NO_ZERO_DATE` 会拒掉整条 UPDATE（1292）。统一用 `nilIfZero`，
+    并且不要用 `_ =` 吞掉状态 / 进度写入错误（评测进度曾因此永远停在 0，前端一直 pending）。
+15. **追踪是可选依赖**：未调 `trace.Init` 时全局 noop，`Start` 返回空句柄，业务不要判空也不要假设有 collector；
+    判断「有没有 trace」用 `SpanContext().IsValid()`，noop 的 `TraceID()` 会给全零字符串。
 
 ---
 
@@ -543,15 +560,19 @@ sequenceDiagram
 | `capability.go` | 能力目录（Agent 委派 + MCP 工具 + 技能统一视图）、`InvokeDispatch` | 小 |
 | `factory.go` | `create_agent` 元编程护栏（配额、白名单、防自举、沙箱灰度） | 中 |
 | `cron.go` + `schedule.go` | 5 字段 cron 解析、定时调度器 | 小 |
+| `lease.go` | 执行体注册 / 心跳 / 任务租约续期 / 过期清扫（`ReapExpired`） | 中 |
+| `snapshot.go` | 配置快照：checksum 去重、依赖清单、`LatestSnapshotInfo` / `LatestSnapshotForKey` | 小 |
+| `delegation.go` | 委派收紧：能力求交、通配覆盖、深度闸门、归属继承 | 小 |
+| `authz.go` | 运行时二次授权：agent / tool / skill 执行前重新判权 | 小 |
 | `roles.go` | 监察者（supervisor）/ 风险评审（risk）角色 | 中 |
-| `ports.go` | `Repo` / `VectorStore` / `Cache` / `TaskLock` / `Chatter` / `Embedder` / `ToolPort` | 小 |
+| `ports.go` | `Repo` / `WorkerRepo` / `VectorStore` / `Cache` / `TaskLock` / `Chatter` / `Embedder` / `ToolPort` / `SkillPort` / `ResourceAuthorizer` | 小 |
 
 #### 关键类型
 
 | 类型 | 说明 |
 | --- | --- |
 | `AgentDef` | `AgentKey`（唯一）、`System`、`Capabilities`（能力白名单）、`GraphType`、`MaxTurns`、`Flow`（DAG JSON）、`Members`（编排成员）、`Orchestration`（serial/parallel）、`Schedule`（cron）、`Source`（manual/llm）、`Sandbox`、`Vectorized` |
-| `Task` | `Status`（pending/running/paused/succeeded/failed/canceled）、`Progress`、`Result`、`ErrorMsg`、`ConvID`、`Archived`、`TenantID` |
+| `Task` | `Status`（pending / running / retry_wait / paused / succeeded / failed / canceled / timeout）、`Progress`、`Result`、`ErrorMsg`、`ConvID`、`Archived`、`TenantID`；V2 追加 `SnapshotID`（执行所用配置快照）、`Attempt/MaxAttempts`、`LeaseExpiresAt`、`DeadLetterReason`、`ParentTaskID/Depth`、`DelegatedCaps`（nil=未受限，空切片=全禁）、`TraceID` |
 | `TaskEvent` | `Type`（status/thought/tool_call/delegate/final/error…）、`Turn`、`Payload`（JSON） |
 | `TaskCheckpoint` | `TaskID` + `Seq` + `GraphType` + `Cursor` + `State`（`RunState` JSON）；游标记录「停在哪个步骤/节点」 |
 | `RunState` | 计划（`Steps`/`StepState`）、图（`NodeState`/`EdgeState`）、`Approvals`（审批凭据）、`Turn`/`Cursor` |
@@ -616,6 +637,38 @@ RetryTask: 终态（历史表） ──ReviveTask（插池+删历史）──▶
 | `ApproveTask` | 批准或驳回挂起任务：解出 `ApprovalRequest` → 校验审批人 → 写 `ApprovalGrant` → 审计 → CAS 回 pending |
 | `Stats` | 定义数、各状态任务数、能力数 |
 | `StartWorkers` / `Drain` / `Stop` | worker 池生命周期：`BeforeStart` 启动、`BeforeStop` 排空、`AfterStop` 硬停（见下节） |
+
+#### V2：租约 / 重试 / 幂等 / 快照 / 二次授权 / 委派
+
+**六个机制各自回答一个问题**：
+
+| 机制 | 落点 | 回答的问题 |
+| --- | --- | --- |
+| 执行体注册 + 心跳 | `lease.go` + `worker_instances` | 哪个副本还活着、任务现在归谁 |
+| 任务租约 | `agent_tasks.lease_owner / lease_expires_at` | 进程被 kill 的任务怎么自动回到队列 |
+| 重试退避 + 死信 | `retry_wait` 状态 + `attempt / max_attempts` | 重试几次放弃、放弃后去哪 |
+| 工具调用幂等 | `mcp.WithIdemKey` + `mcp_call_records` | 重试会不会重复下单 / 重复发消息 |
+| 配置快照 | `snapshot.go` + `agent_snapshots` | 事后能不能还原「当时用的哪版配置」 |
+| 运行时二次授权 | `authz.go` + `resource.Check` | 快照里的权限今天还算不算数 |
+
+```text
+pending ──Claim(带租约)──▶ running ──成功──▶ succeeded
+   ▲                          │
+   │                          ├─ 失败且 attempt < max ──▶ retry_wait ──退避到期──▶ pending
+   │                          ├─ attempt ≥ max / 确定性失败 ──▶ failed（归档，写 dead_letter_reason）
+   │                          └─ 超 TaskTimeout ──▶ timeout（归档）
+   └── RequeueInterrupted（启动时扫过期租约，接手上一个进程的任务）
+```
+
+要点（推导与边界见 `docs/architecture-v2.md` §9、§10）：
+
+- **心跳与租约是两件事**：`worker_instances.heartbeat_at / expires_at` 判副本存活；`agent_tasks.lease_expires_at` 判「这条任务归谁、还能不能动」。执行期按 TTL/3 续租，进程死亡即自然过期；清扫器每 `AGENT_SWEEP_INTERVAL` 把过期任务重排。
+- **幂等键只覆盖任务链路**：`task:<id>:turn:<n>:<tool>:<args>` 由 runtime 生成；会话直连工具不带键（会话语义允许重复调用）。失败结果不缓存，只回放成功结果。
+- **快照只增不改**：同内容 checksum 命中即复用，不产生新行；任务 / RunOnce / 子任务的 `snapshot_id` 在提交时固定，执行期只读该行，不会被后续编辑影响。
+- **二次授权 fail-closed**：判权服务报错按「拒绝」处理；未登记资源放行（兼容旧数据），已登记资源必须重新判权。
+- **委派只能更小**：`delegated_caps` 与父级求交；`agent:*` 通配可覆盖 `agent:a/b`；超过 `AGENT_MAX_DELEGATION_DEPTH` 直接拒绝；`user/tenant/conv` 一路继承。
+- **每个任务一条根 span**：`task.run` 在 `executeTaskNow` 起，结束后回写 `agent_tasks.trace_id`；子调用（`llm.chat` / `mcp.call` / `skill.run`）挂在它下面。
+- **运维入口**：`/api/v2/workers`（执行体心跳）、`/api/v2/tasks/leases`（租约分布）、`/api/v2/tasks/dead-letters`（死信）、`/api/v2/agents/snapshots`（快照列表与发布）。
 
 #### 优雅停机（draining）
 
@@ -809,47 +862,50 @@ sequenceDiagram
 
 ### 2.3 harness（评测 Harness）
 
-> ⚠️ **当前状态：未接线**。包内自洽可编译可单测，但没有 proto / service / data repo 实现，
-> 也没有出现在 `biz.go` 或 `data.go` 的 ProviderSet 里。接手第一件事见 5.1。
+> ✅ **当前状态：已接线**（2026-11-02 上线；2026-11-11 补版本绑定、成本归属与失联回收）。
+> proto `api/harness/v1` → `service/harness_service.go` → `harness.New`（data 侧构造）→
+> `dbrepo.NewHarnessRepo` + `harnessrunner.New`。前端「评测中心」已对接。
 
 **定位**：把「这个 Agent / 模型到底行不行」变成可重复的自动化评测。核心是**黑盒**：
 harness 不关心被测对象内部怎么跑，只管「给输入 → 拿输出 → 按规则判分」。
 
-**文件**：`doc.go`（包说明）、`types.go`（模型 + 断言校验 + 加权算分）、`ports.go`（Repo/Runner/Chatter）、
-`harness.go`（用例集/用例/运行编排）、`judge.go`（规则断言 + LLM-as-Judge）、`设计方案.md`（设计取舍）。
+**文件**：`doc.go`（包说明）、`types.go`（模型 + 断言校验 + 加权算分 + `DatasetChecksum`）、
+`ports.go`（Repo/Runner/Chatter）、`harness.go`（用例集/用例/运行编排）、`judge.go`（规则断言 + LLM-as-Judge）、
+`ref.go`（成本归属键 `WithRunRef`）、`recovery.go`（心跳与僵尸回收）、`设计方案.md`（设计取舍）。
 
 #### 关键类型
 
 | 类型 | 说明 |
 | --- | --- |
-| `Set` | 用例集 = 一个被测对象的一组用例（调度单位），`Target` 默认被测对象 |
+| `Set` | 用例集 = 一个被测对象的一组用例（调度单位），`Target` 默认被测对象；V2 追加 `Version` / `Checksum`（只覆盖用例内容） |
 | `Case` | `Input` + `Context`（前置上下文）+ `Expect`（参考答案）+ `Checks`（断言）+ `Tags` |
 | `Check` | `Kind`（7 类）+ `Pattern` + `Weight`（0 按 1 计） |
-| `Run` | 一次运行：`Total/Done/Passed/Failed/Errored/Score/CostMS`，进度实时落库供轮询 |
+| `Run` | 一次运行：`Total/Done/Passed/Failed/Errored/Score/CostMS`；V2 追加 `SnapshotID/SnapshotVersion/DatasetVersion/DatasetChecksum/Model/TraceID`、`RunnerID/HeartbeatAt`（心跳与回收） |
 | `RunItem` | 单用例结果：`Output`、`Checks []CheckResult`、`Score`、`LatencyMS`、token 用量 |
 
-**被测对象前缀**：`agent:<agent_key>`（走 agentfactory 同步执行，复用执行图与能力白名单，trace/LLM 记录自动关联）、
-`model:<模型名>`（走 llm.Manager 直连，做模型横评）。
+**被测对象前缀**：`agent:<agent_key>`（走 agentfactory 同步执行 `RunOnce`，复用执行图与能力白名单，产生独立任务行）、
+`model:<模型名>`（走 llm.Manager 直连，做模型横评）。两路的 LLM 成本都通过 `ref_kind=harness_run&ref_id=<runID>`
+归到这次运行上（`model:` 没有任务行，只有 ref；`agent:` 两者都有）。
 
 **7 类断言**：`contains` / `not_contains` / `regex` / `json_valid` / `min_length` / `max_length` / `llm_judge`。
 `Score` 是加权平均（0-100）；**没有断言（权重全 0）返回 -1 = 不判分**，报告里要区别对待「0 分」和「未判分」。
 
 #### 端口与实现
 
-| 端口 | 设计上的实现 | 现状 |
+| 端口 | 实现 | 关键约束 |
 | --- | --- | --- |
-| `Repo` | `data/db/repo.HarnessRepo`（sets/cases/runs/run_items 四表） | **未实现** |
-| `Runner` | data 层适配器：`agent:` → `agentfactory.UseCase`，`model:` → `llm.Manager` | **未实现** |
-| `Chatter` | `*llm.Manager`（LLM Judge） | 可直接绑定 |
+| `Repo` | `data/db/repo.HarnessRepo`（sets / cases / runs / run_items 四表） | `SaveRun` 走 `nilIfZero`（零值时间会被 MySQL `NO_ZERO_DATE` 整条拒收）；`ReapRuns` 用 `COALESCE(heartbeat_at, created_at)` 判超时 |
+| `Runner` | `data/harnessrunner.Runner`：`agent:` → `agentfactory.RunOnce`，`model:` → `llm.Manager` | `Resolve(ctx,target)` 解释 target（`agent:` 查最新快照、`model:` 即模型名），解析失败返回零值不阻断运行 |
+| `Chatter` | `*llm.Manager`（LLM Judge） | 温度固定 0 |
 
 #### 时序图：StartRun → 并发执行 → 报告
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant API as (待建) HarnessService
+    participant API as HarnessService
     participant UC as harness.UseCase
-    participant DB as Repo(待实现)
+    participant DB as HarnessRepo
     participant G as executeRun goroutine
     participant RN as Runner
     participant J as judge(规则+LLM)
@@ -858,12 +914,16 @@ sequenceDiagram
     API->>UC: StartRun(setID, cfg)
     UC->>DB: GetSet + ListCases(enabledOnly)
     UC->>UC: 校验 target（agent:/model:）、Concurrency 默认 2、Timeout 默认 120s
-    UC->>DB: CreateRun(pending)
+    UC->>UC: DatasetChecksum(cases) → 内容变了才升 Version
+    UC->>RN: Resolve(target) → snapshot_id/snapshot_version/model
+    UC->>DB: CreateRun(pending，写版本/绑定列 + runner_id)
+    UC->>UC: ctx = harness.WithRunRef(ctx, runID)（同时写 llm.CallMeta）
     UC->>UC: 注册 cancel（context.WithoutCancel 派生）
     UC->>G: go executeRun
     UC-->>API: Run（立即返回，前端轮询 GetRun）
 
     G->>DB: SaveRun(running) + DeleteItemsOfRun（清上次结果）
+    G->>UC: startHeartbeat（每 HARNESS_HEARTBEAT_SEC 续 heartbeat_at）
     loop 用例 × 并发池（信号量 = Concurrency）
         G->>G: 每个用例边界检查 ctx.Err()（StopRun 生效点）
         G->>RN: Run(ctx, target, input+context)（per-case 超时）
@@ -882,17 +942,25 @@ sequenceDiagram
     G->>DB: SaveRun(终态 succeeded/failed/canceled + finished_at)
 ```
 
+**失联回收（另一条路径）**：`main` 的 `BeforeStart` 调 `StartRecovery`，启动即扫一次、之后每 `HARNESS_STALE_SEC/2` 一次：
+把 `status IN ('pending','running')` 且 `COALESCE(heartbeat_at, created_at) < now-stale` 的行改成 `failed`，
+`error` 写「执行体失联：心跳超时（进程可能被强制终止）」，并补 `finished_at`。
+
 #### 改动指南 / 坑
 
-- **接线顺序**：proto（`api/harness/v1`）→ `dbrepo.NewHarnessRepo`（四张表）→ `Runner` 适配器
-  （`agent:` 走 `SubmitTask` + 轮询，或新增同步执行入口；`model:` 走 `llm.Manager.ChatWith`）→
-  `biz.go` 加 `harness.New` → `data.go` 加 repo/runner/Bind → `service/harness_service.go`。
+- **接线已完成**（`api/harness/v1` + `dbrepo.NewHarnessRepo` + `harnessrunner.New` + `harness.New` 在 `data.ProviderSet`）；
+  加断言类型改 `judge.go` + proto 的 `Check.kind` 枚举 + 前端编辑表单三处。
 - **不要在 harness 里直接调 `agentfactory` 内部方法**：`Runner` 端口存在的意义就是隔离；
   否则以后想评测外部系统（HTTP Agent、竞品 API）要动 biz 核心。
 - **`StopRun` 是协作式的**：只设置 ctx 取消，正在跑的用例会执行完（可能 120s）。前端要有「停止中」态。
 - **`Errored` 不计入判分分母**：执行报错的用例只记 `RunItem.Error`，不当作 0 分，否则评测结果会误导。
 - **LLM Judge 的温度必须为 0**：`judge.go` 里已固定；自己加断言类型时别引入随机性。
-- **测试**：`harness_test.go` 用 fake Repo/Runner 覆盖「加权算分、无断言 -1、取消边界、错误不计分」。
+- **成本归属**：`WithRunRef` 必须同时写 `llm.CallMeta`，否则 `agent:` 目标进 `runGraph` 重建元数据时会把 ref 丢掉
+  （`TestWithRefCarriesIntoLLMMeta` 锁这条）。
+- **心跳不要走 `SaveRun`**：心跳是独立 `UPDATE heartbeat_at`（条件 `status='running'`），全量写会把并发的进度聚合覆盖回旧值。
+- **回收不重跑**：已写入的用例结果保留，未写入的丢失；要续跑需要新建一次运行（断点续跑未做）。
+- **测试**：`harness_test.go`（算分 / -1 / 取消 / 错误不计分）、`version_test.go`（版本推进与旧 run 保留旧 checksum）、
+  `ref_test.go`（ref 穿透）、`recovery_test.go`（回收与幂等），repo 侧 `harness_recovery_test.go`（真 SQL）。
 
 ---
 
@@ -1771,21 +1839,21 @@ flowchart TB
 
 按「影响面 × 紧急度」排序，每条都给了建议改法。
 
-### 5.1 harness 未接线（P0，功能不可用）
+### 5.1 harness 已接线（2026-11-02 关闭；2026-11-11 补版本绑定与回收）
 
-**现象**：`harness` 包可编译、单测通过，但没有任何 HTTP 接口，管理端看不到评测功能。
+**原现象**：`harness` 包可编译、单测通过，但没有 HTTP 接口，管理端看不到评测功能。
 
-**缺什么**：
+**已完成**：`api/harness/v1` proto + `buf generate`；四表 repo（`harness_sets` / `harness_cases` /
+`harness_runs` / `harness_run_items`）；`Runner` 适配器（`internal/data/harnessrunner`，
+`agent:` → `agentfactory.RunOnce`、`model:` → `llm.Manager`）；wire ProviderSet；
+`internal/service/harness_service.go`；前端「评测中心」。
 
-1. `api/harness/v1/harness.proto` + `buf generate`；
-2. `internal/data/db/models/harness.go` + `repo/harness.go`（四张表：`harness_sets` / `harness_cases` /
-   `harness_runs` / `harness_run_items`）；
-3. `Runner` 适配器（`agent:` → `agentfactory`，`model:` → `llm.Manager.ChatWith`）；
-4. `biz.go` / `data.go` 的 ProviderSet + Bind；
-5. `internal/service/harness_service.go` + 注册。
+**仍存在的边界**（设计取舍，不是 bug）：
 
-**建议**：`Runner` 适配器放 `internal/data/agentrunner/`，避免 biz 之间硬依赖。
-设计细节见 `biz/harness/设计方案.md`。
+1. **回收不重跑**：执行体中途退出时由巡检收为 `failed`，已写入的用例结果保留、未跑的丢失；要续跑需新建运行。
+2. **`model:` 目标没有任务行**：成本只有 `ref`（`harness_run:<id>`）没有 `task_id`，按设计。
+3. **数据集校验和只覆盖内容**：`input/context/expect/checks` 排序后 sha256，不含名称 / 标签 / ID / 时间戳 / 顺序。
+4. **快照取 StartRun 时刻的最新版**：同一批用例隔天再跑可能落在新快照上，跨版本对比要看 `snapshot_version`。
 
 ### 5.2 `WithTask` 覆盖 `conv_id`（P1，链路缺数据）——已修复（2026-10-31）
 
@@ -1996,8 +2064,14 @@ curl -s localhost:8000/api/conversations/c-xxx/debates/current
 | 模块 | 端口 | 实现 | 存储 |
 | --- | --- | --- | --- |
 | conversation | `Repo` | `dbrepo.ConversationRepo` | MySQL 3 表 |
-| agentfactory | `Repo` / `VectorStore` / `Cache` / `TaskLock` / `Chatter` / `Embedder` / `ToolPort` | `dbrepo.AgentFactoryRepo` / `mvrepo.AgentStore` / `redis.AgentFactoryCache` / `redis.TaskLock` / `llm.Manager` / `embedder.EmbeddingClient` / `mcp.UseCase` | MySQL 4 表 + Milvus + Redis |
-| harness | `Repo` / `Runner` / `Chatter` | **未实现** / **未实现** / `llm.Manager` | 待建 |
+| agentfactory | `Repo` / `WorkerRepo` / `VectorStore` / `Cache` / `TaskLock` / `Chatter` / `Embedder` / `ToolPort` / `SkillPort` / `ResourceAuthorizer` | `dbrepo.AgentFactoryRepo` / `dbrepo.WorkerRepo` / `mvrepo.AgentStore` / `redis.AgentFactoryCache` / `redis.TaskLock` / `llm.Manager` / `embedder.EmbeddingClient` / `mcp.UseCase` / `skill.UseCase` / `resource.UseCase` | MySQL 7 表 + Milvus + Redis |
+| harness | `Repo` / `Runner` / `Chatter` / `ScoreRecorder` | `dbrepo.HarnessRepo` / `harnessrunner.Runner` / `llm.Manager` / `dbrepo.PromptRepo`(得分回写) | MySQL 4 表 |
+| space | `Repo` | `dbrepo.SpaceRepo` | MySQL `knowledge_spaces` `knowledge_space_shares` |
+| resource | `Repo` | `dbrepo.ResourceRepo` | MySQL 3 表 |
+| usage | `Repo` | `dbrepo.UsageRepo`（同时实现 `llm.CostSink`） | MySQL `usage_records` |
+| authn | `Repo` / `LDAPVerifier` | `dbrepo.OrgRepo` / `pkg/authn.LDAPClient` | MySQL `users` |
+| org | `Repo` | `dbrepo.OrgRepo` | MySQL `tenants` `users` |
+| audit | `Repo` | `dbrepo.AuditRepo` | MySQL `audit_events` |
 | memory | `LongTermRepo` / `ShortTermStore` / `VectorStore` / `GraphStore`(=graphrag.Store) | `dbrepo.MemoryRepo` / `redis.ShortTermStore` / `mvrepo.MemoryStore` / `mvrepo.GraphStore` | MySQL + Redis + Milvus |
 | rag | `ChunkStore` / `DocumentRepo` / `AnswerCache` / `Locker` / `Embedder` / `Chatter` / `Prompter` | `mvrepo.ChunkStore` / `dbrepo.DocumentRepo` / `redis.AnswerCache` / `redis.AnswerCache` / `embedder` / `llm.Manager` / `prompt.UseCase` | MySQL + Milvus + Redis |
 | graphrag | `Store` / `Embedder` / `Chatter` / `Prompter` / `Splitter` / `Evidence` | `mvrepo.GraphStore` / `embedder` / `llm.Manager` / `prompt.UseCase` / `rag.Chunker` / `rag.evidenceAdapter` | Milvus 2 集合 |
@@ -2019,12 +2093,15 @@ curl -s localhost:8000/api/conversations/c-xxx/debates/current
 | `conversation/debate.go` | `debateMinRoles` / `debateMaxRoles` / `debateMaxRounds` | 2 / 6 / 12 |
 | `conversation/debate.go` | `debateTranscript` / `debateClip` / 暂停轮询 | 40 / 600 / 1.2s |
 | `agentfactory` | `Options.DefaultMaxTurns` / `WorkerCount` / `LockTTL` | 12 / 2 / 30s |
+| `agentfactory`（V2，env 可覆盖） | `LeaseTTL` / `HeartbeatInterval` / `HeartbeatTTL` / `TaskTimeout` / `SweepInterval` / `MaxAttempts` / `MaxDelegationDepth` | 60s / 15s / 45s / 30m / 20s / 3 / 3 |
 | `rag` | `topK` / `topN` / `embedBatch` / `cacheTTL` / 入库锁 | 10 / 5 / 配置 / 配置 / 10min |
 | `graphrag` | `TopK` / `Hops` / `MaxEdges` / `MaxEntities` / `MaxRelations` | 8 / 2 / 200 / 10 / 8 |
 | `memory` | `shortTTL` / `recallTopK` / `historyLimit` | 24h / 8 / 20 |
 | `mcp` | `defaultTopK` / `maxTopK` / `defaultListLimit` | 8 / 50 / 200 |
 | `llm` | 快照 TTL / HTTP 超时 | 30s / 120s |
 | `harness` | `Concurrency` / `PerCaseTimeout` | 2 / 120s |
+| `harness`（V2，env） | `HARNESS_HEARTBEAT_SEC` / `HARNESS_STALE_SEC` | 15s / 90s |
+| `pkg/trace` | `MaxTraces` / `SampleRatio` | 512 / 1.0 |
 | `aiplatform` | `QwenBaseURL` / `QwenCatalogPath` / `QwenStreamablePath` / `QwenSSEPath` | `https://dashscope.aliyuncs.com` / `/api/v1/mcps` / `/api/v1/mcps/{code}/mcp` / `/api/v1/mcps/{code}/sse` |
 
 ## 附录 C：本目录文件索引
@@ -2041,11 +2118,14 @@ internal/biz/
 ├── agentfactory/          ← 2.2
 │   ├── agentfactory.go  runtime.go  graphs.go  graph.go  flow.go  workflow.go
 │   ├── capability.go  factory.go  cron.go  schedule.go  roles.go  types.go  ports.go
+│   ├── lease.go  snapshot.go  delegation.go  authz.go   ← V2：租约 / 快照 / 委派 / 二次授权
 │   ├── DESIGN.md          ← 设计讨论稿（非最终实现说明）
-│   └── *_test.go（5 个：agentfactory / cron / graph / graphs / workflow）
-├── harness/               ← 2.3（未接线）
-│   ├── harness.go  judge.go  types.go  ports.go  doc.go  设计方案.md
-│   └── harness_test.go
+│   └── *_test.go（15 个：agentfactory / approval / authorize / authz / autocompose /
+│                     checkpoint / cron / delegation / graph / graphs / lease / plan /
+│                     snapshot / task_state / workflow）
+├── harness/               ← 2.3（已接线，含版本绑定 / ref 归属 / 心跳回收）
+│   ├── harness.go  judge.go  types.go  ports.go  doc.go  ref.go  recovery.go  设计方案.md
+│   └── harness_test.go  version_test.go  ref_test.go  recovery_test.go
 ├── memory/                ← 2.4
 │   ├── memory.go  detail.go  types.go  ports.go  memory_test.go
 ├── rag/                   ← 2.5
@@ -2068,6 +2148,18 @@ internal/biz/
 │   └── aiplatform.go  types.go  ports.go  aiplatform_test.go
 ├── history/               ← 2.10
 │   └── history.go  types.go  ports.go  history_test.go
+├── space/                 ← V2 知识空间（architecture-v2.md §6）
+│   └── space.go  space_test.go
+├── resource/              ← V2 统一资源与授权（§5）
+│   └── resource.go  resource_test.go
+├── usage/                 ← V2 成本中心（§7）
+│   └── usage.go  usage_test.go
+├── authn/                 ← 账号与登录（用户名密码 + LDAP/AD）
+│   └── authn.go  authn_test.go
+├── org/                   ← 租户与成员名册
+│   └── org.go  types.go  ports.go  org_test.go
+├── audit/                 ← 审计事件（异步批量写 + 保留期清理）
+│   └── audit.go  audit_test.go
 └── embedder/              ← 2.11
     └── embedder.go
 ```
@@ -2082,7 +2174,9 @@ internal/biz/
 - [ ] 跑通 `go build ./... && go test ./internal/biz/...`（全绿）
 - [ ] 手工验证：会话一轮（看 meta）、任务一次（看 events）、RAG 一次入库+问答、辩论一次暂停/恢复
 - [ ] 知道 `/mcp/platform` 是只读 + 仅本机，加工具要改 `biz/platformmcp` 而不是 `server/mcp.go`
-- [ ] 知道 harness 未接线、`biz/agent` 空目录、两套辩论实现
+- [ ] 知道 harness 已接线（运行绑定快照/数据集版本，回收不重跑）、`biz/agent` 空目录、两套辩论实现
+- [ ] 知道 V2 六件事：租约重试、工具幂等、快照只增不改、运行时二次授权、委派收紧、Trace + 成本（见 architecture-v2.md）
+- [ ] 能说清 `llm.chat` 条数为什么必须等于 `usage_records` 条数（一次真实请求 = 一条 span = 一条用量）
 - [ ] 知道接入平台 MCP 服务只走 `biz/aiplatform`（复用 `mcp.UseCase`，不另写连接逻辑），且千问目录接口非公开契约
 - [ ] 知道改配置后必须 `Invalidate()`（llm）与 `invalidate`（prompt）
 

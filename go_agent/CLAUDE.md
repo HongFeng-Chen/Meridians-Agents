@@ -7,8 +7,10 @@
 ## 1. 这是什么
 
 `go_agent` 是 Kratos v3 四层（proto → service → biz → data）的单体服务，同时对外提供 HTTP 与 gRPC，
-一个进程内托管 10 个业务域（会话、Agent 工厂、RAG/GraphRAG、记忆、提示词、MCP、LLM、技能、历史、平台 MCP）。
+一个进程内托管 18 个业务域（会话、Agent 工厂、RAG/GraphRAG、记忆、提示词、MCP、LLM、技能、历史、
+平台 MCP、外部 AI 平台、评测 Harness、知识空间、统一资源、成本中心、账号、租户名册、审计）。
 前端在仓库上一级 `frontend/`（React 19 + Vite），只通过 `/api` 与 `/mcp/platform` 访问后端。
+V2 的执行链路、快照授权、可观测与评估细节见 `docs/architecture-v2.md`。
 
 ## 2. 常用命令
 
@@ -34,8 +36,8 @@ internal/conf/        配置 proto（make config 生成）
 internal/service/     传输适配：DTO ↔ DO、参数校验、错误映射
 internal/biz/         业务用例、领域模型（DO）、repo 接口、typing 错误
 internal/data/        存储实现（MySQL / Redis / Milvus / MCP 客户端 / 技能市场）
-internal/server/      HTTP / gRPC 装配 + 平台 MCP 端点
-internal/pkg/         loader、httpx 等无业务工具
+internal/server/      HTTP / gRPC 装配 + 平台 MCP 端点 + /api/v2 手写路由
+internal/pkg/         loader、httpx、trace（OTel）、principal、authz、budget、egress 等无业务工具
 ```
 
 ```text
@@ -81,10 +83,18 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
 | `skill` | 技能安装启停、市场下载、落盘、按 URL 装包 | `/api/skills/**` |
 | `aiplatform` | 外部 AI 平台（千问 / 百炼）登记、目录搜索、MCP 一键接入 | `/api/aiplatform/**` |
 | `history` | 统一操作历史（5 类召回 + MCP 调用） | `/api/histories/**` |
-| `harness` | 评测骨架（**未接线**，无 HTTP 入口） | — |
+| `harness` | 评测：用例集 → 异步运行 → 断言 + LLM 评审 → 报告；运行绑定快照/数据集版本，带心跳与失联回收 | `/api/harness/**` |
+| `space` | 知识空间：树形组织 + 继承 + 显式共享，为 RAG 与资源授权算白名单 | `/api/v2/spaces*` |
+| `resource` | 统一资源模型与资源级授权（默认拒绝、显式 deny 优先、跨租户硬隔离） | `/api/v2/resources*` |
+| `usage` | 成本中心：追加式用量 + 多维聚合（task / ref / model / kind / day） | `/api/v2/usage/*` |
+| `authn` | 账号与登录：用户名密码 + LDAP/AD，签发本平台令牌 | `/api/auth/**` |
+| `org` | 租户与成员名册 | `/api/admin/**` |
+| `audit` | 审计事件（授权判定 / 管理面变更 / 高危工具调用），异步批量写 | `/api/admin/audits` |
 
 模块间允许「编排型调能力型」：`conversation → agentfactory / memory / rag / mcp`，`agentfactory → mcp / llm`，
 `rag → prompt / llm / embedder`，`aiplatform → mcp / skill`（接入就是调 mcp 的创建→连接→同步）。
+V2 新增几条窄接口依赖：`rag.SpaceScope ← space`、`resource.SpaceAuthorizer ← space`、
+`llm.CostSink ← data/repo.CostSink`（一次 LLM 请求写一条 `usage_records`）。
 反向调用一律不允许：`aiplatform` 只通过 `ports.go` 的 `MCPRegistry` / `SkillMarkets` 接口调 mcp / skill，
 不 import 它们的内部实现。
 
@@ -108,13 +118,27 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
 8. **平台 MCP 只读 + 仅本机**：不要给 `/mcp/platform` 加写工具，也不要去掉 `isLoopback` 守卫。
 9. **protojson 零值省略**：新增字段默认值必须等价于旧行为，避免老前端丢字段。
 10. **错误用哨兵**：`errors.Is` 判类型，biz 用 `errors.NotFound/BadRequest` + reason 枚举，service 统一映射 HTTP 状态码。
+11. **LLM 调用只能走 `Manager.callOnce`**：一次真实请求 = 一条 `llm.chat` span = 一条 `usage_records`。
+    新增调用通道（新方法 / 新客户端）绕过它，既没链路也没账单——P4 首次实现就把 `chat()` 漏在外面，
+    评测的模型直连调用在 trace 里完全不可见。
+12. **`llm.WithMeta` 是按字段合并**：零值表示「不改」。下游（如 agentfactory）设 `TaskID` / `Purpose`
+    不会冲掉上游的 `ref_kind` / `ref_id`；不要改回整体覆盖，否则评测成本会变成无主账。
+13. **map 更新里的时间字段先判零值**：`Updates(map[string]any{"finished_at": t})` 在 `t` 为零值时
+    序列化成 `'0000-00-00'`，MySQL `NO_ZERO_DATE` 会拒掉**整条 UPDATE**（1292）。统一走 `nilIfZero`，
+    并且**不要用 `_ =` 吞掉状态 / 进度写入错误**（评测进度曾因此永远停在 0）。
+14. **追踪是可选依赖**：未调 `trace.Init` 时全局 noop、`Start` 返回空句柄，业务代码不要假设有 collector；
+    也别用「TraceID 是否为空串」判活——noop 的 SpanContext 无效，但 `TraceID()` 会给出全零字符串。
+15. **长跑实体要有心跳与回收**：任务靠租约 `lease_expires_at`，评测运行靠 `heartbeat_at`；
+    新增长跑实体照此做，回收一律「收尾不重跑」，并在 error 里写清原因（如「执行体失联」）。
 
 ## 7. 测试约定
 
 - 测试与代码同目录（`*_test.go`）。`service` 假 usecase、`biz` 假 repo、`data` 打真实存储边界。
 - `biz` 用手写 `fakeRepo`，不引 mock 框架：接口变更后 fake 编译失败，是刻意设计，用来强制更新所有实现。
 - 这些回归测试**不许删**：`internal/data/db/repo/columns_test.go`、`internal/server/mcp_test.go`、
-  `internal/biz/history/history_test.go`、`agentfactory_test.go` 里的 `TestDrain*` / `TestConvIDInheritance`。
+  `internal/biz/history/history_test.go`、`agentfactory_test.go` 里的 `TestDrain*` / `TestConvIDInheritance`、
+  `internal/pkg/trace/trace_test.go`、`internal/biz/harness/{version,recovery,ref}_test.go`、
+  `internal/data/db/repo/harness_recovery_test.go`。
 - 单测不允许连真实 MySQL / Redis / Milvus；需要时钟、随机、外部调用一律注入。
 
 ## 8. 文档索引
@@ -122,6 +146,7 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
 | 文档 | 内容 |
 | --- | --- |
 | `README.md` | 能力、快速开始、配置、API、项目结构 |
+| `docs/architecture-v2.md` | **V2 现状与边界**：身份/资源/空间/成本/租约/快照/委派/可观测/评测，含上线 SQL 与排查路径 |
 | `internal/biz/HANDOVER.md` | biz 层交接：模块明细、时序图、跨模块协作、已知问题、排障 |
 | `internal/biz/agentfactory/DESIGN.md` | Agent 工厂设计讨论稿（非实现说明，现状以 HANDOVER 2.2 为准） |
 | `internal/server/MCP网关方案.md` | 平台 MCP 端点方案与落地现状 |
@@ -131,7 +156,7 @@ client ──► DTO ──► service ──► DO ──► biz ──► DO �
 | `api/README.md` | proto 契约约定与各域操作清单 |
 
 改行为时同步改文档：**接口变化** → `api/README.md`；**模块行为/状态机变化** → `HANDOVER.md` 对应小节；
-**部署/配置/命令变化** → `README.md`。
+**部署/配置/命令变化** → `README.md`；**V2 能力、配置开关、已知边界变化** → `docs/architecture-v2.md`。
 
 ## 9. 提交约定
 

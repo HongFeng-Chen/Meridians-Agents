@@ -5,7 +5,7 @@
 
 无 UI 框架依赖（原生 CSS，设计令牌在 `src/styles.css` 的 `:root`），路由用 hash，刷新不丢页面。
 
-## 页面（18 个）
+## 页面（19 个 + 登录页）
 
 | 分组 | 导航 | 说明 |
 |------|------|------|
@@ -20,12 +20,13 @@
 | | 技能管理 | 安装 / 启停 / 卸载、文件浏览、技能市场搜索下载、从 URL 安装技能包（zip / SKILL.md / JSON） |
 | | MCP 工具 | 服务配置、探活、工具同步、语义召回、工具调用；平台内置 `platform` 服务与 7 个只读工具在此可见 |
 | | AI 平台 | 千问 / 百炼 MCP 广场：平台 CRUD（千问预设填好官方路径模板）、连通性测试、目录搜索 → 一键接入成本地 MCP 服务、按 mcpCode 直接接入 |
-| | 评测中心 | 评测 Harness：用例集管理（含七类断言编辑）、启动 / 停止异步运行（进行中 3s 自动轮询）、报告抽屉（逐例得分 + 断言明细 + 原始输出） |
+| | 评测中心 | 评测 Harness：用例集管理（含七类断言编辑）、启动 / 停止异步运行（进行中 3s 自动轮询）、报告抽屉（逐例得分 + 断言明细 + 原始输出 + **本次运行成本**，按 `ref_kind=harness_run` 归集） |
 | | Agent 工厂 | Agent 定义（能力白名单、执行图、DAG 编排）、LLM 造 Agent、能力目录 |
-| | 任务中心 | 任务列表 / 详情抽屉 / 事件链路 / 子任务树 / 取消重试 / 审批（批准、驳回） |
+| | 任务中心 | 任务列表 / 详情抽屉 / 事件链路 / 子任务树 / 取消重试 / 审批（批准、驳回）；详情里带 **Trace span 树**（task/llm/mcp/skill/rag/graphrag 分层与耗时）与单任务成本 |
 | 会话 | 会话 | 会话目录 + 多轮对话 + 消息链路弹层（召回明细、工具调用）+ 多角色辩论（暂停 / 恢复 / 叫停、增删角色） |
 | 系统管理 | 租户管理 | 多租户隔离域：新建 / 改名 / 启停 / 删除；列表带成员数、任务数与内置标记（`public` 不可删，租户键创建后不可改） |
 | | 用户管理 | 成员名册：按租户 / 角色 / 状态筛选，登记与编辑成员、改角色、停用、移除；名册只做管理，不参与登录认证 |
+| | 授权策略 | Casbin 增量授权：p 规则（某用户 / 角色 / 全员在某租户内授某权限点）+ g 规则（角色绑定）；内置角色矩阵只读 |
 | | 文档与系统 | 文档列表按「平台通用 / 租户共享 / 个人私有」筛选与展示归属，删除含图谱引用摘除；连接与模型信息、系统配置 |
 
 ## 启动
@@ -66,21 +67,23 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            18 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
+├── pages/            19 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
 │                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
-│                     Tasks / Chats / Tenants / Users / Admin）
+│                     Tasks / Chats / Tenants / Users / Policies / Admin）+ Login 登录页
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、
-│                     TaskDetailDrawer、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
+│                     TaskDetailDrawer（含 Trace span 树与成本）、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
 ├── api/generated/    proto → SDK（不要手改）
 ├── api/http.js       统一 fetch、错误处理、OPERATIONS 清单
+├── api.js            旧签名兼容层 + 手写 v2 客户端（taskDetail / traces / usageSummary / workers / leases / deadLetters）
 └── styles.css        设计令牌 + 全局样式
 ```
 
 ## 约定
 
 - **接口只走 SDK**：页面 import `{ rag, prompt, memory, llm, skill, mcp, agentfactory, conversation, history, aiplatform, harness, admin }`
-  十二个命名空间；`src/api.js` 只保留旧签名兼容层。
-- 改了 `api/*.proto` 后先 `make api && make sdk`，再改页面；不要在前端手写 URL。
+  十二个命名空间；`/api/v2`（身份/空间/资源/成本/任务运维/链路）还没进 OpenAPI，统一走 `src/api.js` 里的 `v2` 命名空间，
+  不要在页面里拼 URL。
+- 改了 `api/*.proto` 后先 `make api && make sdk`，再改页面；不要在前端手写 URL（`/api/v2` 除外，见上一条）。
 - 后端错误已统一映射（`ApiError`），页面只处理提示文案，不做状态码分支。
 - 图表为纯 SVG / 手写 Canvas 实现（子图、趋势图），不引图表库。
 - 深色 / 浅色跟随主题令牌（`:root` 里的 CSS 变量），新增组件不要硬编码颜色。

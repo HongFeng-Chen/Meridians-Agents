@@ -4,6 +4,8 @@
 
 文档经 RAG 混合检索与 GraphRAG 多跳推理两条线并行入库；Agent 以数据而非代码定义，由 13 种执行图驱动（含 auto 自动编排），可用 LLM 元编程批量生成；提示词版本化后可被 LLM 打分、优化，并在评测 Harness 中用真实用例拿回得分、回写进版本历史。配套完整 React 管理控制台。
 
+V2 起补上「能放心跑」的那一层：多副本 worker 租约与崩溃恢复、工具调用幂等、Agent 配置快照与运行时二次授权、多级委派收紧；每次执行一条 OpenTelemetry Trace，每次 LLM 调用自动记账（`task_id` / `ref` 双归属），评测运行绑定快照与数据集版本并可自愈。设计现状与边界见 [`docs/architecture-v2.md`](./docs/architecture-v2.md)。
+
 > **给知识定坐标，给智能体定分寸。**
 >
 > 经线是检索，纬线是图谱，交叉处就是每个 Agent 的坐标。代码模块名沿用 `go_agent`。
@@ -93,12 +95,44 @@ Milvus 分块主键是 autoID，重新入库只会新增行。旧实现直接 `I
   `prompt_version_scores`；提示词工程页版本历史直接展示每版得分并可一键发起评测
 - **评测 Harness**：用例集（被测对象 `agent:<key>` 走执行图 / `model:<name>` 直连）→ 异步运行（并发池、单例超时、
   边界取消）→ 七类断言（contains / regex / json_valid / 长度 / LLM 评审）→ 加权得分报告；前端「评测中心」全程可视化
+- **评测可复现与自愈**：每次运行绑定 `snapshot_id/snapshot_version/dataset_version/dataset_checksum/model/trace_id`，
+  数据集校验和只覆盖用例内容（改用例才升版本，历史运行不被追溯改写）；运行期心跳，执行体被杀后由巡检收为
+  `failed` 并写明「执行体失联」，不再永久停在 `running`
 - **提示词工程（Prompt Studio）**：Agent 管理界面的角色提示词支持 LLM 打分（五维评分 + 问题清单 + 建议）、
   按职责描述生成、一键优化（改后稿 + 改动说明 + 前后分）；走 `llm.Manager` 可指定数据源，失败回退 default
 - 异步任务体系：Redis 队列 + 协程 worker 池 + Redlock 崩溃恢复 + cron 定时调度
 - **优雅停机**：停止服务时先停止领取新任务，等执行中的任务跑完（`shutdownTimeout`，默认 20s）再退出；超时任务保留 `running`，下次启动自动重跑，不丢任务、不误标取消
 - 完整任务链路：父/子任务树、事件流实时追踪、轮次预算（默认 12）
 - 会话内可调用：Agent 目录非空时作为首选工具委派（会话 id = 任务 id）
+
+### 执行可靠性（V2）
+
+- **多副本租约**：worker 启动即注册 `worker_instances` 并周期心跳；任务领取带 `lease_expires_at`，
+  超时判定「执行体失联」→ 重排 `retry_wait` → 按 `attempt` 退避重试 → 超上限进死信
+  （`agent_task_history.dead_letter_reason`），**不自动重放**
+- **状态机**：`pending → running → retry_wait → pending`，终态多一个 `timeout`（超截止时间）；
+  所有迁移走 SQL CAS（`TransitionTask(ctx, id, from, to)`），并发下不会把「已取消」改回「已完成」
+- **工具调用幂等**：任务链路调用带 `task:<id>:turn:<n>:<tool>:<args>` 键，命中 `mcp_call_records`
+  直接回放上次结果——重试不会重复下单 / 重复发消息（失败不缓存）
+- **配置快照**：发布时生成 `agent_snapshots`（定义全文 + checksum 去重 + 依赖清单，只增不改），
+  任务提交 / RunOnce / 子任务一律钉 `snapshot_id`，执行期按快照加载；运行前对 agent / tool / skill
+  **二次判权**（快照 ≠ 永久权限）
+- **委派收紧**：子任务继承 `delegated_caps` 并与父级求交（链路上单调收紧）、深度闸门、
+  `user / tenant / conv` 归属继承；`nil`（未受限）与空清单（限制全禁）语义分开
+- 运维入口：`/api/v2/workers`、`/api/v2/tasks/leases`、`/api/v2/tasks/dead-letters`、`/api/v2/agents/snapshots`
+
+### 可观测与成本（V2）
+
+- **一次执行一条 Trace**：span 覆盖 `task / llm / mcp / skill / rag / graphrag`，根 span 起跑即登记，
+  任务跑几分钟时列表里就能看到（不必等结束）
+- **双落点**：进程内环形缓冲（默认 512 条，`/api/v2/traces` 直查，单机 / 内网无需 collector）
+  + 可选 OTLP/gRPC 导出；未初始化时全局 noop，业务代码不需要判空
+- **成本自动记账**：一次真实 LLM 请求 = 一条 span = 一条 `usage_records`
+  （`Manager.callOnce` 统一埋点与记账，重试 / 降级各算一次）；`tokens × 单价 = 微元`，全程整数域
+- **归属双键**：`task_id` 管任务链路；`ref_kind/ref_id`（如 `harness_run:14`）管「没有任务行」的调用
+  （评测直连模型、LLM Judge、会话）。`group_by=task|ref` 分别支持单任务 / 单次运行成本看板
+- **可对账**：`/api/v2/usage/summary?task_id=112` 与 trace 里 `llm.prompt_tokens` 同源，
+  条数也应相等——不等说明有调用绕过了 `callOnce`
 
 ### MCP 工具接入
 
@@ -176,6 +210,12 @@ api/*/v1 (proto) ──► internal/service ──► internal/biz ──► int
 | `skill` | 技能安装 / 启停 / 卸载 + 技能市场 + 落盘 + URL 安装 | `/api/skills/**` `/api/skillhub/**` | MySQL · 磁盘 |
 | `aiplatform` | 外部 AI 平台登记 + 目录搜索 + MCP 一键接入 + 技能市场联动 | `/api/aiplatform/**` | MySQL |
 | `history` | 统一操作历史（5 类"用到了什么"） | `/api/histories` | MySQL |
+| `space` | 知识空间：树形组织 + 继承（home / container / isolated）+ 显式共享，为 RAG 与资源授权算白名单 | `/api/v2/spaces*` | MySQL |
+| `resource` | 统一资源模型与资源级授权：默认拒绝、显式 deny 优先、跨租户硬隔离 | `/api/v2/resources*` | MySQL |
+| `usage` | 成本中心：追加式用量记录 + 多维聚合（task / ref / model / kind / day） | `/api/v2/usage/*` | MySQL |
+| `authn` | 账号与身份：用户名密码 + LDAP/AD，签发本平台令牌（外部身份见 `pkg/principal`） | `/api/auth/**` | MySQL |
+| `org` | 系统管理：多租户（tenants）+ 成员名册（users） | `/api/admin/**` | MySQL |
+| `audit` | 审计事件：授权判定、管理面变更、高危工具调用；异步批量写 | `/api/admin/audits` | MySQL |
 | `embedder` | OpenAI 兼容 Embedding 客户端 | —（内部能力） | — |
 
 ### 设计原则
@@ -188,6 +228,14 @@ api/*/v1 (proto) ──► internal/service ──► internal/biz ──► int
   `AfterStop` 兜底 `Stop`；排空等待只看 worker，不等 cron 调度器。
 - **protojson 零值省略**：新 proto 字段默认值即旧行为，保证老前端不丢字段。
 - **哨兵错误**：业务错误用 `errors.Is` 映射 HTTP 状态码，不做字符串比较。
+- **一次真实 LLM 请求 = 一条 span = 一条用量记录**：所有调用通道收敛到 `llm.Manager.callOnce`，
+  新增调用路径必须经过它，否则既没链路也没账单。
+- **默认拒绝，旧数据 opt-in**：`resource.Check` 对未登记资源返回 false（默认拒绝）；
+  任务执行边界先问 `Registered`，未登记按旧数据放行、已登记才强制二次判权——
+  这样不用等全量登记就能上线，也不会一刀切让存量任务全失败。
+- **时间字段落库先判零值**：MySQL 开了 `NO_ZERO_DATE`，把 `time.Time{}` 写进
+  `Updates(map[string]any{...})` 会把整条 UPDATE 拒掉（1292）——统一走 `nilIfZero`，
+  且不允许用 `_ =` 吞掉状态写入错误（评测进度曾因此永远停在 0）。
 
 ## 技术栈
 
@@ -297,6 +345,26 @@ docker compose up -d --build
 | `data.llm.httpTimeout` | `120s` | 单次 LLM 调用超时（不跟随全局 300s） |
 | `agentfactory.workerCount` | `2` | 任务 worker 并发数 |
 | `agentfactory.shutdownTimeout` | `20s` | 优雅停机等待上限，**要小于编排层 kill 期限**（k8s `terminationGracePeriodSeconds` 默认 30s） |
+
+### 执行链路与可观测（V2）
+
+这一组全部走环境变量（不写进 `config.yaml`），改完重启生效：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AGENT_WORKER_KEY` | `hostname-pid-随机串` | 执行体标识（重启即新实例）；多副本部署时可显式指定，便于在 `/api/v2/workers` 与任务租约里定位失联节点 |
+| `AGENT_LEASE_TTL` | `60s` | 任务租约有效期，执行期按 TTL/3 续租；进程死亡即自然过期。跨机房部署要 ≥ 3 倍时钟漂移 |
+| `AGENT_HEARTBEAT_INTERVAL` / `AGENT_HEARTBEAT_TTL` | `15s` / `45s` | 执行体心跳间隔 / 判离线阈值 |
+| `AGENT_TASK_TIMEOUT` | `30m` | 单任务执行上限，超时落 `timeout` 终态并归档 |
+| `AGENT_SWEEP_INTERVAL` | `20s` | 租约清扫周期（过期重排、超时判定） |
+| `AGENT_TASK_MAX_ATTEMPTS` | `3` | 基础设施故障（租约过期 / 执行体失联）的重排上限，超限进死信；业务失败只在任务显式 `max_attempts > 1` 时重试 |
+| `AGENT_MAX_DELEGATION_DEPTH` | `3` | 子 Agent 委派深度上限 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 空（不导出） | OTLP/gRPC collector 地址；不设也能用 `/api/v2/traces` 查（进程内环形缓冲始终开启） |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `true` | 是否明文连 collector；显式设 `false` 才走 TLS（内网 collector 一般保持默认） |
+| `OTEL_TRACES_SAMPLE_RATIO` | `1` | 采样比例，1 = 全采 |
+| `OTEL_TRACE_BUFFER` | `512` | 进程内保留的 trace 条数，超出按 FIFO 淘汰 |
+| `HARNESS_HEARTBEAT_SEC` | `15` | 评测运行心跳间隔 |
+| `HARNESS_STALE_SEC` | `90` | 评测运行判失联阈值；超过即由巡检收为 `failed`，**不重跑** |
 
 ### 安全与配额（`security` 段）
 
@@ -730,6 +798,10 @@ curl -s -H 'Authorization: Bearer ops-token'   'http://localhost:8000/api/admin/
 | `/api/agentfactory/**` | Agent 定义、LLM 造 Agent、任务提交与链路追踪 |
 | `/api/conversations/**` | 会话目录 + 消息链路 + 多角色辩论 |
 | `/api/histories/**` | 统一操作历史（MCP / 技能 / 记忆 / RAG / GraphRAG 召回） |
+| `/api/harness/**` | 评测：用例集 / 用例 / 启动与停止运行 / 报告 / 删除运行 |
+| `/api/auth/**` | 登录、当前身份、账号绑定、权限策略（Casbin p/g 规则） |
+| `/api/admin/**` | 租户与成员名册、审计事件查询 |
+| `/api/v2/**` | 身份（`/me`）、空间与资源共享、统一资源与授权、成本（`usage/records`、`usage/summary`）、任务运维（`workers`、`tasks/leases`、`tasks/dead-letters`、`tasks/detail`）、链路（`traces`、`traces/detail`）、Agent 快照 |
 | `/mcp/platform` | 平台内置 MCP 端点（Streamable HTTP，只读，仅本机回环） |
 
 完整契约见 `api/openapi.yaml`（含文件上传等手工补齐的 multipart 定义）。
@@ -760,16 +832,18 @@ curl --noproxy '*' -s http://127.0.0.1:8000/mcp/platform \
 ```text
 go_agent/
 ├── api/                    # protobuf 定义与生成绑定（pb.go / grpc / http / openapi.yaml）
-├── cmd/go_agent/           # 入口：装配 + worker 生命周期（BeforeStart/Drain）+ 平台 MCP 自注册
+├── cmd/go_agent/           # 入口：装配 + worker 生命周期（BeforeStart/Drain/恢复巡检）+ 平台 MCP 自注册
 ├── configs/                # 配置（${ENV:default} 展开）
+├── docs/                   # architecture-v2.md（V2 现状/落地/路线图）+ llm/memory/prompt/rag/skill 实现笔记
 ├── internal/
 │   ├── biz/                # 业务用例（conversation / agentfactory / rag / graphrag /
 │   │                       #   memory / prompt / mcp / platformmcp / llm / skill / history /
-│   │                       #   aiplatform / harness）
-│   ├── data/               # 存储实现（MySQL / Redis / Milvus / MCP 客户端 / 技能 / AI 平台目录客户端）
+│   │                       #   aiplatform / harness / space / resource / usage / authn / org / audit）
+│   ├── data/               # 存储实现（MySQL / Redis / Milvus / MCP 客户端 / 技能 / AI 平台目录）
+│   │   └── harnessrunner/  # 评测执行适配器（agent: → agentfactory，model: → llm.Manager）
 │   ├── service/            # 传输层：proto 映射、错误映射、平台 MCP 服务注册
-│   ├── server/             # HTTP / gRPC 装配 + 平台 MCP 端点（mcp.go）
-│   └── pkg/                # 文档解析 loader、httpx 等
+│   ├── server/             # HTTP / gRPC 装配 + /api/v2 手写路由 + 平台 MCP 端点（mcp.go）
+│   └── pkg/                # trace（OTel 双落点）、principal、authz、budget、egress、loader、httpx 等
 ├── scripts/                # openapi 补丁脚本等
 ├── third_party/            # proto 依赖
 └── Makefile
@@ -802,6 +876,9 @@ go test ./internal/biz/platformmcp/ -v                                          
 go test ./internal/data/db/repo/ -run 'TestMapUpdateKeysMatchModelColumns' -v                 # map 更新列名静态校验
 go test ./internal/biz/aiplatform/ -v                                                         # 千问/百炼：默认值、接入、回滚、SSE 降级、技能市场联动
 go test ./internal/data/third_service/aiplatform/ -v                                          # 目录接口多形态 JSON 解码与错误退化
+go test ./internal/pkg/trace/ -v                                                              # span 树 / 运行中可见 / 淘汰 / 未初始化不产生假 TraceID
+go test ./internal/biz/harness/ -v                                                            # 版本推进、快照绑定、ref 归属、僵尸运行回收
+go test ./internal/data/db/repo/ -run 'TestReapRuns|TestSummaryByRef|TestDelegatedCapsSurviveArchive' -v   # 回收 SQL / ref 聚合 / 委派随归档迁移
 ```
 
 `biz` 层测试使用手写 `fakeRepo`（不引 mock 框架）：修改接口后必须同步 fake，否则编译失败——这是刻意的，用来强制更新所有实现。
@@ -814,10 +891,21 @@ go test ./internal/data/third_service/aiplatform/ -v                            
 | `server/mcp_test.go` | 平台 MCP 的协议层行为：initialize 协商、tools/list、工具级错误走 `isError`、非回环 403 |
 | `agentfactory_test.go` 的 Drain 用例 | 优雅停机三种路径：正常排空 / 排空期间拒绝新任务 / 超时后任务保持 running |
 | `history_test.go` | `WithTask` / `WithConv` 叠加顺序，避免再出现 `conv_id` 被覆盖为空 |
+| `pkg/trace/trace_test.go` | span 树父子关系、运行中可见（根 span 占位）、环形缓冲淘汰、noop tracer 不能产出 32 个 0 的假 TraceID |
+| `biz/harness/version_test.go` | 数据集校验和只覆盖用例内容；首次运行只记 checksum 不升版本；历史 Run 不被追溯改写 |
+| `repo/harness_recovery_test.go` | 回收 SQL 的 `COALESCE(heartbeat_at, created_at)` 与 `status='running'` 条件；心跳不能把已结束的运行改回活跃 |
+| `llm/cost_test.go` 的 `TestWithMetaMerges` | `WithMeta` 必须按字段合并，否则下游设 TaskID 会冲掉上游 ref，评测成本变无主账 |
+| `repo/task_lease_test.go` 的 `TestDelegatedCapsSurviveArchive` | 委派清单随归档迁移，且 `nil`（未受限）与空切片（全禁）语义不丢 |
 
 ## Roadmap
 
-- [ ] 评测 harness 接线：黑盒执行 + 规则断言 + LLM Judge + 报告（`internal/biz/harness` 已就绪）
+- [x] 评测 harness 接线：黑盒执行 + 规则断言 + LLM Judge + 报告（`/api/harness/**` 已上线；
+  运行绑定快照/数据集版本，带心跳与失联回收）
+- [x] 执行链路 V2：worker 租约 + 幂等工具调用 + Agent 快照 + 运行时二次授权 + 委派收紧
+- [x] 可观测 V2：OpenTelemetry Trace + 成本自动记账（`task_id` / `ref` 双归属）
+- [ ] 控制台补齐 V2 页面：空间树、共享、成本看板、Worker 与死信（接口已就绪，见 `/api/v2`）
+- [ ] `/api/v2` 迁到 proto 生成，产出 OpenAPI 与前端 SDK
+- [ ] 评测断点续跑：复用已完成的 `harness_run_items`，只补缺失用例（当前是「回收不重跑」）
 - [ ] 平台 MCP 二期：对外工具聚合网关（`/mcp` + `api_key` 鉴权），复用 `biz/mcp` 调用管线
 - [ ] 长耗时操作全面异步化：入库 / 图谱抽取改「提交任务 + 按 task_id 查进度」，HTTP 超时回归秒级
 - [ ] CI / Release 流程与测试徽章
