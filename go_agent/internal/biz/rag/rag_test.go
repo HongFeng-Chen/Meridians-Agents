@@ -510,6 +510,49 @@ func TestGraphIngestRecordsCounts(t *testing.T) {
 	}
 }
 
+// 双索引：一份文档同时写向量与图谱，两种检索都能命中，
+// 且不会像「先 rag 再 graph」那样互相清理。
+func TestIngestBothKeepsVectorsAndGraph(t *testing.T) {
+	r, store, repo, _, _ := newTestRag(t)
+	ctx := context.Background()
+	text := strings.Repeat("Milvus 与 Zilliz 共同维护向量检索生态。", 10)
+
+	res, err := r.Ingest(ctx, "b1", "both.txt", "both", text)
+	if err != nil {
+		t.Fatalf("双索引入库: %v", err)
+	}
+	if res.Mode != "both" {
+		t.Errorf("mode = %q, want both", res.Mode)
+	}
+	if res.Chunks == 0 || len(store.chunks) == 0 {
+		t.Error("双索引未写入向量分块")
+	}
+	if res.Entities == 0 {
+		t.Error("双索引未抽取图谱实体")
+	}
+	doc, _ := repo.Get(ctx, "b1")
+	if doc == nil || doc.Mode != "both" || doc.Chunks != res.Chunks || doc.Entities != res.Entities {
+		t.Errorf("双索引元数据不正确: %+v", doc)
+	}
+
+	// 再切回纯向量：图谱应被摘除（模式切换的清理仍然生效）
+	if _, err := r.Ingest(ctx, "b1", "both.txt", "rag", text); err != nil {
+		t.Fatalf("切回向量: %v", err)
+	}
+	doc, _ = repo.Get(ctx, "b1")
+	if doc.Mode != "rag" || doc.Entities != 0 {
+		t.Errorf("切回向量后元数据不正确: %+v", doc)
+	}
+}
+
+// 非法 mode 必须报错，不能静默落成向量索引
+func TestIngestRejectsUnknownMode(t *testing.T) {
+	r, _, _, _, _ := newTestRag(t)
+	if _, err := r.Ingest(context.Background(), "m1", "m.txt", "graphh", "内容"); err == nil {
+		t.Fatal("非法 mode 应报错")
+	}
+}
+
 // —— P1-07：更新文档必须清掉旧版本向量 ——
 
 // 内容变化后重新入库：旧版本分块要按主键删掉，否则新旧两版会同时被召回。

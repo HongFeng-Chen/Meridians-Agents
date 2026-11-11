@@ -309,3 +309,32 @@ func has(list []string, want string) bool {
 }
 
 var _ = time.Now
+
+// 个人空间是隐式单位：即使 knowledge_spaces 里没有这一行，
+// 本人的 personal:<tenant>:<user> 空间也必须出现在可见集合里——
+// 否则入库先写 space_id、空间行未建时，个人文档会从检索白名单消失。
+func TestAllowedSpacesIncludesImplicitPersonal(t *testing.T) {
+	repo := newFakeRepo()
+	uc := NewUseCase(repo)
+	ctx := dev(t)
+
+	// 库里只有平台与租户空间，故意不建任何个人空间行
+	if _, err := uc.Create(ctx, adminUser(), CreateInput{SpaceID: PlatformSpaceID, Name: "平台", SpaceType: TypePlatform, InheritanceMode: InheritInherit}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uc.Create(ctx, adminUser(), CreateInput{SpaceID: "tenant:public", Name: "租户", SpaceType: TypeTenant}); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := uc.AllowedSpaceIDs(ctx, alice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(ids, "personal:public:alice") {
+		t.Fatalf("alice 的隐式个人空间应可见: %v", ids)
+	}
+	bobIDs, _ := uc.AllowedSpaceIDs(ctx, bob())
+	if has(bobIDs, "personal:public:alice") {
+		t.Fatalf("bob 不应看到 alice 的隐式个人空间: %v", bobIDs)
+	}
+}

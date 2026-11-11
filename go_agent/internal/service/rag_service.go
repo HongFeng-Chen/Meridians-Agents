@@ -252,12 +252,10 @@ func (s *RagService) UploadAndIngest(ctx context.Context, req *v1.UploadAndInges
 		Deduped: res.Deduped,
 		Purged:  int32(res.Purged),
 	}
-	if res.Mode == "graph" {
-		out.Entities = int32(res.Entities)
-		out.Relations = int32(res.Relations)
-	} else {
-		out.Chunks = int32(res.Chunks)
-	}
+	// 双索引会同时返回两套计数：调用方按需展示，不用再猜 mode 是哪一种
+	out.Chunks = int32(res.Chunks)
+	out.Entities = int32(res.Entities)
+	out.Relations = int32(res.Relations)
 	return out, nil
 }
 

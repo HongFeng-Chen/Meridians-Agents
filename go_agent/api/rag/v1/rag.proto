@@ -93,7 +93,7 @@ message GraphAnswer {
 message Document {
   string doc_id = 1 [json_name = "doc_id"];
   string source = 2 [json_name = "source"];
-  // rag | graph
+  // rag（向量）| graph（图谱）| both（双索引）
   string mode = 3 [json_name = "mode"];
   // ready | failed
   string status = 4 [json_name = "status"];
@@ -157,7 +157,7 @@ message IngestRequest {
   // 留空取 doc_id
   string source = 2 [json_name = "source"];
   string text = 3 [(google.api.field_behavior) = REQUIRED, json_name = "text"];
-  // rag（默认）| graph
+  // rag（默认，向量）| graph（图谱）| both（双索引）
   string mode = 4 [json_name = "mode"];
   // 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
   // tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
@@ -252,7 +252,7 @@ message UploadAndIngestRequest {
   bytes file = 1 [json_name = "file"];
   // 文件名，如 report.pdf（HTTP 下取客户端原名）
   string name = 2 [json_name = "name"];
-  // rag（默认）| graph
+  // rag（默认，向量）| graph（图谱）| both（双索引）
   string mode = 3 [json_name = "mode"];
   // 留空取文件名（去扩展名）
   string doc_id = 4 [json_name = "doc_id"];

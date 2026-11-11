@@ -169,13 +169,40 @@ func (r *Rag) EnsureReady(ctx context.Context) error {
 	return r.store.EnsureCollection(ctx)
 }
 
+// 索引模式：同一份文档可以只建一种索引，也可以两种同建。
+//
+// 这是「实时库」的核心：一个库、一份文档，检索侧再按需选 RAG 还是 GraphRAG，
+// 不再要求用户把同一篇文档导两遍（导两遍会互相清理，见 IngestDocument 的模式切换）。
+const (
+	// ModeVector 向量 + BM25 混合检索（原文级召回，秒级入库）
+	ModeVector = "rag"
+	// ModeGraph 实体关系图谱（跨片段、多跳推理，入库需多次调用 LLM）
+	ModeGraph = "graph"
+	// ModeBoth 双索引：向量与图谱各写一份，两种检索都能命中
+	ModeBoth = "both"
+)
+
+// NormalizeMode 归一化索引模式：空值默认向量索引；非法值直接报错，
+// 避免拼错的 mode 静默落成 rag——用户以为建了图谱，实际只有向量。
+func NormalizeMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ModeVector:
+		return ModeVector, nil
+	case ModeGraph:
+		return ModeGraph, nil
+	case ModeBoth:
+		return ModeBoth, nil
+	}
+	return "", fmt.Errorf("索引模式 %q 不支持：可选 rag（向量）/ graph（图谱）/ both（双索引）", mode)
+}
+
 // IngestInput 一次入库的完整参数。
 //
 // Scope 决定入库后谁能看见："" 等价于 user（个人私有），见 scope.go。
 type IngestInput struct {
 	DocID  string
 	Source string
-	Mode   string // rag | graph
+	Mode   string // rag | graph | both
 	Text   string
 	Scope  string // system | tenant | user
 }
@@ -207,8 +234,8 @@ func (r *Rag) IngestDocument(ctx context.Context, in IngestInput) (*IngestResult
 	if source == "" {
 		source = docID
 	}
-	if mode == "" {
-		mode = "rag"
+	if mode, err = NormalizeMode(mode); err != nil {
+		return nil, err
 	}
 
 	// 同一文档并发入库只允许一个（Redis 锁）
@@ -250,23 +277,14 @@ func (r *Rag) IngestDocument(ctx context.Context, in IngestInput) (*IngestResult
 	}
 
 	res := &IngestResult{DocID: docID, Source: source, Mode: mode, Chars: len([]rune(text))}
-	if mode == "graph" {
-		// 图谱入库内部先摘掉本文件的旧引用再写新节点（见 graphrag.Service.Ingest）
-		ents, rels, err := r.graph.Ingest(ctx, docID, source, text)
-		if err != nil {
-			r.saveFailed(ctx, docID, source, mode, scope, text, err)
-			return nil, err
-		}
-		res.Entities, res.Relations = ents, rels
-		// 由 rag 改成 graph：旧分块留着会被普通问答召回，删掉
-		if prev != nil && prev.Mode == "rag" {
-			if n, derr := r.store.DeleteDoc(ctx, docID); derr != nil {
-				log.Warn("[rag] 模式切换清理旧分块失败", "doc", docID, "err", derr)
-			} else {
-				res.Purged = int(n)
-			}
-		}
-	} else {
+
+	// 索引写入顺序：先向量、后图谱。
+	// 向量化快、失败面小，先让文档「可检索」；图谱抽取要多次调用 LLM，
+	// 放后面即使失败，也不会让一份已经可用的文档白等。
+	//
+	// 双索引（both）时两个分支都跑，且都不做「模式切换清理」：
+	// 另一侧的索引马上会被重写或本来就该保留。
+	if mode != ModeGraph {
 		// 先记下旧版本主键：Milvus 主键是 autoID，重新入库只会新增行，
 		// 不删旧行的话同一 doc 会同时存在多版分块，召回时新旧混着返回
 		oldIDs, err := r.store.IDsOfDoc(ctx, docID)
@@ -288,10 +306,35 @@ func (r *Rag) IngestDocument(ctx context.Context, in IngestInput) (*IngestResult
 		} else {
 			res.Purged = int(n)
 		}
-		// 由 graph 改成 rag：旧图谱引用留着会出现在图谱问答里，摘掉
-		if prev != nil && prev.Mode == "graph" {
+		// 只在「纯向量」模式下清理旧图谱：双索引模式下图谱马上就要重写，
+		// 这里删掉再建纯属浪费
+		if mode == ModeVector && prev != nil && prev.Mode == ModeGraph {
 			if _, _, gerr := r.graph.DeleteDocGraph(ctx, docID); gerr != nil {
 				log.Warn("[rag] 模式切换清理旧图谱失败", "doc", docID, "err", gerr)
+			}
+		}
+	}
+
+	if mode != ModeVector {
+		// 图谱入库内部先摘掉本文件的旧引用再写新节点（见 graphrag.Service.Ingest）
+		ents, rels, err := r.graph.Ingest(ctx, docID, source, text)
+		if err != nil {
+			r.saveFailed(ctx, docID, source, mode, scope, text, err)
+			if mode == ModeBoth && res.Chunks > 0 {
+				// 向量已经写进去了：如实告诉调用方「一半成功」，
+				// 而不是让用户以为整篇都没入库
+				return nil, fmt.Errorf("向量索引已写入 %d 个分块，但图谱抽取失败：%w", res.Chunks, err)
+			}
+			return nil, err
+		}
+		res.Entities, res.Relations = ents, rels
+		// 只在「纯图谱」模式下清理旧分块：双索引模式下分块刚被重写，
+		// 删掉会让 RAG 直接查不到这篇文档
+		if mode == ModeGraph && prev != nil && prev.Mode != ModeGraph && prev.Mode != "" {
+			if n, derr := r.store.DeleteDoc(ctx, docID); derr != nil {
+				log.Warn("[rag] 模式切换清理旧分块失败", "doc", docID, "err", derr)
+			} else {
+				res.Purged = int(n)
 			}
 		}
 	}

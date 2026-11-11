@@ -576,6 +576,15 @@ func (u *UseCase) AllowedSpaceIDs(ctx context.Context, p *principal.Principal) (
 		}
 	}
 
+	// 个人空间是「隐式单位」：isolated、随用随建，不要求 knowledge_spaces 里
+	// 真有一行（EnsureDefaults 只是迁移期的落库动作）。这里必须无条件把本人
+	// 个人空间算进可见集合——否则「入库先写了 space_id、个人空间行还没建」时，
+	// 该文档会从检索白名单里凭空消失（实时库双索引冒烟实测踩过）。
+	// 它不出现在 byID 里也不会被误展开：walk 只沿 children 走，没有子节点。
+	if p != nil && p.SubjectID != "" {
+		seed[PersonalSpaceID(p.TenantID, p.SubjectID)] = true
+	}
+
 	for _, s := range all {
 		switch s.SpaceType {
 		case TypePlatform:
