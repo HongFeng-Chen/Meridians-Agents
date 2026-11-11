@@ -66,8 +66,9 @@ export function Badge({ children, tone = 'default', style }) {
 
 // FormDrawer 新增/修改操作的通用弹层：
 // 居中弹窗、遮罩点击与 ESC 关闭、打开时锁定背景滚动；表单内容与底部操作由调用方提供。
+// 复杂表单可传 tabs（分组导航）与 footer（固定底栏），header / footer 不随内容滚动。
 // 任务链路等宽详情仍走右侧抽屉（Tasks.jsx 直接用 .drawer 样式）。
-export function FormDrawer({ title, desc, onClose, children, width }) {
+export function FormDrawer({ title, desc, eyebrow, tabs, footer, onClose, children, width }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -84,14 +85,19 @@ export function FormDrawer({ title, desc, onClose, children, width }) {
       <div className="modal" style={width ? { width } : undefined}>
         <div className="modal-header">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h3>{title}</h3>
+            <div className="modal-title-row">
+              <h3>{title}</h3>
+              {eyebrow && <span className="modal-eyebrow">{eyebrow}</span>}
+            </div>
             {desc && <div className="drawer-sub">{desc}</div>}
           </div>
-          <button className="btn ghost sm" type="button" aria-label="关闭" onClick={onClose}>
+          <button className="btn ghost sm icon-btn" type="button" aria-label="关闭" onClick={onClose}>
             ✕
           </button>
         </div>
+        {tabs}
         <div className="modal-body">{children}</div>
+        {footer}
       </div>
     </div>
   );
