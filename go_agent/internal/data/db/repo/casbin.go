@@ -16,6 +16,7 @@ package repo
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"go_agent/internal/data/db"
 	"go_agent/internal/pkg/authz"
@@ -25,6 +26,7 @@ import (
 	"github.com/casbin/casbin/v3/model"
 	gormadapter "github.com/casbin/gorm-adapter/v3"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // casbinModel RBAC with domains。刻意收窄：
@@ -69,6 +71,15 @@ var rolePolicySeed = func() [][]string {
 	return out
 }()
 
+// casbinReloadInterval 多实例部署时的策略轮询间隔。
+//
+// ⚠️ 单位陷阱：StartAutoLoadPolicy(d time.Duration) 走的是 time.NewTicker(d)，
+// 基准是纳秒。曾经写成 5 * 60 * 1000（按毫秒的直觉），实际是 300000ns = 0.3ms，
+// 于是每 0.3ms 一次 LoadPolicy —— 每秒数百条全表 SELECT，日志被刷满，
+// 且 CachedEnforcer.LoadPolicy 会清空判定缓存、加载期持有写锁，
+// 授权判定被拖慢到几乎无法命中缓存。这里必须用 time.Minute 这类具名单位。
+const casbinReloadInterval = 5 * time.Minute
+
 // CasbinEngine 授权引擎（data 层实现 authz.Engine）
 type CasbinEngine struct {
 	e *casbin.SyncedCachedEnforcer
@@ -79,7 +90,11 @@ var _ authz.Engine = (*CasbinEngine)(nil)
 // NewCasbinEngine 构建引擎并幂等种子内置角色的 p 规则。
 // casbin_rule 表由 gorm-adapter 自动迁移（复用主库连接，跟 rag_documents 同一个库）。
 func NewCasbinEngine(db *gorm.DB) (*CasbinEngine, error) {
-	adapter, err := gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+	// 策略加载是后台行为，不该出现在 SQL 调试日志里：本地 DB_DEBUG=true 时
+	// 每条 LoadPolicy 都会打一行全表 SELECT，把真正的业务 SQL 淹没。
+	// 降到 Warn 只保留慢查询与错误——排查策略没生效时仍然看得到失败原因。
+	adapterDB := db.Session(&gorm.Session{Logger: db.Logger.LogMode(gormlogger.Warn)})
+	adapter, err := gormadapter.NewAdapterByDBUseTableName(adapterDB, "", "casbin_rule")
 	if err != nil {
 		return nil, fmt.Errorf("初始化 casbin adapter: %w", err)
 	}
@@ -99,7 +114,7 @@ func NewCasbinEngine(db *gorm.DB) (*CasbinEngine, error) {
 		return nil, err
 	}
 	// 策略可能被其他实例改过：每 5 分钟重载一次（单实例场景写入方就是自己，无影响）
-	e.StartAutoLoadPolicy(5 * 60 * 1000)
+	e.StartAutoLoadPolicy(casbinReloadInterval)
 	return eng, nil
 }
 

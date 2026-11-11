@@ -2,6 +2,7 @@ package repo
 
 import (
 	"testing"
+	"time"
 
 	"go_agent/internal/pkg/authz"
 
@@ -101,5 +102,21 @@ func TestRolePolicySeedMatchesMatrix(t *testing.T) {
 					role, perm, granted, inSeed)
 			}
 		}
+	}
+}
+
+// TestCasbinReloadIntervalIsSane 策略轮询间隔必须是「分钟级」，不能是纳秒级。
+//
+// 回归背景：StartAutoLoadPolicy 的参数是 time.Duration（纳秒基准）。
+// 曾写成 e.StartAutoLoadPolicy(5 * 60 * 1000)，本意是 5 分钟，实际是 0.3 毫秒：
+// 每秒数百次 LoadPolicy → 日志被 SELECT * FROM casbin_rule 刷满，且每次都清空
+// 判定缓存、加载期持有写锁。这类错误不会报错、不会 panic，只会悄悄烧 CPU，
+// 所以用一条断言把单位钉死。
+func TestCasbinReloadIntervalIsSane(t *testing.T) {
+	if casbinReloadInterval < time.Minute {
+		t.Fatalf("重载间隔 %v 过短：疑似又按毫秒写了数值（time.Duration 是纳秒基准）", casbinReloadInterval)
+	}
+	if casbinReloadInterval > time.Hour {
+		t.Fatalf("重载间隔 %v 过长：多实例场景下策略变更迟迟不生效", casbinReloadInterval)
 	}
 }
