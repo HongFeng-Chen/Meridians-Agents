@@ -65,7 +65,6 @@ func registeredRoutes(t *testing.T) map[string]bool {
 	harnessv1.RegisterHarnessServiceHTTPServer(srv, (*HarnessService)(nil))
 	adminv1.RegisterAdminServiceHTTPServer(srv, (*AdminService)(nil))
 	authv1.RegisterAuthServiceHTTPServer(srv, (*AuthService)(nil))
-	authv1.RegisterPolicyServiceHTTPServer(srv, (*PolicyService)(nil))
 
 	out := map[string]bool{}
 	err := srv.WalkRoute(func(ri khttp.RouteInfo) error {

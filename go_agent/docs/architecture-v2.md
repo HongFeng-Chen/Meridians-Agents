@@ -48,6 +48,7 @@ Worker 拿到的任务无法判断「这个 Agent 还能不能检索这个知识
 | 11. Evaluation | harness 四张表 + 评分 | 运行绑定快照/数据集版本与校验和/模型/Trace；运行期心跳 + 失联回收；成本按 `ref_kind=harness_run` 归集 | 断点续跑（回收只收尾不重跑） |
 | 12. Cost Center | `llm_calls` 记录 token | `usage_records` 自动记账（`llm.CostSink`）+ 聚合 API；`task_id` 与 `ref_kind/ref_id` 双归属键 | 计价规则版本管理、账单结算 |
 | 13. Observability | access log + metrics | OpenTelemetry：一次执行一条 Trace，Span 覆盖 task/llm/mcp/skill/rag/graphrag；进程内环形缓冲 + 可选 OTLP 双落点 | 跨进程 `traceparent` 透传、长期留存依赖 collector |
+| 16. 安全与授权 | Casbin 策略表 + 内置角色矩阵双轨判权 | 移除 Casbin，收敛为「角色矩阵（代码）+ 资源级授权（`resource_permissions`）」两层（§4.4） | Skill 沙箱、MCP 凭证加密、Tool 级 ACL 自动登记（§14.2） |
 
 ---
 
@@ -116,7 +117,9 @@ type Principal struct {
 
 - Provider 只做「凭证 → Principal」，不查库、不判权限；
 - 第三方令牌里的 `roles` **不会**自动变成平台 RBAC 角色；
-- 平台权限仍走 `pkg/authz`（Casbin + 内置矩阵），资源权限走 `biz/resource`。
+- 平台权限走 `pkg/authz` 的内置角色矩阵（角色来自令牌 claim 或 `users.role`），
+  资源权限走 `biz/resource`。**两层都没有「运行时可改的授权表」**：
+  原 Casbin 策略层已移除，见 §4.4。
 
 ### 4.3 启用方式（环境变量）
 
@@ -143,6 +146,33 @@ IDENTITY_JWKS_AUDIENCE=meridians
 
 判定顺序：本地 HS256 验签 → JWKS/RS256 → Introspection → API Key。
 便宜的在前，避免每个请求都打一次 IdP。
+
+### 4.4 授权：只保留两层，Casbin 已移除
+
+| 层 | 回答什么 | 存储 | 谁能改 |
+|---|---|---|---|
+| 角色矩阵 `pkg/authz` | 「这个角色默认能做这类事吗」 | 代码（`matrix`） | 代码评审 |
+| 资源授权 `biz/resource` | 「这个人能不能操作这个具体资源」 | `resource_metadata` / `resource_permissions` | 资源归属人 / 平台管理员，走 `/api/v2/resources/grants` |
+
+角色来源只有两个：令牌 claim（`role` / `roles`）与成员名册 `users.role`
+（LDAP 登录时按 AD 组同步）。判定是**默认拒绝**：未命中即 403。
+
+**为什么删掉 Casbin**（原文 4.4 要求「轻量自研 Resource Authorization」）：
+
+1. **两套判权并存会让权限变得不可推理**：矩阵在代码里、策略表在库里，
+   「某人到底能不能做 X」要看两处快照，事故复盘时无法用一个事实回答。
+2. **它带来的是运营便利，不是新能力**：p 规则的「额外授权」与资源级
+   `resource_permissions` 表达力重叠，后者还多出「对哪个资源」的维度。
+3. **代价不小**：gorm-adapter 建表 + 全量轮询 + 判定缓存失效，
+   一个空转轮询就能把 DB 打满（曾经因为 `StartAutoLoadPolicy` 传成纳秒，
+   变成每 0.3ms 一次全表扫描，见 §13 第 23 条）。
+
+移除范围：`internal/data/db/repo/casbin.go`、`pkg/authz/engine.go`、
+`PolicyService`（含 `/api/auth/policies`、`/api/auth/bindings` 六个端点）、
+前端「授权策略」页、`casbin/*` 三个依赖、`casbin_rule` 表。
+
+需要「给某个具体用户额外放权」时，正确做法是把资源授权给它
+（`POST /api/v2/resources/grants`），而不是再造一张全局策略表。
 
 ---
 
@@ -809,3 +839,71 @@ ALTER TABLE harness_runs
 22. **回收判定依赖心跳与时钟**：与任务租约同理，节点间时钟漂移超过
    `HARNESS_STALE_SEC` 会误判失联（后果是运行被标记 failed，但用例结果已落库的仍在）。
    阈值不要低于 3 个心跳周期；跨机房部署时统一放大。
+23. **没有「运行时可改的全局授权表」**：Casbin 移除后，给具体用户放权只能走
+   资源级授权（`/api/v2/resources/grants`）或改角色（`users.role` / 令牌 claim）。
+   前者需要先把对应资源 `Register` 进 `resource_metadata`——尚未注册的旧资源
+   仍然只能靠角色。若要「临时给某人 platform:config」，现在必须改他的角色，
+   没有「只授这一个权限点」的表达方式；这是刻意的取舍，见 §4.4。
+
+---
+
+## 14. 与 06-v2 交付清单的差距（按原文章节）
+
+§2 只对照到原文第 13 章；原文还有 14~26 章（API/SDK、数据库分类、安全、Console、
+迁移、兼容、目录结构、验收测试、交付清单）。逐项核对后的**未落地部分**如下，
+按「要不要现在做」排序。
+
+### 14.1 结构性缺口（影响后续扩展，建议排进 P5）
+
+| 原文章节 | 缺口 | 现状 | 影响 |
+|---|---|---|---|
+| 5.3 / 15.1 `knowledge_bases` | **知识库没有独立表** | 文档直接落 `rag_documents`（含 `space_id`），向量落 Milvus 单集合 | 一个空间只能有一个隐式知识库；无法按库配 embedding / 分片策略 / 独立配额 |
+| 6.4 `ChunkMetadata` | **chunk 无元数据** | 分块只在 Milvus 里带 `doc_id`，`resource_version` / `security_version` 缺失 | 文档改权限后，已建索引的 chunk 无法回答「这是哪一版安全标签」；只能整体重建 |
+| 7.2 `graph_spaces/graph_nodes/graph_edges` | **图谱没有空间维度** | 节点/边存 Milvus，靠 `chunk_refs` 里的 doc_id 跟随文档可见性 | 无法做「部门图谱」「跨空间图谱引用」；实体合并只能按租户粗粒度 |
+| 8.1 / 8.2 `agent_resource_bindings` | **Agent 仍是能力白名单，不是 ResourceRef** | `agent_definitions` 里存 capabilities / flow JSON，无资源版本号 | 快照里只有依赖清单名字，没有「绑的是哪一版 Prompt / Skill」（§13 第 10 条） |
+| 15.1 `agent_versions` | 定义只有递增 `version` 号 | 版本历史未单独建表 | 无法回滚到历史定义；快照是唯一可追溯点 |
+| 3.4 `external_identity_configs` | **IdP 配置只在环境变量里** | `pkg/principal` 支持四类 Provider，但配置进程启动时读一次 | 多租户接不同 IdP 需要重启 + 多份部署；控制台不能自助配置 |
+
+### 14.2 安全与执行（原文第 9 / 16 章）
+
+| 要求 | 现状 | 缺口 |
+|---|---|---|
+| Skill 沙箱（Local/Remote/Container/WASM）+ CPU/内存/网络/凭证隔离 | 进程内直接执行技能脚本，`is_sandbox` 只表示「禁止再委派」 | 无资源限制、无网络隔离、无执行审计粒度 |
+| MCP 凭证加密保存 | 凭证随 `mcp_servers` 配置存库 | 无 KMS/信封加密，无轮换；`redact` 只保证日志不落明文 |
+| Tool 级 ACL | 有 `mcp_tool` 资源类型与运行时判权 | 工具级授权未在创建/同步时自动登记，需手工 Register |
+| SSRF / egress | **已超出要求**：字面量 IP + 解析后 IP + 重定向三跳校验 | — |
+| 子 Agent 委派 | **已落地**：`delegated_caps` 求交 + 深度闸门 | — |
+
+### 14.3 平台化（原文第 14 / 17 章）
+
+| 要求 | 现状 | 缺口 |
+|---|---|---|
+| `/api/v2/agents/{id}/run` | 任务提交在 `POST /api/agentfactory/tasks`（v1 契约） | v2 没有统一 Run 入口，第三方要读两套契约 |
+| `/api/v2/knowledge-bases`、`/graph-spaces` | 文档与图谱仍走 v1 `/api/rag/**`、`/api/graph/**` | v2 只覆盖空间/资源/成本/任务运维/链路 |
+| `/api/v2/evaluations` | 评测在 v1 `/api/harness/**` | 命名与原文不一致（`harness_*` vs `evaluation_*`），功能等价 |
+| `/api/v2` 走 proto/OpenAPI 生成 | 手写路由 + 手写 `v2` 客户端 | 契约与实现可能漂移（v1 有 `contract_test` 守着，v2 没有） |
+| Go / Python / TypeScript SDK | 只有前端自动生成的 TS 客户端 | 第三方接入要自己拼 HTTP |
+| Console 的 Space / 资源授权页 | 接口齐全（`/api/v2/spaces*`、`/resources/grants`） | **前端没有页面**，只能 curl |
+| Console 可被第三方替换 | Console 只用 `/api` 与 `/mcp/platform` | 无「公开 API 版本冻结 + 弃用策略」文档 |
+
+### 14.4 迁移与验收（原文第 18~24 章）
+
+| 要求 | 现状 |
+|---|---|
+| `migration-v1-to-v2.md` + 迁移脚本（用户/资源/知识库/Agent/任务） | **无**。当前靠「加列 + 默认值回填 + 代码回落」原地演进，没有独立迁移程序，也没有回滚演练 |
+| V1/V2 API 兼容层与废弃策略 | v1 全量保留（proto 未删接口），但没有弃用时间表 |
+| `database-v2.md` / `api-v2.yaml` / `security-v2.md` / `worker-v2.md` / `knowledge-v2.md` / `deployment-v2.md` | **无**。内容分散在 `architecture-v2.md`、`api/openapi.yaml`、`HANDOVER.md` |
+| Kubernetes 部署清单 | **无**。只有 `deploy/compose.yaml` 与根 `docker-compose.yml` |
+| 验收测试：多租户隔离 / RAG 权限 / Worker 恢复 | ✅ 有（`*_test.go` 覆盖） |
+| 验收测试：GraphRAG 权限 / MCP 安全 / 迁移回滚 | 🟡 GraphRAG 只测了「跟随文档白名单」；MCP 有 egress 单测但无端到端渗透用例；回滚演练无 |
+| 目录结构（api-server / scheduler / worker 三进程） | **未拆**。单进程内 worker 池，靠 `worker_instances` + 租约支持多副本；拆分是部署形态问题，不是代码阻塞 |
+
+### 14.5 建议顺序
+
+1. **`knowledge_bases` 表 + chunk 版本字段**（P5 第一优先）：它是「按库配额 / 按库路由 /
+   权限变更可追溯」的前置，越晚做迁移成本越高（要重灌向量）。
+2. **`agent_resource_bindings` + 依赖版本号**：把快照从「名字清单」升级成「可复现的引用」。
+3. **v2 Run / knowledge-bases / graph-spaces 三个入口**：第三方接入只学一套契约。
+4. **Console 补空间与授权页**：接口已经能用，缺的是给人用的界面。
+5. **Skill 沙箱**（容器或 WASM 二选一）：这是唯一还没有任何隔离的执行面。
+6. 文档补齐（`database-v2.md` 等）+ K8s 清单 + 迁移脚本：交付物，不影响代码演进。

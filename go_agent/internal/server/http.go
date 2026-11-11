@@ -63,7 +63,6 @@ func NewHTTPServer(
 	harnessSvc *service.HarnessService,
 	adminSvc *service.AdminService,
 	authSvc *service.AuthService,
-	policySvc *service.PolicyService,
 	auditUC *audit.UseCase,
 	spaceUC *space.UseCase,
 	resUC *resource.UseCase,
@@ -134,8 +133,6 @@ func NewHTTPServer(
 	adminv1.RegisterAdminServiceHTTPServer(srv, adminSvc)
 	// /api/auth/login（公开）、/api/auth/me（带令牌）：用户名密码登录 + 当前身份
 	authv1.RegisterAuthServiceHTTPServer(srv, authSvc)
-	// /api/auth/policies、/api/auth/bindings（Casbin 策略管理，平台管理员）
-	authv1.RegisterPolicyServiceHTTPServer(srv, policySvc)
 	// /mcp/platform（平台内置 MCP 端点：任务中心 / 会话 / 链路数据，只读、仅本机）
 	registerPlatformMCP(srv, platformSvc)
 	// /api/mcp/tool-approvals/**（高危工具调用的审批：列表 / 批准 / 驳回）、

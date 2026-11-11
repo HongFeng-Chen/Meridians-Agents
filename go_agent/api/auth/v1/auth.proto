@@ -1,11 +1,11 @@
-// Package auth.v1 定义身份与授权的对外契约。
+// Package auth.v1 定义身份认证的对外契约。
 //
-// 两条线：
-//   - AuthService：用户名密码登录（本地 bcrypt + LDAP/AD）与当前身份查询。
-//     登录成功签发与网关同密钥的 HS256 JWT，验签逻辑完全复用现有 Verifier。
-//   - PolicyService：Casbin 策略管理。内置角色矩阵是兜底基线，这里管理的是
-//     「额外授予」——给具体用户直接授权限（p 规则）或绑角色（g 规则），
-//     改动即时生效，不需要重启。管理操作要求 platform:config。
+// 只保留 AuthService：用户名密码登录（本地 bcrypt + LDAP/AD）与当前身份查询。
+// 登录成功签发与网关同密钥的 HS256 JWT，验签逻辑完全复用现有 Verifier。
+//
+// 授权不在这个 proto 里：V2 的权限判定只有两层——pkg/authz 的内置角色矩阵
+// （代码评审的基线）与 biz/resource 的资源级授权（resource_permissions）。
+// 原先的「策略 / 角色绑定」接口随 Casbin 一并移除，见 docs/architecture-v2.md。
 syntax = "proto3";
 
 package auth.v1;
@@ -48,48 +48,6 @@ message MeReply {
   string source = 6 [json_name = "source"];
 }
 
-// —— Casbin 策略 ——
-
-// PolicyRule 一条授权规则（casbin p 规则）：给 sub 在 dom 租户内授 perm 权限。
-// sub 可为用户名或 role:<角色>；dom 为租户键，"*" 表示所有租户；perm 形如 "platform:config"。
-message PolicyRule {
-  string sub = 1 [(google.api.field_behavior) = REQUIRED, json_name = "sub"];
-  string dom = 2 [json_name = "dom"];
-  string perm = 3 [(google.api.field_behavior) = REQUIRED, json_name = "perm"];
-}
-
-// RoleBinding 一条角色绑定（casbin g 规则）：把用户在 dom 租户内绑成 role 角色。
-// role 取 authz 规范角色或 role:<角色> 写法；dom 为租户键，"*" 表示全局。
-message RoleBinding {
-  string username = 1 [(google.api.field_behavior) = REQUIRED, json_name = "username"];
-  string role = 2 [(google.api.field_behavior) = REQUIRED, json_name = "role"];
-  string dom = 3 [json_name = "dom"];
-}
-
-message ListPoliciesReply {
-  repeated PolicyRule policies = 1 [json_name = "policies"];
-}
-
-message ListBindingsReply {
-  repeated RoleBinding bindings = 1 [json_name = "bindings"];
-}
-
-message AddPolicyRequest {
-  repeated PolicyRule rules = 1 [(google.api.field_behavior) = REQUIRED, json_name = "rules"];
-}
-
-message AddBindingRequest {
-  repeated RoleBinding bindings = 1 [(google.api.field_behavior) = REQUIRED, json_name = "bindings"];
-}
-
-message RemovePolicyRequest {
-  repeated PolicyRule rules = 1 [(google.api.field_behavior) = REQUIRED, json_name = "rules"];
-}
-
-message RemoveBindingRequest {
-  repeated RoleBinding bindings = 1 [(google.api.field_behavior) = REQUIRED, json_name = "bindings"];
-}
-
 message EmptyReply {}
 
 // AuthService 登录与身份。
@@ -106,50 +64,6 @@ service AuthService {
   rpc Me(EmptyReply) returns (MeReply) {
     option (google.api.http) = {
       get: "/api/auth/me"
-    };
-  }
-}
-
-// PolicyService Casbin 策略管理（platform:config）。
-service PolicyService {
-  // ListPolicies 列出全部 p 规则
-  rpc ListPolicies(EmptyReply) returns (ListPoliciesReply) {
-    option (google.api.http) = {
-      get: "/api/auth/policies"
-    };
-  }
-  // AddPolicy 追加 p 规则（已存在则幂等成功）
-  rpc AddPolicy(AddPolicyRequest) returns (EmptyReply) {
-    option (google.api.http) = {
-      post: "/api/auth/policies"
-      body: "*"
-    };
-  }
-  // RemovePolicy 删除 p 规则
-  rpc RemovePolicy(RemovePolicyRequest) returns (EmptyReply) {
-    option (google.api.http) = {
-      post: "/api/auth/policies/remove"
-      body: "*"
-    };
-  }
-  // ListBindings 列出全部 g 规则（用户角色绑定）
-  rpc ListBindings(EmptyReply) returns (ListBindingsReply) {
-    option (google.api.http) = {
-      get: "/api/auth/bindings"
-    };
-  }
-  // AddBinding 绑定用户角色
-  rpc AddBinding(AddBindingRequest) returns (EmptyReply) {
-    option (google.api.http) = {
-      post: "/api/auth/bindings"
-      body: "*"
-    };
-  }
-  // RemoveBinding 解绑用户角色
-  rpc RemoveBinding(RemoveBindingRequest) returns (EmptyReply) {
-    option (google.api.http) = {
-      post: "/api/auth/bindings/remove"
-      body: "*"
     };
   }
 }

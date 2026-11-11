@@ -45,7 +45,7 @@ export const getStats = (input = {}, options) =>
  *
  * POST /api/extract
  *   query 参数：name
- *   其余字段作为 JSON body 提交
+ *   multipart：file 走表单，其余字段走 query
  * @returns {Promise<ExtractTextReply>}
  */
 export const extractText = (input = {}, options) =>
@@ -114,7 +114,7 @@ export const query = (input = {}, options) =>
  *
  * POST /api/upload
  *   query 参数：name, mode, doc_id, source, scope
- *   其余字段作为 JSON body 提交
+ *   multipart：file 走表单，其余字段走 query
  * @returns {Promise<UploadAndIngestReply>}
  */
 export const uploadAndIngest = (input = {}, options) =>
@@ -482,36 +482,7 @@ export const setDefaultPlatform = (input = {}, options) =>
 export const testPlatform = (input = {}, options) =>
   call('AIPlatformService_TestPlatform', input, options);
 
-/* ---------- Casbin 策略管理 ---------- */
-
-/**
- * ListBindings 列出全部 g 规则（用户角色绑定）
- *
- * GET /api/auth/bindings
- * @returns {Promise<ListBindingsReply>}
- */
-export const listBindings = (input = {}, options) =>
-  call('PolicyService_ListBindings', input, options);
-
-/**
- * AddBinding 绑定用户角色
- *
- * POST /api/auth/bindings
- *   其余字段作为 JSON body 提交
- * @returns {Promise<EmptyReply>}
- */
-export const addBinding = (input = {}, options) =>
-  call('PolicyService_AddBinding', input, options);
-
-/**
- * RemoveBinding 解绑用户角色
- *
- * POST /api/auth/bindings/remove
- *   其余字段作为 JSON body 提交
- * @returns {Promise<EmptyReply>}
- */
-export const removeBinding = (input = {}, options) =>
-  call('PolicyService_RemoveBinding', input, options);
+/* ---------- 登录与身份 ---------- */
 
 /**
  * Login 用户名密码登录；认证未开启 login 时返回 404。
@@ -531,35 +502,6 @@ export const login = (input = {}, options) =>
  */
 export const me = (input = {}, options) =>
   call('AuthService_Me', input, options);
-
-/**
- * ListPolicies 列出全部 p 规则
- *
- * GET /api/auth/policies
- * @returns {Promise<ListPoliciesReply>}
- */
-export const listPolicies = (input = {}, options) =>
-  call('PolicyService_ListPolicies', input, options);
-
-/**
- * AddPolicy 追加 p 规则（已存在则幂等成功）
- *
- * POST /api/auth/policies
- *   其余字段作为 JSON body 提交
- * @returns {Promise<EmptyReply>}
- */
-export const addPolicy = (input = {}, options) =>
-  call('PolicyService_AddPolicy', input, options);
-
-/**
- * RemovePolicy 删除 p 规则
- *
- * POST /api/auth/policies/remove
- *   其余字段作为 JSON body 提交
- * @returns {Promise<EmptyReply>}
- */
-export const removePolicy = (input = {}, options) =>
-  call('PolicyService_RemovePolicy', input, options);
 
 /* ---------- 会话 ---------- */
 
@@ -588,7 +530,7 @@ export const createConversation = (input = {}, options) =>
  *
  * POST /api/conversations/media
  *   query 参数：name
- *   其余字段作为 JSON body 提交
+ *   multipart：file 走表单，其余字段走 query
  * @returns {Promise<UploadMediaReply>}
  */
 export const uploadMedia = (input = {}, options) =>
@@ -1897,14 +1839,8 @@ export const aiplatform = {
 };
 
 export const auth = {
-  listBindings,
-  addBinding,
-  removeBinding,
   login,
   me,
-  listPolicies,
-  addPolicy,
-  removePolicy,
 };
 
 export const conversation = {

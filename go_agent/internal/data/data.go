@@ -150,8 +150,6 @@ var ProviderSet = wire.NewSet(
 	// 系统管理：tenants / users 两表（租户隔离域 + 成员名册）。
 	// 只做管理不参与认证：身份仍来自 JWT / 静态令牌。
 	dbrepo.NewOrgRepo,
-	// Casbin 授权引擎（额外授予层），构造时注册进 authz.Allowed
-	dbrepo.NewAuthzEngine,
 )
 
 // NewAgentFactoryOptions 从配置读 worker 池与护栏参数。

@@ -130,6 +130,10 @@ V2 新增几条窄接口依赖：`rag.SpaceScope ← space`、`resource.SpaceAut
     也别用「TraceID 是否为空串」判活——noop 的 SpanContext 无效，但 `TraceID()` 会给出全零字符串。
 15. **长跑实体要有心跳与回收**：任务靠租约 `lease_expires_at`，评测运行靠 `heartbeat_at`；
     新增长跑实体照此做，回收一律「收尾不重跑」，并在 error 里写清原因（如「执行体失联」）。
+16. **判权只有两层，不要再引入策略表**：`pkg/authz` 的内置角色矩阵（代码）+ `biz/resource`
+    的资源级授权（`resource_permissions`）。Casbin 已整体移除——它带来的「运行时可改的
+    授权表」会让「谁能做什么」需要看两处快照才能回答，事故复盘时无法用一个事实说清。
+    需要给某人额外放权时用 `/api/v2/resources/grants`，不要新建全局策略表或旁路判断。
 
 ## 7. 测试约定
 

@@ -5,7 +5,7 @@
 
 无 UI 框架依赖（原生 CSS，设计令牌在 `src/styles.css` 的 `:root`），路由用 hash，刷新不丢页面。
 
-## 页面（19 个 + 登录页）
+## 页面（18 个 + 登录页）
 
 | 分组 | 导航 | 说明 |
 |------|------|------|
@@ -26,7 +26,6 @@
 | 会话 | 会话 | 会话目录 + 多轮对话 + 消息链路弹层（召回明细、工具调用）+ 多角色辩论（暂停 / 恢复 / 叫停、增删角色） |
 | 系统管理 | 租户管理 | 多租户隔离域：新建 / 改名 / 启停 / 删除；列表带成员数、任务数与内置标记（`public` 不可删，租户键创建后不可改） |
 | | 用户管理 | 成员名册：按租户 / 角色 / 状态筛选，登记与编辑成员、改角色、停用、移除；名册只做管理，不参与登录认证 |
-| | 授权策略 | Casbin 增量授权：p 规则（某用户 / 角色 / 全员在某租户内授某权限点）+ g 规则（角色绑定）；内置角色矩阵只读 |
 | | 文档与系统 | 文档列表按「平台通用 / 租户共享 / 个人私有」筛选与展示归属，删除含图谱引用摘除；连接与模型信息、系统配置 |
 
 ## 启动
@@ -67,9 +66,9 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            19 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
+├── pages/            18 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
 │                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
-│                     Tasks / Chats / Tenants / Users / Policies / Admin）+ Login 登录页
+│                     Tasks / Chats / Tenants / Users / Admin）+ Login 登录页
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、
 │                     TaskDetailDrawer（含 Trace span 树与成本）、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
 ├── api/generated/    proto → SDK（不要手改）

@@ -799,7 +799,7 @@ curl -s -H 'Authorization: Bearer ops-token'   'http://localhost:8000/api/admin/
 | `/api/conversations/**` | 会话目录 + 消息链路 + 多角色辩论 |
 | `/api/histories/**` | 统一操作历史（MCP / 技能 / 记忆 / RAG / GraphRAG 召回） |
 | `/api/harness/**` | 评测：用例集 / 用例 / 启动与停止运行 / 报告 / 删除运行 |
-| `/api/auth/**` | 登录、当前身份、账号绑定、权限策略（Casbin p/g 规则） |
+| `/api/auth/**` | 登录、当前身份（权限判定只有内置角色矩阵 + 资源级授权，无独立策略接口） |
 | `/api/admin/**` | 租户与成员名册、审计事件查询 |
 | `/api/v2/**` | 身份（`/me`）、空间与资源共享、统一资源与授权、成本（`usage/records`、`usage/summary`）、任务运维（`workers`、`tasks/leases`、`tasks/dead-letters`、`tasks/detail`）、链路（`traces`、`traces/detail`）、Agent 快照 |
 | `/mcp/platform` | 平台内置 MCP 端点（Streamable HTTP，只读，仅本机回环） |

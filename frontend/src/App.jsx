@@ -19,7 +19,6 @@ import Chats from './pages/Chats.jsx';
 import Tenants from './pages/Tenants.jsx';
 import Users from './pages/Users.jsx';
 import Login from './pages/Login.jsx';
-import Policies from './pages/Policies.jsx';
 import { api } from './api.js';
 import { IconRefresh } from './components/Icons.jsx';
 
@@ -118,11 +117,6 @@ const PAGES = {
     title: '用户管理',
     desc: '成员名册：谁属于哪个租户、在该租户是什么角色。名册只做管理，不参与登录认证',
     component: Users,
-  },
-  policies: {
-    title: '授权策略',
-    desc: 'Casbin 额外授予：权限点策略与用户角色绑定，改动即时生效（基线仍是内置角色矩阵）',
-    component: Policies,
   },
 };
 

@@ -278,14 +278,6 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	adminService := service.NewAdminService(orgUseCase)
 	authnUseCase := authn.New(orgRepo, security)
 	authService := service.NewAuthService(authnUseCase)
-	casbinEngine, err := repo2.NewAuthzEngine(dbData)
-	if err != nil {
-		cleanup3()
-		cleanup2()
-		cleanup()
-		return nil, nil, err
-	}
-	policyService := service.NewPolicyService(casbinEngine)
 	auditRepo, err := repo2.NewAuditRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -295,7 +287,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	}
 	auditUseCase := audit.New(auditRepo)
 	usageUseCase := usage.New(usageRepo)
-	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, policyService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
+	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
 	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService)
 	return app, func() {
 		cleanup3()

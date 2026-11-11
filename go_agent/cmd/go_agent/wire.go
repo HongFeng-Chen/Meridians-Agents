@@ -20,7 +20,6 @@ import (
 	"go_agent/internal/biz/skill"
 	"go_agent/internal/conf"
 	"go_agent/internal/data"
-	repo "go_agent/internal/data/db/repo"
 	"go_agent/internal/server"
 	"go_agent/internal/service"
 
@@ -40,8 +39,6 @@ func wireApp(*conf.Server, *conf.Data, *conf.Security, *slog.Logger) (*kratos.Ap
 		wire.Bind(new(platformmcp.ConvSource), new(*conversation.UseCase)),
 		wire.Bind(new(platformmcp.HistorySource), new(*history.UseCase)),
 		wire.Bind(new(harness.ScoreRecorder), new(*prompt.UseCase)),
-		// 策略管理接口的存储实现指向 Casbin 引擎
-		wire.Bind(new(service.PolicyStore), new(*repo.CasbinEngine)),
 		newApp,
 	))
 }

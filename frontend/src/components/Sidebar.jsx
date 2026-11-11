@@ -55,7 +55,6 @@ const NAV_GROUPS = [
     items: [
       { key: 'tenants', label: '租户管理', icon: IconTenant },
       { key: 'users', label: '用户管理', icon: IconUser },
-      { key: 'policies', label: '授权策略', icon: IconSettings },
       { key: 'admin', label: '文档与系统', icon: IconSettings },
     ],
   },

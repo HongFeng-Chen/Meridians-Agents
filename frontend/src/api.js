@@ -110,5 +110,4 @@ export const api = {  health: () => rag.health(),
   // 登录与身份（后端未开启 login 时 me 返回 404，App 据此跳过登录门）
   login: (payload) => auth.login(payload),
   authMe: () => auth.me({}),
-  listPolicies: () => auth.listPolicies(),
 };
