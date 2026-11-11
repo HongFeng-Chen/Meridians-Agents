@@ -80,11 +80,10 @@ export default function Sidebar({ page, onNavigate, health, onNewChat }) {
       </div>
 
       <nav className="nav">
-        {/* 会话：只留新对话入口，最近会话 / 辩论在会话页内管理 */}
+        {/* 会话：顶部主行动按钮（Dify 式「新对话」），最近会话 / 辩论在会话页内管理 */}
         <div className="nav-group">
-          <div className="nav-label">会话</div>
-          <button className={`nav-item${page === 'chats' || page === 'debate' ? ' active' : ''}`} type="button" onClick={onNewChat}>
-            <IconSpark size={17} />
+          <button className="nav-cta" type="button" onClick={onNewChat}>
+            <IconSpark size={16} />
             <span>新对话</span>
           </button>
         </div>
