@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Alert, Panel, Spinner } from './UI.jsx';
-import { IconDoc, IconUpload } from './Icons.jsx';
+import { IconDatabase, IconDoc, IconGraph, IconSearch, IconSpark, IconUpload } from './Icons.jsx';
 import { SCOPES, scopeHint, scopeLabel } from './Scope.jsx';
 
 const SAMPLE = `Milvus 是一款开源的向量数据库，由 Zilliz 公司主导研发，采用 Apache 2.0 协议开源。
@@ -19,8 +19,41 @@ const ACCEPT = [
 
 const extOf = (name) => (name.split('.').pop() || '').toLowerCase();
 
-export default function IngestForm({ mode }) {
-  const isGraph = mode === 'graph';
+// 索引方式是「实时库」的唯一分叉口：一份内容可以只建一种索引，也可以两种同建。
+// 文案按「什么时候选它」来写，而不是按技术名——用户不关心 HNSW 还是 BM25。
+const MODES = [
+  {
+    key: 'both',
+    title: '双索引',
+    tag: '推荐',
+    icon: IconSpark,
+    desc: '同一份文档同时写入向量库与知识图谱，检索时 RAG 与 GraphRAG 都能命中',
+    meta: '最通用 · 耗时取决于图谱抽取',
+  },
+  {
+    key: 'rag',
+    title: '向量索引',
+    icon: IconSearch,
+    desc: '分块 + 向量化 + BM25，适合原文问答、条款查找这类「找得到原句」的问题',
+    meta: '秒级完成 · 按片段召回',
+  },
+  {
+    key: 'graph',
+    title: '知识图谱',
+    icon: IconGraph,
+    desc: 'LLM 抽取实体与关系，适合跨片段、多跳的关系问题（谁和谁通过什么产生联系）',
+    meta: '分钟级 · 会多次调用 LLM',
+  },
+];
+
+const MODE_HINT = {
+  both: '两个索引都会重建，入库后可分别用两种检索方式验证效果',
+  rag: '只建向量索引；如果这篇文档之前建过图谱，旧图谱引用会被清理',
+  graph: '只建图谱；如果这篇文档之前建过分块，旧分块会被清理',
+};
+
+export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) {
+  const [mode, setMode] = useState(initialMode);
   const [docId, setDocId] = useState('');
   const [source, setSource] = useState('');
   // 作用域决定这条知识「谁看得见」，默认个人私有（最保守）
@@ -32,7 +65,24 @@ export default function IngestForm({ mode }) {
   const [result, setResult] = useState(null);
   const [fileName, setFileName] = useState('');
   const [fileType, setFileType] = useState('');
+  const [elapsed, setElapsed] = useState(0);
   const fileRef = useRef(null);
+
+  const isGraph = mode === 'graph';
+  const needGraph = mode !== 'rag';
+  const needVector = mode !== 'graph';
+  const current = MODES.find((m) => m.key === mode) || MODES[0];
+
+  // 入库是同步请求，拿不到逐阶段进度；这里只展示「已用时」，
+  // 不做假进度条——用户看到的时间是真的，才不会误判卡死。
+  useEffect(() => {
+    if (!loading) {
+      setElapsed(0);
+      return undefined;
+    }
+    const timer = setInterval(() => setElapsed((v) => v + 1), 1000);
+    return () => clearInterval(timer);
+  }, [loading]);
 
   const readFile = async (file) => {
     if (!file) return;
@@ -82,9 +132,12 @@ export default function IngestForm({ mode }) {
         source: source.trim() || docId.trim() || '手动输入',
         text,
         scope,
+        mode,
       };
-      const data = isGraph ? await api.graphIngest(payload) : await api.ragIngest(payload);
-      setResult({ ...data, mode });
+      const data = await api.ragIngest(payload);
+      const done = { ...data, mode: data.mode || mode, scope };
+      setResult(done);
+      onDone?.(done);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -92,8 +145,50 @@ export default function IngestForm({ mode }) {
     }
   };
 
+  // 一次入库会经过的环节：双索引是「向量 + 图谱」串行，这里如实列出来
+  const phases = [
+    { label: '解析与切分', on: true },
+    { label: '向量化写入', on: needVector },
+    { label: '图谱抽取', on: needGraph },
+    { label: '写元数据', on: true },
+  ].filter((p) => p.on);
+
   return (
     <form className="form" onSubmit={onSubmit}>
+      <Panel title="选择索引方式" desc="实时库把「组织」与「索引」分开：文档只存一份，索引按需建">
+        <div className="mode-grid">
+          {MODES.map((m) => {
+            const Icon = m.icon;
+            const active = mode === m.key;
+            return (
+              <button
+                key={m.key}
+                type="button"
+                className={`mode-card${active ? ' active' : ''}`}
+                onClick={() => setMode(m.key)}
+                disabled={loading}
+                aria-pressed={active}
+              >
+                <span className="mode-icon">
+                  <Icon size={18} />
+                </span>
+                <span className="mode-title">
+                  {m.title}
+                  {m.tag && <em className="mode-tag">{m.tag}</em>}
+                </span>
+                <span className="mode-desc">{m.desc}</span>
+                <span className="mode-meta">{m.meta}</span>
+                <span className="mode-check" aria-hidden="true">{active ? '✓' : ''}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mode-hint">
+          <span className="mode-hint-label">{current.title}</span>
+          <span>{MODE_HINT[mode]}</span>
+        </div>
+      </Panel>
+
       <Panel
         title="文档信息"
         desc={isGraph ? '实体与关系的抽取结果会关联到这里的文档标识' : '文档标识用于检索时按来源过滤'}
@@ -139,7 +234,7 @@ export default function IngestForm({ mode }) {
       <Panel
         title="文档内容"
         desc={`支持 PDF / Word(.docx/.doc) / Excel(.xlsx/.xls) / Markdown / 纯文本，${
-          isGraph ? '每个分块会调用 LLM 抽取实体与关系' : '系统自动分块并向量化'
+          needGraph ? '图谱环节会按分块调用 LLM 抽取实体与关系' : '系统自动分块并向量化'
         }`}
         actions={
           <>
@@ -178,7 +273,7 @@ export default function IngestForm({ mode }) {
         >
           <textarea
             className="textarea"
-            rows={14}
+            rows={12}
             placeholder="在此粘贴文档内容，或把 PDF / Word / Excel / Markdown / 文本文件拖进来（二进制文档会自动解析为文本，可先检查再入库）…"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -199,43 +294,88 @@ export default function IngestForm({ mode }) {
             </span>
             <span className="muted">
               {text.length.toLocaleString()} 字符
-              {fileName && fileType ? ` · 已解析` : ''}
+              {fileName && fileType ? ' · 已解析' : ''}
             </span>
           </div>
         </div>
       </Panel>
 
       {error && <Alert type="error">{error}</Alert>}
+
+      {loading && (
+        <div className="ingest-live">
+          <div className="ingest-live-head">
+            <Spinner text={`正在执行${current.title}入库`} />
+            <span className="mono muted">{elapsed}s</span>
+          </div>
+          <div className="pipe">
+            {phases.map((p, i) => (
+              <span key={p.label} className="pipe-node">
+                <span className="pipe-index">{i + 1}</span>
+                {p.label}
+              </span>
+            ))}
+          </div>
+          <p className="muted ingest-live-hint">
+            {needGraph
+              ? '图谱抽取按分块并发调用 LLM，长文档需要数分钟；中途离开页面不会中断后端任务'
+              : '向量化按批写入 Milvus，通常几秒内完成'}
+          </p>
+        </div>
+      )}
+
       {result && (
-        <Alert type="success">
-          {result.mode === 'graph' ? (
-            <>
-              图谱构建完成 · 文档 <b>{result.doc_id}</b> · 新增/合并实体{' '}
-              <b>{result.entities}</b> 个，关系 <b>{result.relations}</b> 条
-            </>
-          ) : (
-            <>
-              导入成功 · 文档 <b>{result.doc_id}</b> · 共写入 <b>{result.chunks}</b> 个分块 ·{' '}
-              作用域 <b>{scopeLabel(scope)}</b>
-            </>
-          )}
-        </Alert>
+        <div className="ingest-done">
+          <Alert type="success">
+            <b>{result.mode === 'both' ? '双索引构建完成' : result.mode === 'graph' ? '图谱构建完成' : '导入成功'}</b>
+            {' · '}文档 <b className="mono">{result.doc_id}</b>
+            {result.chunks > 0 && <> · 分块 <b>{result.chunks}</b></>}
+            {result.entities > 0 && <> · 实体 <b>{result.entities}</b></>}
+            {result.relations > 0 && <> · 关系 <b>{result.relations}</b></>}
+            {' · '}作用域 <b>{scopeLabel(result.scope || scope)}</b>
+            {result.chunks > 0 && <span className="muted">（已可被检索命中）</span>}
+          </Alert>
+          <div className="ingest-done-actions">
+            <button className="btn ghost sm" type="button" onClick={() => onOpenTab?.('assets')}>
+              <IconDatabase size={15} /> 查看知识资产
+            </button>
+            <button className="btn ghost sm" type="button" onClick={() => onOpenTab?.('ask')}>
+              <IconSearch size={15} /> 去检索验证
+            </button>
+            <button
+              className="btn ghost sm"
+              type="button"
+              onClick={() => {
+                setResult(null);
+                setText('');
+                setDocId('');
+                setSource('');
+                setFileName('');
+                setFileType('');
+              }}
+            >
+              再导一篇
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="form-actions">
         <button className="btn primary" type="submit" disabled={loading || parsing}>
           {loading ? (
-            <Spinner text={isGraph ? '正在抽取图谱…' : '正在写入…'} />
-          ) : isGraph ? (
+            <Spinner text="正在写入…" />
+          ) : mode === 'both' ? (
+            '双索引入库'
+          ) : mode === 'graph' ? (
             '构建知识图谱'
           ) : (
-            '导入知识库'
+            '导入向量索引'
           )}
         </button>
         <span className="muted">
-          {isGraph
-            ? '抽取过程会多次调用 LLM，长文档耗时较长，请耐心等待'
-            : '写入后即可在「混合检索问答」中检索到该文档'}
+          {needGraph
+            ? '图谱抽取会多次调用 LLM，长文档耗时较长，请耐心等待'
+            : '写入后即可在「检索问答」里用向量检索命中'}
         </span>
       </div>
     </form>

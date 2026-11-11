@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, agentfactory, llm, mcp } from '../api.js';
 import { Panel, StatCard, EmptyState, Badge, Alert } from '../components/UI.jsx';
 import { LLMCallsTable, fmtTokens } from '../components/LLMCalls.jsx';
-import { IconArrowRight, IconDatabase, IconDoc, IconGraph, IconSearch, IconUpload, IconBrain, IconSpark, IconLink } from '../components/Icons.jsx';
+import { IconArrowRight, IconDatabase, IconDoc, IconSearch, IconUpload, IconBrain, IconSpark, IconLink } from '../components/Icons.jsx';
 
 // 仪表盘：知识库规模 + Agent 平台运行指标 + 最近动态。
 // 数据来自六个域的统计接口，Promise.allSettled 并行拉取，单域失败不影响整体。
@@ -125,10 +125,9 @@ export default function Dashboard({ onNavigate }) {
   const usage = buildUsageBuckets(trendCalls);
 
   const quickActions = [
-    { key: 'rag-ingest', title: '导入文档', desc: '分块 + 向量化 + BM25 索引', icon: IconUpload },
-    { key: 'rag-query', title: '混合检索问答', desc: '语义 + 关键词双路召回', icon: IconSearch },
-    { key: 'graph-ingest', title: '构建图谱', desc: '抽取实体与关系', icon: IconDatabase },
-    { key: 'graph-query', title: '图谱问答', desc: '多跳关系推理', icon: IconGraph },
+    { key: 'kb-assets', hash: 'knowledge?tab=assets', title: '实时库', desc: '一份文档 · 向量 + 图谱双索引', icon: IconDatabase },
+    { key: 'kb-ingest', hash: 'knowledge?tab=ingest', title: '接入数据', desc: '向量 / 图谱 / 双索引可选', icon: IconUpload },
+    { key: 'kb-ask', hash: 'knowledge?tab=ask', title: '检索问答', desc: 'RAG 与 GraphRAG 双路对比', icon: IconSearch },
     { key: 'agents', title: 'Agent 工厂', desc: '低代码定义 + LLM 元编程', icon: IconBrain },
     { key: 'tasks', title: '任务中心', desc: '异步执行 · 链路追踪', icon: IconSpark },
     { key: 'llm', title: '模型数据源', desc: '多源路由 · 调用历史', icon: IconDoc },
@@ -175,12 +174,17 @@ export default function Dashboard({ onNavigate }) {
         />
       </div>
 
-      <Panel title="快捷入口" desc="两条业务线可对同一批文档并行摄取；平台能力覆盖 Agent / 任务 / 模型 / 工具">
+      <Panel title="快捷入口" desc="实时库里同一批文档可建向量与图谱两种索引；平台能力覆盖 Agent / 任务 / 模型 / 工具">
         <div className="action-grid">
           {quickActions.map((a) => {
             const Icon = a.icon;
             return (
-              <button key={a.key} className="action-card" type="button" onClick={() => onNavigate(a.key)}>
+              <button
+                key={a.key}
+                className="action-card"
+                type="button"
+                onClick={() => (a.hash ? (window.location.hash = `#/${a.hash}`) : onNavigate(a.key))}
+              >
                 <span className="action-icon">
                   <Icon size={18} />
                 </span>
@@ -354,7 +358,7 @@ export default function Dashboard({ onNavigate }) {
         {/* 最近入库文档 */}
         <Panel title="最近入库文档" desc="按文档聚合的分块数量">
           {docs.length === 0 ? (
-            <EmptyState icon={IconDoc} title="暂无文档" desc="前往「RAG · 文档导入」写入第一篇文档" />
+            <EmptyState icon={IconDoc} title="暂无文档" desc="前往「实时库 · 数据接入」写入第一篇文档" />
           ) : (
             <div className="table-wrap">
               <table className="table">

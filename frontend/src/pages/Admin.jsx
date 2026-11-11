@@ -109,7 +109,7 @@ export default function Admin() {
         }
       >
         {shown.length === 0 ? (
-          <EmptyState icon={IconDoc} title="暂无已入库文档" desc="前往「RAG · 文档导入」写入内容" />
+          <EmptyState icon={IconDoc} title="暂无已入库文档" desc="前往「实时库 · 数据接入」写入内容" />
         ) : (
           <div className="table-wrap">
             <table className="table">

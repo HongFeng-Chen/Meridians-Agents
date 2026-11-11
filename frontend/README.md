@@ -15,10 +15,7 @@
 | 分组 | 导航 | 说明 |
 |------|------|------|
 | 总览 | 仪表盘 | 文档 / 分块 / 实体 / 关系规模、LLM 用量趋势（按模型分色折线，输入实线 / 输出虚线）、最近任务、运行环境 |
-| RAG 知识库 | 文档导入 | 粘贴文本或拖拽文件（PDF / Word / Excel / Markdown / 文本），解析后入库（分块 + BM25 稀疏索引） |
-| | 混合检索问答 | 提问 → 混合检索 → 带引用片段的答案，展示相关度与原文 |
-| GraphRAG | 图谱构建 | LLM 抽取实体 / 关系，展示新增实体 / 关系数量 |
-| | 图谱问答 | 答案 + 子图可视化（SVG 环形布局）+ 实体 / 关系 / 原文证据 |
+| 知识 | 实时库 | **一个库、一份文档、两种索引**（原「RAG 知识库 + GraphRAG 知识图谱」两目录已收敛至此，旧地址自动跳转）。内部分三个分区：知识资产（每篇文档标注向量 / 图谱索引状态，15s 自动刷新）、数据接入（索引方式三选一：双索引 / 向量 / 图谱，入库流水线实时可见）、检索问答（向量检索 / 图谱检索 / 双路对比） |
 | 平台能力 | 提示词工程 | 模板版本列表、发布、激活 / 回滚、渲染预览 |
 | | 记忆系统 | 短期会话、长期记忆、向量 / 图谱召回、记忆问答 |
 | | 模型数据源 | 多数据源 CRUD、默认切换、连通性测试、调用历史 |
@@ -31,7 +28,7 @@
 | 会话 | 会话 | 会话目录 + 多轮对话 + 消息链路弹层（召回明细、工具调用）+ 多角色辩论（暂停 / 恢复 / 叫停、增删角色） |
 | 系统管理 | 租户管理 | 多租户隔离域：新建 / 改名 / 启停 / 删除；列表带成员数、任务数与内置标记（`public` 不可删，租户键创建后不可改） |
 | | 用户管理 | 成员名册：按租户 / 角色 / 状态筛选，登记与编辑成员、改角色、停用、移除；名册只做管理，不参与登录认证 |
-| | 文档与系统 | 文档列表按「平台通用 / 租户共享 / 个人私有」筛选与展示归属，删除含图谱引用摘除；连接与模型信息、系统配置 |
+| | 文档与系统 | 文档列表按「平台通用 / 租户共享 / 个人私有」筛选与展示归属，删除含图谱引用摘除；连接与模型信息、系统配置（日常文档管理请用「实时库 · 知识资产」） |
 
 ## 启动
 
@@ -71,10 +68,11 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            18 个页面（Dashboard / RagIngest / RagQuery / GraphIngest / GraphQuery /
+├── pages/            15 个页面（Dashboard / Knowledge（实时库：资产·接入·检索三合一）/
 │                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
 │                     Tasks / Chats / Tenants / Users / Admin）+ Login 登录页
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、
+│                     knowledge/（RagAnswer / GraphAnswer 检索结果组件）、IngestForm（三模式入库）、
 │                     TaskDetailDrawer（含 Trace span 树与成本）、ConvTraceDrawer、HistoryPanel、LLMCalls、DebateSetup…
 ├── api/generated/    proto → SDK（不要手改）
 ├── api/http.js       统一 fetch、错误处理、OPERATIONS 清单

@@ -19,10 +19,9 @@ const EDGE_CANDIDATES = [
 
 const PAGES = [
   ['dashboard', '仪表盘'],
-  ['rag-ingest', '文档导入'],
-  ['rag-query', '混合检索问答'],
-  ['graph-ingest', '图谱构建'],
-  ['graph-query', '图谱问答'],
+  ['knowledge?tab=assets', '实时库', 'knowledge-assets'],
+  ['knowledge?tab=ingest', '实时库', 'knowledge-ingest'],
+  ['knowledge?tab=ask', '实时库', 'knowledge-ask'],
   ['prompts', '提示词工程'],
   ['memory', '记忆系统'],
   ['llm', '大模型数据源'],
@@ -53,7 +52,7 @@ const browser = await puppeteer.launch({
 
 let failed = 0;
 try {
-  for (const [key, expect] of PAGES) {
+  for (const [key, expect, shotName] of PAGES) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
 
@@ -83,7 +82,7 @@ try {
 
     const title = await page.$eval('.page-title', (el) => el.textContent.trim()).catch(() => '');
     const bodyLen = (await page.$eval('.content', (el) => el.innerText.trim().length).catch(() => 0)) || 0;
-    const shot = path.join(OUT, `${key}.png`);
+    const shot = path.join(OUT, `${shotName || key.replace(/[^a-z0-9-]+/gi, '-')}.png`);
     await page.screenshot({ path: shot, fullPage: false });
 
     const ok = title.includes(expect) && bodyLen > 20 && errors.length === 0;

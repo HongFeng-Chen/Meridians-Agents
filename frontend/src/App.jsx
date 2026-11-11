@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import RagIngest from './pages/RagIngest.jsx';
-import RagQuery from './pages/RagQuery.jsx';
-import GraphIngest from './pages/GraphIngest.jsx';
-import GraphQuery from './pages/GraphQuery.jsx';
+import Knowledge from './pages/Knowledge.jsx';
 import Admin from './pages/Admin.jsx';
 import Prompts from './pages/Prompts.jsx';
 import Memory from './pages/Memory.jsx';
@@ -28,25 +25,10 @@ const PAGES = {
     desc: '系统运行状态、知识与智能体规模一览',
     component: Dashboard,
   },
-  'rag-ingest': {
-    title: 'RAG · 文档导入',
-    desc: '文档经分块、向量化后写入 Milvus，同时由服务端 BM25 生成稀疏索引',
-    component: RagIngest,
-  },
-  'rag-query': {
-    title: 'RAG · 混合检索问答',
-    desc: 'Dense 语义召回 + BM25 关键词召回，RRF 融合后交给大模型生成答案',
-    component: RagQuery,
-  },
-  'graph-ingest': {
-    title: 'GraphRAG · 图谱构建',
-    desc: 'LLM 抽取实体与关系，合并去重后构建知识图谱',
-    component: GraphIngest,
-  },
-  'graph-query': {
-    title: 'GraphRAG · 图谱问答',
-    desc: '实体混合检索 + 关系多跳扩展，基于子图与原文证据推理',
-    component: GraphQuery,
+  knowledge: {
+    title: '实时库',
+    desc: '一个库、一份文档、两种索引：向量检索（RAG）与图谱检索（GraphRAG）共用同一批知识，写入即可检索',
+    component: Knowledge,
   },
   prompts: {
     title: '提示词工程',
@@ -120,9 +102,23 @@ const PAGES = {
   },
 };
 
+// 旧地址兼容：RAG / GraphRAG 曾经是两个独立目录，现在收敛到「实时库」的内部 Tab。
+// 外部链接、浏览器书签、截图里的地址都不会失效。
+const LEGACY_ROUTES = {
+  'rag-ingest': 'knowledge?tab=ingest',
+  'rag-query': 'knowledge?tab=ask&mode=rag',
+  'graph-ingest': 'knowledge?tab=ingest',
+  'graph-query': 'knowledge?tab=ask&mode=graph',
+};
+
 function pageFromHash() {
-  // 支持 hash 查询参数（如 #/prompts?agent=xxx）：页面 key 取 ? 之前的部分
+  // 支持 hash 查询参数（如 #/knowledge?tab=ask）：页面 key 取 ? 之前的部分
   const key = window.location.hash.replace(/^#\/?/, '').split('?')[0];
+  const legacy = LEGACY_ROUTES[key];
+  if (legacy) {
+    window.location.replace(`#/${legacy}`);
+    return 'knowledge';
+  }
   return PAGES[key] ? key : 'dashboard';
 }
 

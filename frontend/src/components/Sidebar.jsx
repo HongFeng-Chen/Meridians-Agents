@@ -5,15 +5,12 @@ import {
   IconDashboard,
   IconDatabase,
   IconFlask,
-  IconGraph,
   IconLink,
   IconPlug,
   IconPrompt,
-  IconSearch,
   IconSettings,
   IconSpark,
   IconTenant,
-  IconUpload,
   IconUser,
 } from './Icons.jsx';
 
@@ -23,18 +20,10 @@ const NAV_GROUPS = [
     items: [{ key: 'dashboard', label: '仪表盘', icon: IconDashboard }],
   },
   {
-    label: 'RAG 知识库',
-    items: [
-      { key: 'rag-ingest', label: '文档导入', icon: IconUpload },
-      { key: 'rag-query', label: '混合检索问答', icon: IconSearch },
-    ],
-  },
-  {
-    label: 'GraphRAG 知识图谱',
-    items: [
-      { key: 'graph-ingest', label: '图谱构建', icon: IconDatabase },
-      { key: 'graph-query', label: '图谱问答', icon: IconGraph },
-    ],
+    // 实时库：RAG 与 GraphRAG 不再是两个目录，入口只有一个，
+    // 「这篇文档建了什么索引、用哪种方式检索」都在库内区分
+    label: '知识',
+    items: [{ key: 'knowledge', label: '实时库', icon: IconDatabase }],
   },
   {
     label: '平台能力',
