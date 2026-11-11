@@ -1032,7 +1032,15 @@ paths:
                     type: string
             requestBody:
                 content:
-                    application/json: {}
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+                            required:
+                                - file
                 required: true
             responses:
                 "200":
@@ -1352,7 +1360,15 @@ paths:
                     type: string
             requestBody:
                 content:
-                    application/json: {}
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+                            required:
+                                - file
                 required: true
             responses:
                 "200":
@@ -3760,7 +3776,15 @@ paths:
                     type: string
             requestBody:
                 content:
-                    application/json: {}
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+                            required:
+                                - file
                 required: true
             responses:
                 "200":
@@ -4415,6 +4439,29 @@ components:
                 user_id:
                     type: string
                     description: 归属用户（隔离键）：任务中心只返回当前用户的任务
+                snapshot_id:
+                    type: string
+                    description: |-
+                        提交时钉住的配置快照（0 = 无快照，执行期回退当前定义）。
+                         详情页用它回答「这个任务是哪一版 Agent 配置跑出来的」。
+                delegated_caps:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        委派上下文：子任务的有效能力清单（父级收紧后下放的那部分）。
+                         必须配合 delegated_restricted 用：proto3 的 repeated 区分不了
+                         「未受限（nil）」和「受限但清单为空」，后者表示不允许任何能力。
+                delegated_restricted:
+                    type: boolean
+                    description: |-
+                        true = 能力已被上游收紧，delegated_caps 即为全部可用能力；
+                         false = 未受限，按 Agent 自身配置执行
+                trace_id:
+                    type: string
+                    description: |-
+                        执行链路 Trace（OpenTelemetry）：详情页据此拉 span 树。
+                         进程内 trace 被淘汰后仍可用它去 collector 查历史链路。
             description: AgentTask 异步任务（parent_task_id 形成多 Agent 协作链路树）
         agentfactory.v1.ApproveTaskRequest:
             required:

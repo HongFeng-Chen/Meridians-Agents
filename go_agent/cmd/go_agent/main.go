@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/egress"
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/pkg/trace"
 	"go_agent/internal/server"
 	"go_agent/internal/service"
 
@@ -126,6 +128,30 @@ func main() {
 	defer cleanupConf()
 
 	logStartupInfo(bc)
+
+	// 追踪：OTLP 端点由环境变量决定（不配则只有进程内环形存储 + /api/v2/traces）。
+	// 放在配置加载之后、wire 之前——之后所有 biz 调用都能落进同一条 Trace。
+	tr, terr := trace.Init(trace.Config{
+		ServiceName:    Name,
+		ServiceVersion: Version,
+		Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		Insecure:       !strings.EqualFold(os.Getenv("OTEL_EXPORTER_OTLP_INSECURE"), "false"),
+		SampleRatio:    envFloat("OTEL_TRACES_SAMPLE_RATIO", 1),
+		MaxTraces:      envInt("OTEL_TRACE_BUFFER", 512),
+	})
+	if terr != nil {
+		// 追踪不可用不能阻断启动：可观测性是加分项，不是业务依赖
+		log.Warn("链路追踪初始化失败，降级为仅进程内存储", "err", terr)
+	} else if tr != nil {
+		log.Info("链路追踪已启用",
+			"otlp", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "",
+			"buffer", envInt("OTEL_TRACE_BUFFER", 512))
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tr.Shutdown(ctx)
+		}()
+	}
 
 	// 启动闸门：认证关闭 + 对外监听时拒绝启动（见 server.CheckInsecureExposure）
 	if err := server.CheckInsecureExposure(bc.GetSecurity(),
@@ -243,4 +269,30 @@ func maskKey(k string) string {
 	default:
 		return k[:4] + "***" + k[len(k)-4:]
 	}
+}
+
+// envInt 读整数环境变量（缺失或非法时用默认值；启动参数不值得为此报错）
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// envFloat 读浮点环境变量
+func envFloat(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }

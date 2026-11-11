@@ -20,7 +20,11 @@ import (
 	promptv1 "go_agent/api/prompt/v1"
 	ragv1 "go_agent/api/rag/v1"
 	skillv1 "go_agent/api/skill/v1"
+	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/resource"
+	"go_agent/internal/biz/space"
+	"go_agent/internal/biz/usage"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/health"
 	"go_agent/internal/pkg/httpx"
@@ -61,6 +65,10 @@ func NewHTTPServer(
 	authSvc *service.AuthService,
 	policySvc *service.PolicyService,
 	auditUC *audit.UseCase,
+	spaceUC *space.UseCase,
+	resUC *resource.UseCase,
+	usageUC *usage.UseCase,
+	taskUC *agentfactory.UseCase,
 ) *http.Server {
 	g := newGate(sec)
 	warnInsecureExposure(sec, c.GetHttp().GetAddr())
@@ -133,6 +141,8 @@ func NewHTTPServer(
 	// /api/mcp/tool-approvals/**（高危工具调用的审批：列表 / 批准 / 驳回）、
 	// /api/admin/audits（审计事件查询）——运维面接口，管理员限定
 	registerOpsRoutes(srv, mcpSvc, auditUC)
+	// /api/v2/**（知识空间、统一资源、成本、当前身份；V2 资源授权面）
+	registerV2Routes(srv, spaceUC, resUC, usageUC, taskUC)
 	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
 	// 这条路由是原始 net/http 注册的，不走上面的认证中间件——鉴权在 handler 里做
 	srv.HandlePrefix("/api/files/", filesHandler(g))

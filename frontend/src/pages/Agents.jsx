@@ -218,8 +218,11 @@ const STATUS_TONES = {
   succeeded: 'ok',
   running: 'indigo',
   pending: 'warn',
+  paused: 'warn',
+  retry_wait: 'warn',
   failed: 'error',
   canceled: 'default',
+  timeout: 'error',
 };
 
 export default function Agents() {

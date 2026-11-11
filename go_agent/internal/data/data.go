@@ -1,6 +1,11 @@
 package data
 
 import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/aiplatform"
 	"go_agent/internal/biz/conversation"
@@ -11,6 +16,7 @@ import (
 	"go_agent/internal/biz/memory"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag"
+	"go_agent/internal/biz/resource"
 	"go_agent/internal/biz/skill"
 	"go_agent/internal/conf"
 	"go_agent/internal/data/db"
@@ -47,6 +53,10 @@ var ProviderSet = wire.NewSet(
 
 	// MySQL 文档元数据 + Redis 缓存/锁
 	dbrepo.NewDocumentRepo,
+	// 知识空间与统一资源（V2）：空间树/共享、资源元数据/授权/版本
+	dbrepo.NewSpaceRepo,
+	dbrepo.NewResourceRepo,
+	dbrepo.NewUsageRepo,
 	redis.NewAnswerCache,
 	wire.Bind(new(rag.AnswerCache), new(*redis.AnswerCache)),
 	wire.Bind(new(rag.Locker), new(*redis.AnswerCache)),
@@ -67,6 +77,9 @@ var ProviderSet = wire.NewSet(
 	dbrepo.NewLLMProviderRepo,
 	dbrepo.NewLLMCallRepo,
 	wire.Bind(new(llm.CallRepo), new(*dbrepo.LLMCallRepo)),
+	// 成本中心：LLM 调用结束把 tokens/成本写进 usage_records（账单，长期保留）
+	dbrepo.NewCostSink,
+	wire.Bind(new(llm.CostSink), new(*dbrepo.CostSink)),
 	llm.NewManager,
 	wire.Bind(new(rag.Chatter), new(*llm.Manager)),
 	// 提示词工程（打分/生成/优化）同样复用 llm.Manager，可指定数据源
@@ -115,7 +128,9 @@ var ProviderSet = wire.NewSet(
 	NewAgentFactoryOptions,
 	wire.Bind(new(agentfactory.ToolPort), new(*mcp.UseCase)),
 	wire.Bind(new(agentfactory.Chatter), new(*llm.Manager)),
-	agentfactory.New,
+	// 执行体注册表（worker_instances）：多副本部署时靠心跳判定失联、回收任务
+	dbrepo.NewWorkerRepo,
+	NewAgentFactoryUseCase,
 
 	// 评测 Harness：四张表存 MySQL（sets/cases/runs/run_items），
 	// 被测对象执行器按 target 分派——agent: 走 agentfactory.RunOnce（同步执行一次），
@@ -139,7 +154,11 @@ var ProviderSet = wire.NewSet(
 	dbrepo.NewAuthzEngine,
 )
 
-// newAgentFactoryOptions 从配置读 worker 池与护栏参数
+// NewAgentFactoryOptions 从配置读 worker 池与护栏参数。
+//
+// 执行链路参数（租约 / 心跳 / 超时 / 重试）走环境变量而不是 proto：
+// 它们是需要按部署形态调整的运维旋钮（k8s 里活不过一次滚动重启），
+// 而且几乎不随版本变化，进配置协议只会让 proto 与前端配置页一起膨胀。
 func NewAgentFactoryOptions(c *conf.Data, sec *conf.Security) agentfactory.Options {
 	af := c.GetAgentfactory()
 	b := sec.GetBudget()
@@ -151,5 +170,57 @@ func NewAgentFactoryOptions(c *conf.Data, sec *conf.Security) agentfactory.Optio
 		MaxParallel:     int(b.GetMaxParallel()),
 		BudgetTokens:    b.GetMaxTokens(),
 		BudgetCalls:     b.GetMaxCalls(),
+
+		LeaseTTL:           envDuration("AGENT_LEASE_TTL", 60*time.Second),
+		HeartbeatInterval:  envDuration("AGENT_HEARTBEAT_INTERVAL", 15*time.Second),
+		HeartbeatTTL:       envDuration("AGENT_HEARTBEAT_TTL", 45*time.Second),
+		TaskTimeout:        envDuration("AGENT_TASK_TIMEOUT", 30*time.Minute),
+		SweepInterval:      envDuration("AGENT_SWEEP_INTERVAL", 20*time.Second),
+		MaxAttempts:        envIntValue("AGENT_TASK_MAX_ATTEMPTS", 3),
+		WorkerKey:          strings.TrimSpace(os.Getenv("AGENT_WORKER_KEY")),
+		MaxDelegationDepth: envIntValue("AGENT_MAX_DELEGATION_DEPTH", agentfactory.MaxDelegationDepth),
 	}
+}
+
+// NewAgentFactoryUseCase 生产装配：在基础依赖之外注入执行体注册表。
+// 单独包一层是为了让 agentfactory.New 保持 10 参数签名——单测大量直接构造用例，
+// 不想为了一个可选端口把所有测试的构造调用都改一遍。
+func NewAgentFactoryUseCase(repo agentfactory.Repo, vec agentfactory.VectorStore, cache agentfactory.Cache, lock agentfactory.TaskLock, chat agentfactory.Chatter, emb agentfactory.Embedder, tools agentfactory.ToolPort, skills agentfactory.SkillPort, prompts agentfactory.PromptSaver, workers agentfactory.WorkerRepo, res *resource.UseCase, opt agentfactory.Options) (*agentfactory.UseCase, error) {
+	uc, err := agentfactory.NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, workers, opt)
+	if err != nil {
+		return nil, err
+	}
+	// 运行时二次授权：任务执行 / 工具调用 / 委派前重新按当前授权判权。
+	// 注入失败不影响构造（nil 即关闭），因此这里只需直接设置。
+	uc.SetResourceAuthorizer(res)
+	return uc, nil
+}
+
+// envDuration 读时长型环境变量（"90s" / "5m"），解析失败或缺失走默认值
+func envDuration(key string, def time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// envIntValue 读整型环境变量，非法值走默认
+func envIntValue(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > agentfactory.MaxAttemptsLimit {
+		return agentfactory.MaxAttemptsLimit
+	}
+	return n
 }

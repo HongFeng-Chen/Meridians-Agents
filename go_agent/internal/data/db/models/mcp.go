@@ -74,3 +74,27 @@ type ToolPO struct {
 
 // TableName 表名
 func (ToolPO) TableName() string { return "tools" }
+
+// McpCallRecordPO mcp_call_records：工具调用的幂等记录（表结构见 biz/mcp/idem.go 的语义注释）。
+//
+// 只存「成功执行过」的调用：命中即回放 result_json，不再真正调用工具，
+// 这是任务重试链路防重复副作用的最后防线。
+type McpCallRecordPO struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// IdemKey 幂等键（task:<id>:turn:<n>:<tool>:<args 摘要>），唯一
+	IdemKey string `gorm:"column:idem_key;size:190;not null;uniqueIndex:uk_mcp_call_records_key" json:"idem_key"`
+	TaskID  uint64 `gorm:"column:task_id;not null;default:0;index:idx_mcp_call_records_task" json:"task_id"`
+	// ToolName 工具唯一名（观测用，key 里也有，这里冗余一份便于按工具排查）
+	ToolName string `gorm:"column:tool_name;size:256;not null" json:"tool_name"`
+	// ArgsHash 参数摘要（sha256 前 16 位）
+	ArgsHash string `gorm:"column:args_hash;size:64;not null" json:"args_hash"`
+	// OK 成功才落记录；失败调用不缓存（语义见 idem.go）
+	OK     bool   `gorm:"column:ok;not null" json:"ok"`
+	Result string `gorm:"column:result_json;type:mediumtext" json:"result"`
+	// TenantID 租户（观测用；key 含全局唯一的 task_id，本身不会跨租户撞键）
+	TenantID  string    `gorm:"column:tenant_id;size:128;not null;default:'public'" json:"tenant_id"`
+	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
+}
+
+// TableName 表名
+func (McpCallRecordPO) TableName() string { return "mcp_call_records" }

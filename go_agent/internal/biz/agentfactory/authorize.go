@@ -28,15 +28,20 @@ import (
 	"go_agent/internal/biz/audit"
 )
 
-// capabilityAllowed 能力名是否在 Agent 的白名单内（精确匹配）。
+// capabilityAllowed 能力名是否在**生效的**白名单内（精确匹配）。
+//
+// 生效清单来自 effectiveCapabilities：子任务有委派上下文时用交集结果，
+// 否则用定义自身的白名单。委派上下文是执行期的硬约束——即便子 Agent
+// 的定义里写着 `mcp:*`，父任务没下放也调不到。
 //
 // 不支持通配：定义与调用都来自同一份字符串，通配只会制造「看起来被限制、
-// 实际全放行」的错觉（`mcp:*` 一条就等于把全部工具给出去）。
-func capabilityAllowed(def *AgentDef, name string) bool {
+// 实际全放行」的错觉（`mcp:*` 一条就等于把全部工具给出去）。通配只出现在
+// 委派交集的计算里（delegation.go），用于「父级批量下放」的声明式写法。
+func capabilityAllowed(t *Task, def *AgentDef, name string) bool {
 	if def == nil || name == "" {
 		return false
 	}
-	for _, c := range def.Capabilities {
+	for _, c := range effectiveCapabilities(t, def) {
 		if c == name {
 			return true
 		}
@@ -57,7 +62,7 @@ func (u *UseCase) authorizeCapability(ctx context.Context, rec *Recorder, name s
 	}
 	def := rec.def
 
-	if !capabilityAllowed(def, name) {
+	if !capabilityAllowed(rec.task, def, name) {
 		u.capabilityDenied(ctx, rec, name, "capability_not_in_whitelist")
 		return fmt.Errorf("%w: %s（Agent「%s」未获授权）", ErrCapabilityDeny, name, def.Name)
 	}

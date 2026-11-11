@@ -13,7 +13,8 @@ let overrideBase = null;
 export function setApiBase(base) {
   overrideBase = base == null ? null : String(base).replace(/\/+$/, '');
 }
-function apiBase() {
+/** API 基地址（/api）：v2 手写接口复用同一份计算，避免两处漂移 */
+export function apiBase() {
   if (overrideBase !== null) return overrideBase;
   const fromEnv = import.meta.env?.VITE_API_BASE || '/api';
   return String(fromEnv).replace(/\/+$/, '');

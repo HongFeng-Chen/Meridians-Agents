@@ -34,6 +34,19 @@ type Info struct {
 	// Roles 令牌声明的角色原文（role / roles claim）。由 pkg/authz 归一化后
 	// 映射成权限；identity 本身不解释角色含义，避免权限模型散落两处。
 	Roles []string
+	// Issuer / ClientID / Subject 外部身份三元组（V2 External Identity）。
+	// V1 令牌可能没有这些 claim：此时 Issuer/ClientID 为空，Subject 回落到 UserID，
+	// 由 pkg/principal 统一归一化，业务层不应直接依赖这里的空值判断。
+	Issuer   string
+	ClientID string
+	Subject  string
+	// Scopes OAuth2 scope 列表（令牌 scope claim，空格分隔或数组两种写法都支持）。
+	Scopes []string
+	// Departments 外部组织部门 ID（department_ids / departments claim）。
+	// 只用于知识空间继承，不参与平台 RBAC 判定。
+	Departments []string
+	// Audience 令牌 aud claim（多系统共用密钥时的受众隔离）
+	Audience []string
 	// Local 请求是否来自回环地址。仅在认证关闭的开发态下用于放行本机管理操作，
 	// 防止「AUTH_ENABLED=false + 0.0.0.0 监听」把管理面裸奔到公网。
 	Local bool

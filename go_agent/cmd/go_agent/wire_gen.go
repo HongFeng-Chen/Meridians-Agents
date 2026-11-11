@@ -8,7 +8,6 @@ package main
 
 import (
 	"github.com/go-kratos/kratos/v3"
-	"go_agent/internal/biz/agentfactory"
 	aiplatform2 "go_agent/internal/biz/aiplatform"
 	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/authn"
@@ -23,7 +22,10 @@ import (
 	"go_agent/internal/biz/platformmcp"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag"
+	"go_agent/internal/biz/resource"
 	"go_agent/internal/biz/skill"
+	"go_agent/internal/biz/space"
+	"go_agent/internal/biz/usage"
 	"go_agent/internal/conf"
 	"go_agent/internal/data"
 	"go_agent/internal/data/db"
@@ -87,7 +89,15 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 		cleanup()
 		return nil, nil, err
 	}
-	manager := llm.NewManager(confData, security, providerRepo, llmCallRepo)
+	usageRepo, err := repo2.NewUsageRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	costSink := repo2.NewCostSink(usageRepo)
+	manager := llm.NewManager(confData, security, providerRepo, llmCallRepo, costSink)
 	promptRepo, err := repo2.NewPromptRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -111,7 +121,15 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 		return nil, nil, err
 	}
 	historyUseCase := history.New(historyRepo)
-	ragRag, err := rag.NewRag(chunkStore, store, documentRepo, answerCache, answerCache, embeddingClient, manager, useCase, historyUseCase, confData)
+	spaceRepo, err := repo2.NewSpaceRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	spaceUseCase := space.NewUseCase(spaceRepo)
+	ragRag, err := rag.NewRag(chunkStore, store, documentRepo, answerCache, answerCache, embeddingClient, manager, useCase, historyUseCase, spaceUseCase, confData)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -184,8 +202,23 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	agentfactoryVectorStore := repo.NewAgentStore(client)
 	agentFactoryCache := redis.NewAgentFactoryCache(rdbData)
 	taskLock := redis.NewTaskLock(rdbData, confData)
+	workerRepo, err := repo2.NewWorkerRepo(dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	resourceRepo, err := repo2.NewResourceRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	resourceUseCase := resource.NewUseCase(resourceRepo, spaceUseCase)
 	options := data.NewAgentFactoryOptions(confData, security)
-	agentfactoryUseCase, err := agentfactory.New(agentfactoryRepo, agentfactoryVectorStore, agentFactoryCache, taskLock, manager, embeddingClient, mcpUseCase, skillUseCase, useCase, options)
+	agentfactoryUseCase, err := data.NewAgentFactoryUseCase(agentfactoryRepo, agentfactoryVectorStore, agentFactoryCache, taskLock, manager, embeddingClient, mcpUseCase, skillUseCase, useCase, workerRepo, resourceUseCase, options)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -261,7 +294,8 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 		return nil, nil, err
 	}
 	auditUseCase := audit.New(auditRepo)
-	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, policyService, auditUseCase)
+	usageUseCase := usage.New(usageRepo)
+	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, policyService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
 	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, platformMCPService)
 	return app, func() {
 		cleanup3()

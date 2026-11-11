@@ -287,6 +287,9 @@ type CallResult struct {
 	Structured string        `json:"structured,omitempty"`
 	// ElapsedMs 调用耗时（毫秒），便于前端展示
 	ElapsedMs int64 `json:"elapsed_ms"`
+	// Replayed 命中幂等记录的回放结果（没有真正调用工具）。
+	// 任务重试链路用它拦住重复副作用；前端可提示「该结果为上次执行的回放」。
+	Replayed bool `json:"replayed,omitempty"`
 }
 
 // ToolSync 一次 upsert 的差异统计

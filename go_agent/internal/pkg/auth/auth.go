@@ -200,7 +200,37 @@ func (v *Verifier) verifyHS256(token string) (identity.Info, error) {
 	if b, ok := claims["is_admin"].(bool); ok && b {
 		admin = true
 	}
-	return identity.Info{UserID: user, TenantID: tenant, Auth: "jwt", Admin: admin, Roles: roles}, nil
+	// V2 External Identity：iss / client_id / scope / department_ids 原样带走。
+	// 这些字段在 V1 令牌里通常不存在，留空即可，pkg/principal 会做归一化。
+	info := identity.Info{
+		UserID:      user,
+		TenantID:    tenant,
+		Auth:        "jwt",
+		Admin:       admin,
+		Roles:       roles,
+		Issuer:      stringClaim(claims, "iss"),
+		ClientID:    firstNonEmpty(stringClaim(claims, "client_id"), stringClaim(claims, "azp")),
+		Subject:     firstNonEmpty(stringClaim(claims, "sub"), user),
+		Scopes:      append(scopeClaim(claims), stringListClaim(claims, "scp")...),
+		Departments: append(stringListClaim(claims, "department_ids"), stringListClaim(claims, "departments")...),
+		Audience:    stringListClaim(claims, "aud"),
+	}
+	if len(info.Audience) == 0 {
+		if single := stringClaim(claims, "aud"); single != "" {
+			info.Audience = []string{single}
+		}
+	}
+	return info, nil
+}
+
+// scopeClaim 读取 OAuth2 scope：JSON 数组或空格分隔字符串两种写法都接受。
+// 数组写法由 stringListClaim 覆盖；这里只处理字符串形式，避免 "a b" 被当成一个 scope。
+func scopeClaim(claims map[string]any) []string {
+	v, ok := claims["scope"].(string)
+	if !ok {
+		return nil
+	}
+	return strings.Fields(v)
 }
 
 // isAdminRole 该角色是否等价于平台管理员。

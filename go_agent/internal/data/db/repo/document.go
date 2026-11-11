@@ -42,6 +42,7 @@ func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 		UserID:    ownerOr(doc.UserID),
 		TenantID:  ownerOr(doc.TenantID),
 		Scope:     scopeOr(doc.Scope),
+		SpaceID:   strings.TrimSpace(doc.SpaceID),
 		Source:    clip(doc.Source, 512),
 		Mode:      doc.Mode,
 		Status:    doc.Status,
@@ -57,7 +58,7 @@ func (r *DocumentRepo) Upsert(ctx context.Context, doc *rag.Document) error {
 		// scope 参与更新：作者可以把个人知识主动升为租户共享（或收回），
 		// 权限在 biz 层按「文档既有作用域」校验，能走到这里的都已经过审。
 		DoUpdates: clause.AssignmentColumns([]string{
-			"source", "mode", "scope", "status", "chars", "chunks", "entities", "relations", "checksum", "updated_at",
+			"source", "mode", "scope", "space_id", "status", "chars", "chunks", "entities", "relations", "checksum", "updated_at",
 		}),
 	}).Create(po).Error
 	if err != nil {
@@ -141,6 +142,27 @@ func (r *DocumentRepo) ListDocIDs(ctx context.Context, tenantID, userID string) 
 	return ids, nil
 }
 
+// ListDocIDsBySpaces V2 空间授权白名单。
+//
+// 条件 = 空间命中 ∪ （未迁移的历史数据 AND 三层作用域条件）。
+// 为什么保留后半段：升级时不可能把全部历史文档一次性回填 space_id，
+// 如果只认空间，迁移完成前所有旧文档会突然「消失」——这比多写一个 OR 危险得多。
+func (r *DocumentRepo) ListDocIDsBySpaces(ctx context.Context, tenantID, userID string, spaceIDs []string) ([]string, error) {
+	legacyCond, legacyArgs := visibilityCond(tenantID, userID)
+	q := r.db.WithContext(ctx).Model(&models.DocumentPO{})
+	if len(spaceIDs) == 0 {
+		q = q.Where(legacyCond, legacyArgs...)
+	} else {
+		q = q.Where("(space_id IN (?) OR (space_id = '' AND "+legacyCond+"))",
+			append([]any{spaceIDs}, legacyArgs...)...)
+	}
+	var ids []string
+	if err := q.Pluck("doc_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // Delete 删除元数据
 func (r *DocumentRepo) Delete(ctx context.Context, docID string) error {
 	return r.db.WithContext(ctx).Where("doc_id = ?", docID).Delete(&models.DocumentPO{}).Error
@@ -161,6 +183,7 @@ func documentToBiz(po *models.DocumentPO) *rag.Document {
 		UserID:    po.UserID,
 		TenantID:  po.TenantID,
 		Scope:     po.Scope,
+		SpaceID:   po.SpaceID,
 		Source:    po.Source,
 		Mode:      po.Mode,
 		Status:    po.Status,

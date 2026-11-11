@@ -47,13 +47,14 @@ func unmarshalTags(s string) []string {
 	return tags
 }
 
-// isDuplicate 判断是否唯一索引冲突（MySQL 1062）
+// isDuplicate 判断是否唯一索引冲突（MySQL 1062 / SQLite UNIQUE，后者供单测用）
 func isDuplicate(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "Duplicate entry") || strings.Contains(msg, "1062")
+	return strings.Contains(msg, "Duplicate entry") || strings.Contains(msg, "1062") ||
+		strings.Contains(strings.ToLower(msg), "unique constraint")
 }
 
 // escapeLike 转义 LIKE 通配符，避免用户输入的 % 全表扫描

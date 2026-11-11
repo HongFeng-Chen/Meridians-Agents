@@ -162,6 +162,27 @@ func (f *fakeRepo) ListDocIDs(ctx context.Context, tenantID, userID string) ([]s
 	return out, nil
 }
 
+// ListDocIDsBySpaces 空间授权的白名单：命中空间，或未迁移（SpaceID 为空）时按三层作用域。
+func (f *fakeRepo) ListDocIDsBySpaces(ctx context.Context, tenantID, userID string, spaceIDs []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set := make(map[string]bool, len(spaceIDs))
+	for _, id := range spaceIDs {
+		set[id] = true
+	}
+	out := make([]string, 0, len(f.docs))
+	for _, d := range f.docs {
+		if d.SpaceID != "" && set[d.SpaceID] {
+			out = append(out, d.DocID)
+			continue
+		}
+		if d.SpaceID == "" && Visible(d, tenantID, userID) {
+			out = append(out, d.DocID)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeRepo) Delete(ctx context.Context, docID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -297,7 +318,7 @@ func newTestRag(t *testing.T, prompter ...Prompter) (*Rag, *fakeStore, *fakeRepo
 	if len(prompter) > 0 {
 		p = prompter[0]
 	}
-	r, err := NewRag(store, fakeGraphStore{}, repo, cache, cache, fakeEmbedder{}, llmClient, p, nil, cfg)
+	r, err := NewRag(store, fakeGraphStore{}, repo, cache, cache, fakeEmbedder{}, llmClient, p, nil, nil, cfg)
 	if err != nil {
 		t.Fatalf("NewRag: %v", err)
 	}

@@ -29,6 +29,10 @@ type Repo interface {
 	// MarkVectorized 标记向量是否已入库（embedding 失败时置 false）
 	MarkVectorized(ctx context.Context, ids []uint64, vectorized bool) error
 	Stats(ctx context.Context) (Stats, error)
+
+	// —— 幂等记录 ——
+	// 任务执行链路的工具调用去重依据，语义见 idem.go。
+	IdemStore
 }
 
 // VectorStore 工具向量存储（Milvus 实现，位于 data/milvusdb/repo）。

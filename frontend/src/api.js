@@ -18,7 +18,7 @@ import {
   admin,
   auth,
 } from './api/generated/index.js';
-import { ApiError, OPERATIONS, setAuthToken, authToken, clearAuthToken } from './api/http.js';
+import { ApiError, OPERATIONS, setAuthToken, authToken, clearAuthToken, apiBase } from './api/http.js';
 
 export {
   rag,
@@ -42,9 +42,47 @@ export {
   clearAuthToken,
 };
 
+/**
+ * V2 接口（/api/v2）。
+ *
+ * 这些路由还没进 proto 契约（见架构文档「已知边界」），SDK 里没有对应函数，
+ * 所以在这里手写一层 fetch：鉴权头、基地址、错误口径与 SDK 保持一致，
+ * 页面侧仍然是 `await v2.traces({ task_id })` 这样的调用方式。
+ *
+ * 调用方要容忍「追踪未启用」：/traces 会返回 { enabled: false, traces: [] }。
+ */
+async function v2Get(path, params = {}) {
+  const qs = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== '' && v !== null && v !== undefined),
+  ).toString();
+  const url = `${apiBase()}/v2${path}${qs ? `?${qs}` : ''}`;
+  const headers = {};
+  const token = authToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { headers });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const msg = body?.message || body?.error || `HTTP ${res.status}`;
+    throw new ApiError(msg, res.status, body);
+  }
+  return body;
+}
+
+export const v2 = {
+  /** 任务执行快照（snapshot_id / delegated_caps / trace_id 等 v1 未覆盖的字段） */
+  taskDetail: (id) => v2Get('/tasks/detail', { id }),
+  /** 链路：按 task_id 查（服务端校验任务归属），不传则浏览全局（需运维权限） */
+  traces: (params = {}) => v2Get('/traces', params),
+  traceDetail: (traceId) => v2Get('/traces/detail', { trace_id: traceId }),
+  /** 成本：单任务成本传 task_id；group_by 支持 agent/task/model/kind/day */
+  usageSummary: (params = {}) => v2Get('/usage/summary', params),
+  workers: () => v2Get('/workers'),
+  leases: () => v2Get('/tasks/leases'),
+  deadLetters: () => v2Get('/tasks/dead-letters'),
+};
+
 /** 旧版调用方式（Dashboard / Admin / 问答页仍在使用） */
-export const api = {
-  health: () => rag.health(),
+export const api = {  health: () => rag.health(),
 
   // 业务线 1：混合检索 RAG
   ragIngest: (payload) => rag.ingest(payload),

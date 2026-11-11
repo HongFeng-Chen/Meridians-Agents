@@ -27,18 +27,35 @@ type Repo interface {
 	// UpdateDefSchedule 只更新调度时间（下次/上次运行），不推进定义版本
 	UpdateDefSchedule(ctx context.Context, id uint64, next, last time.Time) error
 
+	// —— Agent 配置快照（不可变，只增不改） ——
+
+	CreateSnapshot(ctx context.Context, s *Snapshot) error
+	GetSnapshot(ctx context.Context, id uint64) (*Snapshot, error)
+	// LatestSnapshot 某定义的最新快照（按 id 倒序取一条）；没有返回 (nil, nil)
+	LatestSnapshot(ctx context.Context, agentDefID uint64) (*Snapshot, error)
+	ListSnapshots(ctx context.Context, agentDefID uint64, limit int) ([]Snapshot, error)
+
 	// —— 任务 ——
 	CreateTask(ctx context.Context, t *Task) error
 	SaveTask(ctx context.Context, t *Task) error
-	// ClaimTask 原子认领：pending → running，返回是否认领成功
-	ClaimTask(ctx context.Context, id uint64) (bool, error)
+	// ClaimTask 原子认领：pending → running，并写入执行租约（持有者 + 到期时间）。
+	// lease.Owner 为空时只做状态迁移，兼容未启用执行体注册的单机/测试态。
+	ClaimTask(ctx context.Context, id uint64, lease Lease) (bool, error)
+	// RenewLease 续租：仅当 id 仍为 running 且持有者匹配时生效，返回是否续上
+	RenewLease(ctx context.Context, id uint64, owner string, expiresAt time.Time) (bool, error)
+	// ListExpiredLeases 租约已过期但仍处于 running 的任务（执行体失联）。
+	// 由清扫协程收回：未超重试上限 → retry_wait，超限 → failed + 死信原因。
+	ListExpiredLeases(ctx context.Context, now time.Time, limit int) ([]Task, error)
+	// ListOverdueTasks 超过 DeadlineAt 仍未收敛的 running 任务
+	ListOverdueTasks(ctx context.Context, now time.Time, limit int) ([]Task, error)
+	// PromoteRetryWait 退避到期的 retry_wait 任务置回 pending，返回需重新入队的 ID
+	PromoteRetryWait(ctx context.Context, now time.Time, limit int) ([]uint64, error)
+	// ListDeadLetters 死信任务（已归档且 dead_letter_reason 非空），按 ID 倒序
+	ListDeadLetters(ctx context.Context, tenantID string, limit int) ([]Task, error)
 	ListTasks(ctx context.Context, f TaskFilter) ([]Task, error)
 	GetTask(ctx context.Context, id uint64) (*Task, error)
 	// CountTasksByStatus 各状态任务数（stats 用；任务池 + 任务历史合并）
 	CountTasksByStatus(ctx context.Context) (map[string]int64, error)
-	// RequeueInterrupted 崩溃恢复：把任务池里遗留的 running 置回 pending，
-	// 返回需要重新入队的任务 ID
-	RequeueInterrupted(ctx context.Context) ([]uint64, error)
 	// FinishTask 任务到达终态：同一事务内把任务从任务池（agent_tasks）
 	// 迁移到任务历史表（agent_task_history），保证任一时刻任务只存在一张表中
 	FinishTask(ctx context.Context, t *Task) error
@@ -61,6 +78,23 @@ type Repo interface {
 	// —— 事件（trace） ——
 	AddEvent(ctx context.Context, e *TaskEvent) error
 	ListEvents(ctx context.Context, taskID uint64, limit int) ([]TaskEvent, error)
+}
+
+// WorkerRepo 执行体注册表（worker_instances）：注册 / 心跳 / 下线 / 失联判定。
+//
+// 与 Repo 分开是因为它只服务执行链路治理：多副本部署时靠心跳区分「活着但因为
+// 空闲没干活」和「进程已经没了、它手上的任务该收回来重跑」。
+type WorkerRepo interface {
+	// UpsertWorker 注册或刷新执行体（同 key 重复注册不报错）
+	UpsertWorker(ctx context.Context, w Worker) error
+	// HeartbeatWorker 心跳：刷新 heartbeat_at/expires_at/当前在执行任务数
+	HeartbeatWorker(ctx context.Context, key, status string, running int, expiresAt time.Time) error
+	// SetWorkerStatus 只改状态（draining / offline）
+	SetWorkerStatus(ctx context.Context, key, status string) error
+	// ListWorkers 全部执行体（在线与历史实例都返回，由调用方按 expires_at 判活）
+	ListWorkers(ctx context.Context) ([]Worker, error)
+	// MarkStaleWorkers 心跳过期的执行体置 offline，返回本次下线数量
+	MarkStaleWorkers(ctx context.Context, now time.Time) (int64, error)
 }
 
 // VectorStore Milvus Agent 向量注册表（语义召回）

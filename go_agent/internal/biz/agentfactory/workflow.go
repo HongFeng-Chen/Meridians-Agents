@@ -179,9 +179,12 @@ func (u *UseCase) createChildTask(ctx context.Context, parent *Task, agentKey, i
 		Status:       TaskPending,
 		ParentTaskID: parent.ID,
 		Depth:        parent.Depth + 1,
-		ConvID:       parent.ConvID, // 会话编排链路：子任务继承来源会话，保证任务树整层可按会话追溯
-		UserID:       parent.UserID, // 编排成员任务继承父任务归属
 	}
+	// 编排成员同样受委派上下文约束：成员不是「平行执行者」，是父任务的延伸。
+	if err := u.ApplyDelegation(parent, child, def); err != nil {
+		return nil, nil, err
+	}
+	child.SnapshotID = u.latestSnapshotID(ctx, def.ID)
 	if err := u.repo.CreateTask(ctx, child); err != nil {
 		return nil, nil, fmt.Errorf("创建子任务失败: %w", err)
 	}

@@ -15,7 +15,10 @@ type DocumentPO struct {
 	// Scope 知识作用域：system（平台通用，全租户可见）/ tenant（同租户可见）/
 	// user（个人私有）。默认 user：加列时历史行自动落到「个人私有」，
 	// 不会因为新增字段而突然对更多人可见。
-	Scope     string    `gorm:"column:scope;size:16;not null;default:'user';index:idx_rag_documents_scope"`
+	Scope string `gorm:"column:scope;size:16;not null;default:'user';index:idx_rag_documents_scope"`
+	// SpaceID 所属知识空间（V2）：与 scope 双写，迁移期为空表示尚未迁移。
+	// 检索白名单优先按空间授权计算，空间集合之外再回落到三层作用域。
+	SpaceID   string    `gorm:"column:space_id;size:64;not null;default:'';index:idx_rag_documents_space"`
 	Source    string    `gorm:"column:source;size:512;not null;default:''"`
 	Mode      string    `gorm:"column:mode;size:16;not null;default:'rag';index:idx_rag_documents_mode"`
 	Status    string    `gorm:"column:status;size:16;not null;default:'ready';index:idx_rag_documents_status"`

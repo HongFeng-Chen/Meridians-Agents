@@ -37,6 +37,8 @@ func NewAgentFactoryRepo(c *conf.Data, d *db.Data) (agentfactory.Repo, error) {
 			&models.AgentTaskHistoryPO{},
 			&models.AgentTaskEventPO{},
 			&models.AgentTaskCheckpointPO{},
+			&models.WorkerInstancePO{},
+			&models.AgentSnapshotPO{},
 		); err != nil {
 			return nil, fmt.Errorf("迁移 agentfactory 表: %w", err)
 		}
@@ -78,6 +80,90 @@ func (r *AgentFactoryRepo) ListDefs(ctx context.Context, f agentfactory.DefFilte
 		out = append(out, defToBiz(row))
 	}
 	return out, nil
+}
+
+// —— Agent 配置快照 ——
+
+// CreateSnapshot 追加一条快照（只增不改：没有 Update/Delete 方法）
+func (r *AgentFactoryRepo) CreateSnapshot(ctx context.Context, snap *agentfactory.Snapshot) error {
+	row := models.AgentSnapshotPO{
+		AgentDefID: snap.AgentDefID,
+		AgentKey:   snap.AgentKey,
+		Version:    snap.Version,
+		Checksum:   snap.Checksum,
+		Config:     snap.Config,
+		Deps:       snap.Deps,
+		CreatedAt:  snap.CreatedAt,
+	}
+	if row.CreatedAt.IsZero() {
+		row.CreatedAt = time.Now()
+	}
+	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return err
+	}
+	snap.ID = row.ID
+	snap.CreatedAt = row.CreatedAt
+	return nil
+}
+
+// GetSnapshot 按 ID 取快照；不存在返回 (nil, nil)
+func (r *AgentFactoryRepo) GetSnapshot(ctx context.Context, id uint64) (*agentfactory.Snapshot, error) {
+	var row models.AgentSnapshotPO
+	err := r.db.WithContext(ctx).First(&row, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return snapshotToBiz(row), nil
+}
+
+// LatestSnapshot 最新一条快照（按自增 ID 倒序：Version 可能相同，ID 才是写入顺序）
+func (r *AgentFactoryRepo) LatestSnapshot(ctx context.Context, agentDefID uint64) (*agentfactory.Snapshot, error) {
+	var row models.AgentSnapshotPO
+	err := r.db.WithContext(ctx).
+		Where("agent_def_id = ?", agentDefID).
+		Order("id DESC").First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return snapshotToBiz(row), nil
+}
+
+// ListSnapshots 快照列表（新的在前）
+func (r *AgentFactoryRepo) ListSnapshots(ctx context.Context, agentDefID uint64, limit int) ([]agentfactory.Snapshot, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var rows []models.AgentSnapshotPO
+	if err := r.db.WithContext(ctx).
+		Where("agent_def_id = ?", agentDefID).
+		Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]agentfactory.Snapshot, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, *snapshotToBiz(row))
+	}
+	return out, nil
+}
+
+// snapshotToBiz 行 → DO
+func snapshotToBiz(row models.AgentSnapshotPO) *agentfactory.Snapshot {
+	return &agentfactory.Snapshot{
+		ID:         row.ID,
+		AgentDefID: row.AgentDefID,
+		AgentKey:   row.AgentKey,
+		Version:    row.Version,
+		Checksum:   row.Checksum,
+		Config:     row.Config,
+		Deps:       row.Deps,
+		CreatedAt:  row.CreatedAt,
+	}
 }
 
 func (r *AgentFactoryRepo) GetDef(ctx context.Context, id uint64) (*agentfactory.AgentDef, error) {
@@ -224,14 +310,7 @@ func (r *AgentFactoryRepo) SaveTask(ctx context.Context, t *agentfactory.Task) e
 	row := taskFromBiz(*t)
 	res := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
 		Where("id = ?", t.ID).
-		Updates(map[string]any{
-			"status":      row.Status,
-			"progress":    row.Progress,
-			"result":      row.Result,
-			"error_msg":   row.ErrorMsg,
-			"started_at":  row.StartedAt,
-			"finished_at": row.FinishedAt,
-		})
+		Updates(taskSaveColumns(row))
 	if res.Error != nil {
 		return res.Error
 	}
@@ -260,14 +339,7 @@ func (r *AgentFactoryRepo) TransitionTask(ctx context.Context, id uint64, from [
 		if len(from) > 0 {
 			q = q.Where("status IN ?", from)
 		}
-		res := q.Updates(map[string]any{
-			"status":      row.Status,
-			"progress":    row.Progress,
-			"result":      row.Result,
-			"error_msg":   row.ErrorMsg,
-			"started_at":  row.StartedAt,
-			"finished_at": row.FinishedAt,
-		})
+		res := q.Updates(taskUpdateColumns(row))
 		if res.Error != nil {
 			return false, res.Error
 		}
@@ -291,14 +363,9 @@ func (r *AgentFactoryRepo) finishTask(ctx context.Context, t *agentfactory.Task,
 		if len(from) > 0 {
 			q = q.Where("status IN ?", from)
 		}
-		res := q.Updates(map[string]any{
-			"status":      row.Status,
-			"progress":    row.Progress,
-			"result":      row.Result,
-			"error_msg":   row.ErrorMsg,
-			"started_at":  row.StartedAt,
-			"finished_at": finished,
-		})
+		cols := taskUpdateColumns(row)
+		cols["finished_at"] = finished
+		res := q.Updates(cols)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -354,12 +421,144 @@ func (r *AgentFactoryRepo) ReviveTask(ctx context.Context, t *agentfactory.Task)
 	})
 }
 
-// ClaimTask 原子认领：pending → running（并发 worker 安全）
-func (r *AgentFactoryRepo) ClaimTask(ctx context.Context, id uint64) (bool, error) {
+// ClaimTask 原子认领：pending → running，同时写入执行租约。
+//
+// 状态迁移与租约写入必须是同一条 UPDATE：分两步写会出现「状态已是 running、
+// 租约还是空」的窗口，清扫协程在窗口里扫到就判定为失联并抢走任务。
+func (r *AgentFactoryRepo) ClaimTask(ctx context.Context, id uint64, lease agentfactory.Lease) (bool, error) {
+	now := time.Now()
+	cols := map[string]any{
+		"status":             agentfactory.TaskRunning,
+		"next_attempt_at":    nil, // 已重新入队执行，退避计时结束
+		"dead_letter_reason": "",
+	}
+	// started_at 只在为空时补：重试任务保留首次开始时间，耗时统计不被重置
+	cols["started_at"] = gorm.Expr("COALESCE(started_at, ?)", now)
+	if lease.Attempt > 0 {
+		cols["attempt"] = lease.Attempt
+	} else {
+		cols["attempt"] = gorm.Expr("attempt + 1")
+	}
+	if lease.Owner != "" {
+		cols["lease_owner"] = lease.Owner
+		cols["lease_expires_at"] = nilIfZero(lease.ExpiresAt)
+	}
+	if !lease.Deadline.IsZero() {
+		// 每次认领刷新截止时间：重试是新的执行窗口，不该继承上次的剩余时间
+		cols["deadline_at"] = lease.Deadline
+	}
 	res := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
 		Where("id = ? AND status = ?", id, agentfactory.TaskPending).
-		Updates(map[string]any{"status": agentfactory.TaskRunning, "started_at": time.Now()})
-	return res.RowsAffected == 1, res.Error
+		Updates(cols)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// RenewLease 续租：只有「仍在 running 且持有者是自己」才续得上。
+// 返回 false 表示任务已被收回（执行体失联被清扫，或已落终态），
+// 调用方必须停下来，否则会和接管者重复执行。
+func (r *AgentFactoryRepo) RenewLease(ctx context.Context, id uint64, owner string, expiresAt time.Time) (bool, error) {
+	q := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
+		Where("id = ? AND status = ?", id, agentfactory.TaskRunning)
+	if owner != "" {
+		q = q.Where("lease_owner = ?", owner)
+	}
+	res := q.Update("lease_expires_at", expiresAt)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// ListExpiredLeases 租约过期但仍处于 running 的任务（执行体失联）。
+// 只认「有租约但已过期」：空租约代表历史数据或单机模式，不在自动回收范围内。
+func (r *AgentFactoryRepo) ListExpiredLeases(ctx context.Context, now time.Time, limit int) ([]agentfactory.Task, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []models.AgentTaskPO
+	err := r.db.WithContext(ctx).
+		Where("status = ? AND lease_owner <> '' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+			agentfactory.TaskRunning, now).
+		Order("id ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentfactory.Task, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, taskToBiz(row))
+	}
+	return out, nil
+}
+
+// ListOverdueTasks 超过执行截止时间仍未收敛的 running 任务
+func (r *AgentFactoryRepo) ListOverdueTasks(ctx context.Context, now time.Time, limit int) ([]agentfactory.Task, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []models.AgentTaskPO
+	err := r.db.WithContext(ctx).
+		Where("status = ? AND deadline_at IS NOT NULL AND deadline_at < ?", agentfactory.TaskRunning, now).
+		Order("id ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentfactory.Task, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, taskToBiz(row))
+	}
+	return out, nil
+}
+
+// PromoteRetryWait 退避到期的 retry_wait 任务置回 pending，返回真正被置回的 ID。
+//
+// 只回写仍处于 retry_wait 的行（带状态守卫），并发取消的任务不会被「复活」。
+// 返回前再查一次状态，保证调用方拿到的是「已经可以入队」的那些 ID。
+func (r *AgentFactoryRepo) PromoteRetryWait(ctx context.Context, now time.Time, limit int) ([]uint64, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var candidates []uint64
+	if err := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
+		Where("status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)", agentfactory.TaskRetryWait, now).
+		Order("id ASC").Limit(limit).Pluck("id", &candidates).Error; err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	if err := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
+		Where("id IN ? AND status = ?", candidates, agentfactory.TaskRetryWait).
+		Updates(map[string]any{"status": agentfactory.TaskPending, "next_attempt_at": nil}).Error; err != nil {
+		return nil, err
+	}
+	var promoted []uint64
+	err := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
+		Where("id IN ? AND status = ?", candidates, agentfactory.TaskPending).
+		Order("id ASC").Pluck("id", &promoted).Error
+	return promoted, err
+}
+
+// ListDeadLetters 死信任务：已归档且写过死信原因，按 ID 倒序（最近的先看）
+func (r *AgentFactoryRepo) ListDeadLetters(ctx context.Context, tenantID string, limit int) ([]agentfactory.Task, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).Model(&models.AgentTaskHistoryPO{}).Where("dead_letter_reason <> ''")
+	if tenantID != "" {
+		q = q.Where("tenant_id = ?", tenantID)
+	}
+	var rows []models.AgentTaskHistoryPO
+	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]agentfactory.Task, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, taskHistoryToBiz(row))
+	}
+	return out, nil
 }
 
 // ListTasks 任务列表：状态过滤决定查任务池还是历史表；
@@ -523,21 +722,6 @@ func (r *AgentFactoryRepo) CountTasksByStatus(ctx context.Context) (map[string]i
 	return out, nil
 }
 
-// RequeueInterrupted 崩溃恢复：遗留 running 置回 pending；返回 pending 任务 ID（含未入队的）
-func (r *AgentFactoryRepo) RequeueInterrupted(ctx context.Context) ([]uint64, error) {
-	if err := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
-		Where("status = ?", agentfactory.TaskRunning).
-		Updates(map[string]any{"status": agentfactory.TaskPending, "progress": 0}).Error; err != nil {
-		return nil, err
-	}
-	var ids []uint64
-	err := r.db.WithContext(ctx).Model(&models.AgentTaskPO{}).
-		Where("status = ?", agentfactory.TaskPending).
-		Order("id ASC").Limit(1000).
-		Pluck("id", &ids).Error
-	return ids, err
-}
-
 // ———— 事件（trace） ————
 
 func (r *AgentFactoryRepo) AddEvent(ctx context.Context, e *agentfactory.TaskEvent) error {
@@ -623,31 +807,45 @@ func taskToHistoryPO(src models.AgentTaskPO) models.AgentTaskHistoryPO {
 		ConvID:       src.ConvID,
 		UserID:       src.UserID,
 		TenantID:     src.TenantID,
-		CreatedAt:    src.CreatedAt,
-		StartedAt:    src.StartedAt,
-		FinishedAt:   src.FinishedAt,
+		SnapshotID:   src.SnapshotID,
+		Attempt:      src.Attempt,
+		MaxAttempts:  src.MaxAttempts,
+		// 委派能力随归档迁移：权限事故复盘时要回答「当时被下放了什么」
+		DelegatedCaps: src.DelegatedCaps,
+		// 死信原因是任务「为什么没救回来」的唯一线索，必须随归档迁移
+		DeadLetterReason: src.DeadLetterReason,
+		TraceID:          src.TraceID,
+		CreatedAt:        src.CreatedAt,
+		StartedAt:        src.StartedAt,
+		FinishedAt:       src.FinishedAt,
 	}
 }
 
 // taskHistoryToBiz 历史表行 → DO（Archived 恒为 true）
 func taskHistoryToBiz(row models.AgentTaskHistoryPO) agentfactory.Task {
 	t := agentfactory.Task{
-		ID:           row.ID,
-		AgentDefID:   row.AgentDefID,
-		AgentKey:     row.AgentKey,
-		Title:        row.Title,
-		Input:        row.Input,
-		Status:       row.Status,
-		Progress:     row.Progress,
-		Result:       row.Result,
-		ErrorMsg:     row.ErrorMsg,
-		ParentTaskID: row.ParentTaskID,
-		Depth:        row.Depth,
-		ConvID:       row.ConvID,
-		UserID:       row.UserID,
-		TenantID:     row.TenantID,
-		CreatedAt:    row.CreatedAt,
-		Archived:     true,
+		ID:               row.ID,
+		AgentDefID:       row.AgentDefID,
+		AgentKey:         row.AgentKey,
+		Title:            row.Title,
+		Input:            row.Input,
+		Status:           row.Status,
+		Progress:         row.Progress,
+		Result:           row.Result,
+		ErrorMsg:         row.ErrorMsg,
+		ParentTaskID:     row.ParentTaskID,
+		Depth:            row.Depth,
+		ConvID:           row.ConvID,
+		UserID:           row.UserID,
+		TenantID:         row.TenantID,
+		SnapshotID:       row.SnapshotID,
+		Attempt:          row.Attempt,
+		MaxAttempts:      row.MaxAttempts,
+		DelegatedCaps:    decodeDelegatedCaps(row.DelegatedCaps),
+		DeadLetterReason: row.DeadLetterReason,
+		TraceID:          row.TraceID,
+		CreatedAt:        row.CreatedAt,
+		Archived:         true,
 	}
 	if row.StartedAt != nil {
 		t.StartedAt = *row.StartedAt
@@ -750,7 +948,27 @@ func taskToBiz(row models.AgentTaskPO) agentfactory.Task {
 		ConvID:       row.ConvID,
 		UserID:       row.UserID,
 		TenantID:     row.TenantID,
-		CreatedAt:    row.CreatedAt,
+		SnapshotID:   row.SnapshotID,
+		// nil = 未受限；'[]' = 受限且全禁（两者语义完全不同，不能折叠）
+		DelegatedCaps: decodeDelegatedCaps(row.DelegatedCaps),
+
+		Attempt:     row.Attempt,
+		MaxAttempts: row.MaxAttempts,
+		LeaseOwner:  row.LeaseOwner,
+		// 死信原因
+		DeadLetterReason: row.DeadLetterReason,
+		TraceID:          row.TraceID,
+
+		CreatedAt: row.CreatedAt,
+	}
+	if row.LeaseExpiresAt != nil {
+		t.LeaseExpiresAt = *row.LeaseExpiresAt
+	}
+	if row.DeadlineAt != nil {
+		t.DeadlineAt = *row.DeadlineAt
+	}
+	if row.NextAttemptAt != nil {
+		t.NextAttemptAt = *row.NextAttemptAt
 	}
 	if row.StartedAt != nil {
 		t.StartedAt = *row.StartedAt
@@ -763,22 +981,34 @@ func taskToBiz(row models.AgentTaskPO) agentfactory.Task {
 
 func taskFromBiz(t agentfactory.Task) models.AgentTaskPO {
 	row := models.AgentTaskPO{
-		ID:           t.ID,
-		AgentDefID:   t.AgentDefID,
-		AgentKey:     t.AgentKey,
-		Title:        t.Title,
-		Input:        t.Input,
-		Status:       t.Status,
-		Progress:     t.Progress,
-		Result:       t.Result,
-		ErrorMsg:     t.ErrorMsg,
-		ParentTaskID: t.ParentTaskID,
-		Depth:        t.Depth,
-		ConvID:       t.ConvID,
-		UserID:       ownerOr(t.UserID),
-		TenantID:     tenantOr(t.TenantID),
-		CreatedAt:    t.CreatedAt,
+		ID:            t.ID,
+		AgentDefID:    t.AgentDefID,
+		AgentKey:      t.AgentKey,
+		Title:         t.Title,
+		Input:         t.Input,
+		Status:        t.Status,
+		Progress:      t.Progress,
+		Result:        t.Result,
+		ErrorMsg:      t.ErrorMsg,
+		ParentTaskID:  t.ParentTaskID,
+		Depth:         t.Depth,
+		ConvID:        t.ConvID,
+		UserID:        ownerOr(t.UserID),
+		TenantID:      tenantOr(t.TenantID),
+		SnapshotID:    t.SnapshotID,
+		DelegatedCaps: encodeDelegatedCaps(t.DelegatedCaps),
+		Attempt:       t.Attempt,
+		MaxAttempts:   t.MaxAttempts,
+		LeaseOwner:    t.LeaseOwner,
+
+		DeadLetterReason: t.DeadLetterReason,
+		TraceID:          t.TraceID,
+
+		CreatedAt: t.CreatedAt,
 	}
+	row.LeaseExpiresAt = nilIfZero(t.LeaseExpiresAt)
+	row.DeadlineAt = nilIfZero(t.DeadlineAt)
+	row.NextAttemptAt = nilIfZero(t.NextAttemptAt)
 	if !t.StartedAt.IsZero() {
 		ts := t.StartedAt
 		row.StartedAt = &ts
@@ -788,6 +1018,61 @@ func taskFromBiz(t agentfactory.Task) models.AgentTaskPO {
 		row.FinishedAt = &tf
 	}
 	return row
+}
+
+// taskSaveColumns 进度保存的更新集合：不含租约两列。
+//
+// 必须排除：执行期间续租协程会不断把 lease_expires_at 往后推，而内存里的 Task
+// 还是认领那一刻的值。若进度保存（setProgress 每次工具调用都会写）把租约列一起
+// 写回去，长任务的租约就被反复「重置」到认领时刻 + TTL，到期后被清扫协程当成
+// 失联任务抢走——症状是「跑得好好的任务突然变 retry_wait」，极难查。
+func taskSaveColumns(row models.AgentTaskPO) map[string]any {
+	cols := taskUpdateColumns(row)
+	delete(cols, "lease_owner")
+	delete(cols, "lease_expires_at")
+	return cols
+}
+
+// taskUpdateColumns 任务可变列的更新集合（进度保存 / 状态迁移 / 终态归档共用）。
+//
+// 集中一处：漏加一列的表现是「内存里是对的、库里没更新」，属于最难查的一类 bug；
+// 租约与重试字段尤其如此——漏写 lease_expires_at 会让任务刚认领就被判定失联。
+func taskUpdateColumns(row models.AgentTaskPO) map[string]any {
+	return map[string]any{
+		"status":             row.Status,
+		"progress":           row.Progress,
+		"result":             row.Result,
+		"error_msg":          row.ErrorMsg,
+		"started_at":         row.StartedAt,
+		"finished_at":        row.FinishedAt,
+		"attempt":            row.Attempt,
+		"max_attempts":       row.MaxAttempts,
+		"lease_owner":        row.LeaseOwner,
+		"lease_expires_at":   row.LeaseExpiresAt,
+		"deadline_at":        row.DeadlineAt,
+		"next_attempt_at":    row.NextAttemptAt,
+		"dead_letter_reason": row.DeadLetterReason,
+		"snapshot_id":        row.SnapshotID,
+		"delegated_caps":     row.DelegatedCaps,
+		"trace_id":           row.TraceID,
+	}
+}
+
+// encodeDelegatedCaps 委派上下文编码：nil 保持 NULL（未受限），非 nil 输出 JSON（含 "[]"）
+func encodeDelegatedCaps(caps []string) *string {
+	if caps == nil {
+		return nil
+	}
+	raw := encodeStrings(caps)
+	return &raw
+}
+
+// decodeDelegatedCaps 委派上下文解码：NULL → nil（未受限），"[]" → 空切片（全禁）
+func decodeDelegatedCaps(raw *string) []string {
+	if raw == nil {
+		return nil
+	}
+	return decodeStrings(*raw)
 }
 
 // encodeStrings JSON 字符串数组列编码：空集必须输出 "[]"（MySQL JSON 列拒收空串）

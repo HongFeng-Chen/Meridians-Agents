@@ -12,6 +12,7 @@ import (
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/metrics"
+	"go_agent/internal/pkg/trace"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -22,6 +23,8 @@ type Manager struct {
 	repo     ProviderRepo
 	fallback *Client
 	calls    CallRepo
+	// cost 成本记账端口（可为 nil：只打 Prometheus 指标，不落 usage_records）
+	cost CostSink
 
 	ttl time.Duration
 
@@ -55,8 +58,8 @@ const (
 // NewManager 构建数据源管理器并在 MySQL 为空时用 conf 播种一个 default 数据源。
 //
 // 启动阶段任何存储异常都只告警：解析侧有 conf 兜底，业务不因管理面不可用而中断。
-// calls 为调用历史仓库（可为 nil：不记录历史）。
-func NewManager(c *conf.Data, sec *conf.Security, repo ProviderRepo, calls CallRepo) *Manager {
+// calls 为调用历史仓库（可为 nil：不记录历史）；cost 为成本记账端口（可为 nil）。
+func NewManager(c *conf.Data, sec *conf.Security, repo ProviderRepo, calls CallRepo, cost CostSink) *Manager {
 	lc := c.GetLlm()
 	ttl := lc.GetReloadTTL().AsDuration()
 	if ttl <= 0 {
@@ -71,6 +74,7 @@ func NewManager(c *conf.Data, sec *conf.Security, repo ProviderRepo, calls CallR
 		repo:     repo,
 		fallback: NewClient(lc),
 		calls:    calls,
+		cost:     cost,
 		ttl:      ttl,
 		priceIn:  b.GetInputPricePerM(),
 		priceOut: b.GetOutputPricePerM(),
@@ -179,9 +183,10 @@ func (m *Manager) chatOpts(ctx context.Context, o ChatOptions, allowJSON bool) (
 			if temp < 0 {
 				temp = p.Temperature
 			}
-			start := time.Now()
-			out, usage, err := m.clientFor(p).ChatDetailedOpts(ctx, o.System, o.User, temp, opt)
-			m.record(ctx, p.Name, p.Model(), sceneOr(o.Scene), temp, o.System, o.User, out, usage, time.Since(start), err)
+			out, err := m.callOnce(ctx, o.Scene, p.Name, p.Model(), temp, o.System, o.User, opt,
+				func() (string, Usage, error) {
+					return m.clientFor(p).ChatDetailedOpts(ctx, o.System, o.User, temp, opt)
+				})
 			if err == nil {
 				return out, nil
 			}
@@ -218,24 +223,27 @@ func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user strin
 		if temp < 0 {
 			temp = p.Temperature
 		}
-		start := time.Now()
-		out, usage, err := m.clientFor(p).ChatDetailedOpts(ctx, system, user, temp, opt)
-		m.record(ctx, p.Name, p.Model(), sceneOr(scene), temp, system, user, out, usage, time.Since(start), err)
-		m.mark(p.Name, err == nil)
+		name, model := p.Name, p.Model()
+		out, err := m.callOnce(ctx, scene, name, model, temp, system, user, opt,
+			func() (string, Usage, error) {
+				return m.clientFor(p).ChatDetailedOpts(ctx, system, user, temp, opt)
+			})
+		m.mark(name, err == nil)
 		if err == nil {
 			return out, nil
 		}
 		lastErr = err
-		log.Warn("[llm] 数据源调用失败，尝试下一个", "provider", p.Name, "model", p.Model(), "err", err)
+		log.Warn("[llm] 数据源调用失败，尝试下一个", "provider", name, "model", model, "err", err)
 	}
 	if m.fallback != nil && strings.TrimSpace(m.fallback.Model()) != "" {
 		temp := temperature
 		if temp < 0 {
 			temp = m.fallback.temp
 		}
-		start := time.Now()
-		out, usage, err := m.fallback.ChatDetailedOpts(ctx, system, user, temp, opt)
-		m.record(ctx, "fallback", m.fallback.Model(), sceneOr(scene), temp, system, user, out, usage, time.Since(start), err)
+		out, err := m.callOnce(ctx, scene, "fallback", m.fallback.Model(), temp, system, user, opt,
+			func() (string, Usage, error) {
+				return m.fallback.ChatDetailedOpts(ctx, system, user, temp, opt)
+			})
 		if err == nil {
 			return out, nil
 		} else if lastErr == nil {
@@ -246,6 +254,30 @@ func (m *Manager) chatWithOptOnce(ctx context.Context, scene, system, user strin
 		return "", lastErr
 	}
 	return "", ErrNoProvider
+}
+
+// callOnce 一次真实的模型请求：埋点 + 记账 + 调用本体收敛在一处。
+// 主链路、指定数据源、conf 兜底三条路径共用它，所以「一个 llm.chat span
+// 对应一次真实请求」在所有入口都成立（重试/降级各成一条 span）。
+func (m *Manager) callOnce(ctx context.Context, scene, provider, model string, temp float64, system, user string, opt CallOptions, call func() (string, Usage, error)) (string, error) {
+	start := time.Now()
+	_, span := trace.Start(ctx, "llm.chat",
+		trace.String(trace.AttrKind, trace.KindLLM),
+		trace.String(trace.AttrLLMModel, model),
+		trace.String(trace.AttrLLMSource, provider),
+		trace.String(trace.AttrLLMPurpose, MetaFrom(ctx).Purpose))
+	span.Set("llm.temperature", temp)
+	span.Set("llm.json_mode", opt.JSONMode)
+	out, usage, err := call()
+	cost := time.Since(start)
+	// 事务性埋点：token / 成本的属性名与 usage_records 口径一致，
+	// 「单任务成本」看板与 trace 树可以相互对账
+	span.Set(trace.AttrLLMPromptTok, usage.PromptTokens)
+	span.Set(trace.AttrLLMComplTok, usage.CompletionTokens)
+	span.Set("llm.duration_ms", cost.Milliseconds())
+	m.record(ctx, provider, model, sceneOr(scene), temp, system, user, out, usage, cost, err)
+	span.End(err)
+	return out, err
 }
 
 // available 该数据源当前是否可尝试（熔断打开期间直接跳过）。
@@ -318,45 +350,11 @@ func (m *Manager) Model() string {
 	return m.fallback.Model()
 }
 
+// chat 场景化对话（不带生成参数）。
+// 直接复用 chatWithOpt 的候选链路：以前这里有一套与 chatWithOptOnce 几乎一样的
+// 副本循环，两套逻辑各写一遍不仅容易走偏，埋点/记账也极易漏掉一边。
 func (m *Manager) chat(ctx context.Context, scene, system, user string, temperature float64) (string, error) {
-	var lastErr error
-	for _, p := range m.candidates(scene) {
-		if !m.available(p.Name) {
-			continue
-		}
-		temp := temperature
-		if temp < 0 {
-			temp = p.Temperature
-		}
-		start := time.Now()
-		out, usage, err := m.clientFor(p).ChatTempDetailed(ctx, system, user, temp)
-		m.record(ctx, p.Name, p.Model(), scene, temp, system, user, out, usage, time.Since(start), err)
-		m.mark(p.Name, err == nil)
-		if err == nil {
-			return out, nil
-		}
-		lastErr = err
-		log.Warn("[llm] 数据源调用失败，尝试下一个", "provider", p.Name, "model", p.Model(), "err", err)
-	}
-	// 全部数据源不可用时回落到 conf 兜底（K8s/本地单机场景常见）
-	if m.fallback != nil && strings.TrimSpace(m.fallback.Model()) != "" {
-		temp := temperature
-		if temp < 0 {
-			temp = m.fallback.temp
-		}
-		start := time.Now()
-		out, usage, err := m.fallback.ChatTempDetailed(ctx, system, user, temp)
-		m.record(ctx, "fallback", m.fallback.Model(), scene, temp, system, user, out, usage, time.Since(start), err)
-		if err == nil {
-			return out, nil
-		} else if lastErr == nil {
-			lastErr = err
-		}
-	}
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", ErrNoProvider
+	return m.chatWithOpt(ctx, scene, system, user, temperature, CallOptions{})
 }
 
 // record 异步落一条调用历史：写失败只告警，绝不拖慢/阻断 LLM 调用本身。
@@ -364,6 +362,8 @@ func (m *Manager) chat(ctx context.Context, scene, system, user string, temperat
 func (m *Manager) record(ctx context.Context, provider, model, scene string, temp float64, system, user, out string, usage Usage, cost time.Duration, err error) {
 	// 指标先行：即使 calls 仓库没配置（单测/最小部署），用量与成本也要可观测
 	m.observe(provider, model, scene, usage, err)
+	// 账单：与调用历史独立的一路（历史可清，账单要长期可查）
+	m.charge(ctx, provider, model, usage, err)
 
 	if m.calls == nil {
 		return
@@ -403,6 +403,47 @@ func (m *Manager) record(ctx context.Context, provider, model, scene string, tem
 		defer cancel()
 		if e := m.calls.Insert(c, rec); e != nil {
 			log.Warn("[llm] 调用历史写入失败", "err", e)
+		}
+	}()
+}
+
+// charge 成本记账（异步、失败只告警）：
+// 记账失败绝不能让一次已经付费成功的 LLM 调用变成业务失败。
+func (m *Manager) charge(ctx context.Context, provider, model string, usage Usage, err error) {
+	if m.cost == nil {
+		return
+	}
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens + usage.CompletionTokens
+	}
+	// 没有用量也不产生成本 → 没有记账价值（例如连不上模型）
+	if total == 0 {
+		return
+	}
+	meta := MetaFrom(ctx)
+	info := identity.From(ctx)
+	ev := CostEvent{
+		TenantID:         info.TenantID,
+		UserID:           info.UserID,
+		AgentKey:         meta.AgentKey,
+		TaskID:           meta.TaskID,
+		Provider:         provider,
+		Model:            model,
+		Purpose:          meta.Purpose,
+		OK:               err == nil,
+		PromptTokens:     int64(usage.PromptTokens),
+		CompletionTokens: int64(usage.CompletionTokens),
+		TotalTokens:      int64(total),
+		CostMicros:       CostMicros(int64(usage.PromptTokens), int64(usage.CompletionTokens), m.priceIn, m.priceOut),
+		Currency:         "CNY",
+		PriceVersion:     PriceVersion(m.priceIn, m.priceOut),
+	}
+	go func() {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if e := m.cost.RecordCost(c, ev); e != nil {
+			log.Warn("[llm] 成本记账失败", "model", model, "task", ev.TaskID, "err", e)
 		}
 	}()
 }

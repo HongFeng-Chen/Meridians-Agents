@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"go_agent/internal/pkg/trace"
+
 	"github.com/go-kratos/kratos/v3/log"
 )
 
@@ -102,12 +104,20 @@ func (u *UseCase) SaveSet(ctx context.Context, in SaveSetInput) (*Set, error) {
 		UpdatedAt:   now,
 	}
 	if s.ID == 0 {
+		s.Version = 1 // 新建用例集：v1（内容为空，checksum 在首次运行前算出）
 		s.CreatedAt = now
 		if err := u.repo.CreateSet(ctx, s); err != nil {
 			return nil, err
 		}
-	} else if err := u.repo.SaveSet(ctx, s); err != nil {
-		return nil, err
+	} else {
+		// 改名称/描述/默认 target 不是数据集变更：版本与 checksum 必须原样继承，
+		// 否则编辑一次元信息就把版本号洗掉了（评测报告里的版本可比性归零）。
+		if old, err := u.repo.GetSet(ctx, s.ID); err == nil && old != nil {
+			s.Version, s.Checksum = old.Version, old.Checksum
+		}
+		if err := u.repo.SaveSet(ctx, s); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -208,25 +218,70 @@ func (u *UseCase) StartRun(ctx context.Context, setID uint64, cfg RunConfig) (*R
 		cfg.PerCaseTimeoutSec = 120
 	}
 
-	run := &Run{
-		SetID:     setID,
-		SetName:   set.Name,
-		Target:    target,
-		Status:    RunPending,
-		Total:     len(cases),
-		Config:    cfg,
-		CreatedAt: u.now(),
+	// 数据集版本：启用用例的内容变了才 +1（checksum 去重）。
+	// 不做「每次运行都 +1」——那样版本号只表示「跑了几次」，失去比较意义。
+	// 首次运行只记录 checksum 不推进版本：v1 就代表「最初的这套用例」。
+	if sum := DatasetChecksum(cases); sum != "" && sum != set.Checksum {
+		if set.Checksum != "" {
+			set.Version++
+		}
+		if set.Version <= 0 {
+			set.Version = 1
+		}
+		set.Checksum = sum
+		set.UpdatedAt = u.now()
+		if err := u.repo.SaveSet(ctx, set); err != nil {
+			// 版本推进失败不阻断运行：本次仍按算出来的 checksum 记录
+			log.Warn("[harness] 数据集版本推进失败", "set", set.ID, "err", err)
+		}
 	}
-	if err := u.repo.CreateRun(ctx, run); err != nil {
-		return nil, err
+
+	// 被测对象版本：agent 目标取最新配置快照，model 目标记录模型名。
+	// 这是「同一个分数可复现」的前提——只记 target 字符串，等于什么都没记。
+	var info TargetInfo
+	if u.runner != nil {
+		info = u.runner.Resolve(ctx, target)
+	}
+
+	run := &Run{
+		SetID:           setID,
+		SetName:         set.Name,
+		Target:          target,
+		Status:          RunPending,
+		Total:           len(cases),
+		Config:          cfg,
+		CreatedAt:       u.now(),
+		SnapshotID:      info.SnapshotID,
+		SnapshotVersion: info.SnapshotVersion,
+		DatasetVersion:  set.Version,
+		DatasetChecksum: set.Checksum,
+		Model:           info.Model,
 	}
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// 评测运行根 span：逐例 span 挂在它下面，一次评测就是一条 Trace。
+	runCtx, span := trace.Start(runCtx, "harness.run",
+		trace.String(trace.AttrKind, trace.KindTask),
+		trace.String("harness.target", target),
+		trace.Int("harness.cases", len(cases)),
+	)
+	run.TraceID = span.TraceID()
+
+	if err := u.repo.CreateRun(ctx, run); err != nil {
+		span.End(err)
+		cancel()
+		return nil, err
+	}
+
 	u.mu.Lock()
 	u.cancels[run.ID] = cancel
 	u.mu.Unlock()
 
-	go u.executeRun(runCtx, *run, cases)
+	go func() {
+		defer span.End(nil)
+		defer cancel()
+		u.executeRun(runCtx, *run, cases)
+	}()
 	return run, nil
 }
 
@@ -273,13 +328,28 @@ func (u *UseCase) DeleteRun(ctx context.Context, id uint64) error {
 	return u.repo.DeleteRun(ctx, id)
 }
 
+// persistRun 保存运行行（状态 / 进度 / 终态共用）。
+//
+// 失败只告警不中断：评测不该因为一次进度落库失败整体崩掉。
+// 但绝不能静默吞掉——历史教训：finished_at 零值被 MySQL 拒收，
+// 整条 UPDATE 失败而错误被丢掉，于是状态永远停在 pending、
+// 前端进度条一动不动，排查时毫无线索（见 SaveRun 的 nilIfZero）。
+func (u *UseCase) persistRun(ctx context.Context, what string, run *Run) {
+	if run == nil {
+		return
+	}
+	if err := u.repo.SaveRun(ctx, run); err != nil {
+		log.Warn("[harness] 运行行落库失败", "what", what, "run", run.ID, "err", err)
+	}
+}
+
 // —— 执行引擎 ——
 
 // executeRun 评测运行主循环（goroutine 内执行，不返回错误，错误写回 Run 行）
 func (u *UseCase) executeRun(ctx context.Context, run Run, cases []Case) {
 	start := u.now()
 	run.Status = RunRunning
-	_ = u.repo.SaveRun(ctx, &run)
+	u.persistRun(ctx, "推进为 running", &run)
 	_ = u.repo.DeleteItemsOfRun(ctx, run.ID)
 
 	perCase := time.Duration(run.Config.PerCaseTimeoutSec) * time.Second
@@ -327,7 +397,7 @@ func (u *UseCase) executeRun(ctx context.Context, run Run, cases []Case) {
 			mu.Unlock()
 
 			_ = u.repo.CreateItem(ctx, item)
-			_ = u.repo.SaveRun(ctx, &snapshot)
+			u.persistRun(ctx, "推进进度", &snapshot)
 		}()
 	}
 	wg.Wait()
@@ -350,7 +420,7 @@ func (u *UseCase) executeRun(ctx context.Context, run Run, cases []Case) {
 	}
 	final := run
 	mu.Unlock()
-	_ = u.repo.SaveRun(ctx, &final)
+	u.persistRun(ctx, "写入终态", &final)
 
 	// 提示词版本评测闭环：带 prompt 标注的运行，终态把加权得分回写提示词工程。
 	// 异步 + 独立超时，回写失败只告警，不影响运行结果本身。
@@ -370,6 +440,14 @@ func (u *UseCase) runCase(ctx context.Context, run Run, c Case, timeout time.Dur
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	ctx, span := trace.Start(ctx, "harness.case",
+		trace.String(trace.AttrKind, trace.KindTask),
+		trace.String("harness.case", c.Name),
+		trace.Int64("harness.case_id", int64(c.ID)),
+	)
+	var caseErr error
+	defer func() { span.End(caseErr) }()
+
 	item := &RunItem{
 		RunID:     run.ID,
 		CaseID:    c.ID,
@@ -385,6 +463,7 @@ func (u *UseCase) runCase(ctx context.Context, run Run, c Case, timeout time.Dur
 	output, err := u.runner.Run(ctx, run.Target, input)
 	item.LatencyMS = u.now().Sub(begin).Milliseconds()
 	if err != nil {
+		caseErr = err
 		item.Error = err.Error()
 		return item
 	}
@@ -400,6 +479,8 @@ func (u *UseCase) runCase(ctx context.Context, run Run, c Case, timeout time.Dur
 		item.Passed = output != ""
 		item.Score = -1
 	}
+	span.Set("harness.passed", item.Passed)
+	span.Set("harness.score", item.Score)
 	return item
 }
 

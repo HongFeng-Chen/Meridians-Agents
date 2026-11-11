@@ -16,9 +16,12 @@ import (
 	"go_agent/internal/biz/history"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag/graphrag"
+	"go_agent/internal/biz/space"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/loader"
+	"go_agent/internal/pkg/principal"
+	"go_agent/internal/pkg/trace"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -53,6 +56,8 @@ type Rag struct {
 	graphTop int
 	// hist 统一操作历史（RAG / GraphRAG 召回记录，可为 nil：不记录）
 	hist history.Recorder
+	// spaces 知识空间解析（V2）。nil 时退化为 V1 三层作用域。
+	spaces SpaceScope
 
 	topK       int
 	topN       int
@@ -60,6 +65,13 @@ type Rag struct {
 	embedBatch int
 	// rerank 召回精排（可选：conf.Data.rerank 未启用时为 nil，按检索原序返回）
 	rerank *Reranker
+}
+
+// SpaceScope 知识空间解析（由 biz/space 实现；nil 表示未启用空间体系）。
+//
+// 只依赖窄接口：RAG 不需要知道空间树怎么建，只需要「这个人能看见哪些空间」。
+type SpaceScope interface {
+	AllowedSpaceIDs(ctx context.Context, p *principal.Principal) ([]string, error)
 }
 
 // NewRag 构建 RAG 用例（wire provider）
@@ -73,6 +85,7 @@ func NewRag(
 	llm Chatter,
 	prompts Prompter,
 	hist history.Recorder,
+	spaces SpaceScope,
 	c *conf.Data,
 ) (*Rag, error) {
 	rc := c.GetRag()
@@ -113,6 +126,7 @@ func NewRag(
 		chunker:    ch,
 		graphTop:   int(rc.GetGraphTopK()),
 		hist:       hist,
+		spaces:     spaces,
 		topK:       topK,
 		topN:       topN,
 		cacheTTL:   ttl,
@@ -285,7 +299,8 @@ func (r *Rag) IngestDocument(ctx context.Context, in IngestInput) (*IngestResult
 
 	if err := r.repo.Upsert(ctx, &Document{
 		DocID: docID, UserID: owner, TenantID: ownerTenant, Scope: scope,
-		Source: source, Mode: mode, Status: "ready",
+		SpaceID: space.ScopeToSpaceID(scope, ownerTenant, owner),
+		Source:  source, Mode: mode, Status: "ready",
 		Chars: res.Chars, Chunks: res.Chunks,
 		Entities: res.Entities, Relations: res.Relations,
 		Checksum: checksum,
@@ -378,7 +393,8 @@ func (r *Rag) IngestReader(ctx context.Context, name, docID, source, mode, scope
 func (r *Rag) saveFailed(ctx context.Context, docID, source, mode, scope, text string, cause error) {
 	_ = r.repo.Upsert(ctx, &Document{
 		DocID: docID, UserID: identity.UserID(ctx), TenantID: identity.TenantID(ctx),
-		Scope: scope, Source: source, Mode: mode, Status: "failed",
+		Scope: scope, SpaceID: space.ScopeToSpaceID(scope, identity.TenantID(ctx), identity.UserID(ctx)),
+		Source: source, Mode: mode, Status: "failed",
 		Chars: len([]rune(text)),
 	})
 }
@@ -402,21 +418,29 @@ func (r *Rag) render(ctx context.Context, key string, vars map[string]string) st
 }
 
 // Query 完整 RAG：Redis 缓存 -> 混合检索 -> 提示词 -> LLM 生成
-func (r *Rag) Query(ctx context.Context, question, filter string) (*Answer, error) {
+func (r *Rag) Query(ctx context.Context, question, filter string) (ans *Answer, err error) {
+	// 外层 span 把「缓存 / 检索 / 生成」三段括在一起：
+	// 只看 rag.retrieve 无法回答「端到端慢在检索还是生成」。
+	ctx, span := trace.Start(ctx, "rag.query",
+		trace.String(trace.AttrKind, trace.KindRAG))
+	defer func() { span.End(err) }()
+
 	question = strings.TrimSpace(question)
 	if question == "" {
 		return nil, fmt.Errorf("问题为空")
 	}
 	key := AnswerCacheKey(question, filter)
-	if ans, ok := r.cache.GetAnswer(ctx, key); ok {
-		ans.Cached = true
-		return ans, nil
+	if cached, ok := r.cache.GetAnswer(ctx, key); ok {
+		span.Set("rag.cached", true)
+		cached.Cached = true
+		return cached, nil
 	}
 
 	hits, err := r.Retrieve(ctx, question, filter)
 	if err != nil {
 		return nil, err
 	}
+	span.Set(trace.AttrRAGHits, len(hits))
 	if len(hits) > r.topN {
 		hits = hits[:r.topN]
 	}
@@ -436,7 +460,7 @@ func (r *Rag) Query(ctx context.Context, question, filter string) (*Answer, erro
 	if err != nil {
 		return nil, fmt.Errorf("生成回答: %w", err)
 	}
-	ans := &Answer{Question: question, Answer: answer, Citations: hits}
+	ans = &Answer{Question: question, Answer: answer, Citations: hits}
 	r.cache.PutAnswer(ctx, key, ans, r.cacheTTL)
 	return ans, nil
 }
@@ -445,6 +469,14 @@ func (r *Rag) Query(ctx context.Context, question, filter string) (*Answer, erro
 // 每次召回异步落一条 RAG 召回历史（op_histories），任务内调用自动关联 task。
 func (r *Rag) Retrieve(ctx context.Context, question, filter string) (hits []Hit, err error) {
 	start := time.Now()
+	// 检索 span：embedding + 向量检索 + rerank 三段都在里面，
+	// 与 rag.query 的差值是「生成」的耗时。
+	ctx, span := trace.Start(ctx, "rag.retrieve",
+		trace.String(trace.AttrKind, trace.KindRAG))
+	defer func() {
+		span.Set(trace.AttrRAGHits, len(hits))
+		span.End(err)
+	}()
 	defer func() {
 		if r.hist == nil {
 			return
@@ -503,7 +535,7 @@ func (r *Rag) RetrieveForUser(ctx context.Context, question, userID string) ([]H
 
 // userDocFilter 用户文档白名单过滤表达式；empty=true 表示该用户没有任何文档
 func (r *Rag) userDocFilter(ctx context.Context, userID string) (filter string, empty bool, err error) {
-	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
+	ids, err := r.visibleDocIDs(ctx, userID)
 	if err != nil {
 		return "", false, fmt.Errorf("查询用户文档: %w", err)
 	}
@@ -519,7 +551,7 @@ func (r *Rag) userDocFilter(ctx context.Context, userID string) (filter string, 
 
 // GraphRecallForUser 按用户隔离的图谱召回：只保留引用了该用户文档的实体与关系。
 func (r *Rag) GraphRecallForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
-	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
+	ids, err := r.visibleDocIDs(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户文档: %w", err)
 	}
@@ -528,11 +560,30 @@ func (r *Rag) GraphRecallForUser(ctx context.Context, question, userID string) (
 
 // GraphQueryForUser 按用户隔离的图谱问答（生成式）。
 func (r *Rag) GraphQueryForUser(ctx context.Context, question, userID string) (*graphrag.GraphAnswer, error) {
-	ids, err := r.repo.ListDocIDs(ctx, identity.TenantID(ctx), userID)
+	ids, err := r.visibleDocIDs(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户文档: %w", err)
 	}
 	return r.graph.QueryScoped(ctx, question, ids)
+}
+
+// visibleDocIDs 当前身份可见的文档白名单（检索与图谱召回共用）。
+//
+// V2 空间授权优先：先由空间服务算出可见空间集合，再让仓储按 space_id 过滤；
+// 空间服务不可用（未启用 / 查询失败）时退回 V1 三层作用域——检索可以少一点，
+// 但不能因为空间服务抖动而变成「全部可见」。这个降级方向是刻意选的。
+func (r *Rag) visibleDocIDs(ctx context.Context, userID string) ([]string, error) {
+	tenantID := identity.TenantID(ctx)
+	if r.spaces != nil {
+		ids, err := r.spaces.AllowedSpaceIDs(ctx, principal.From(ctx))
+		if err == nil && len(ids) > 0 {
+			return r.repo.ListDocIDsBySpaces(ctx, tenantID, userID, ids)
+		}
+		if err != nil {
+			log.Warn("[rag] 解析知识空间失败，退回三层作用域", "err", err)
+		}
+	}
+	return r.repo.ListDocIDs(ctx, tenantID, userID)
 }
 
 // DocFilterForUser 用户文档白名单的 Milvus 过滤表达式；empty=true 表示该用户没有文档。
@@ -575,6 +626,16 @@ func (r *Rag) rerankHits(ctx context.Context, question string, hits []Hit) []Hit
 // 每次召回异步落一条 GraphRAG 召回历史（op_histories），任务内调用自动关联 task。
 func (r *Rag) GraphQuery(ctx context.Context, question string) (ans *graphrag.GraphAnswer, err error) {
 	start := time.Now()
+	// 图谱检索单独一类 span：它比向量检索贵一个数量级（多跳 + 证据回查），
+	// 混在 rag.retrieve 里会让「图查询慢」和「向量召回慢」分不开。
+	ctx, span := trace.Start(ctx, "graphrag.query",
+		trace.String(trace.AttrKind, trace.KindGraphRAG))
+	defer func() {
+		if ans != nil {
+			span.Set(trace.AttrGraphNodes, len(ans.Entities))
+		}
+		span.End(err)
+	}()
 	defer func() {
 		if r.hist == nil {
 			return

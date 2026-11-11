@@ -12,14 +12,18 @@ import "time"
 
 // HarnessSetPO 用例集
 type HarnessSetPO struct {
-	ID          uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name        string    `gorm:"column:name;size:128;not null" json:"name"`
-	Description string    `gorm:"column:description;size:512;not null;default:''" json:"description"`
-	Target      string    `gorm:"column:target;size:128;not null;default:''" json:"target"`
-	Tags        string    `gorm:"column:tags;size:512;not null;default:'[]'" json:"tags"`
-	Enabled     bool      `gorm:"column:is_enabled;not null;default:true" json:"enabled"`
-	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID          uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name        string `gorm:"column:name;size:128;not null" json:"name"`
+	Description string `gorm:"column:description;size:512;not null;default:''" json:"description"`
+	Target      string `gorm:"column:target;size:128;not null;default:''" json:"target"`
+	Tags        string `gorm:"column:tags;size:512;not null;default:'[]'" json:"tags"`
+	Enabled     bool   `gorm:"column:is_enabled;not null;default:true" json:"enabled"`
+	// Version 数据集版本：启用用例集合的内容变化时 +1（评测可复现的依据之一）
+	Version int `gorm:"column:version;not null;default:1" json:"version"`
+	// Checksum 启用用例的内容哈希（前 16 位十六进制）：同一版本号下内容必然一致
+	Checksum  string    `gorm:"column:checksum;size:32;not null;default:''" json:"checksum"`
+	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 // TableName 表名
@@ -60,6 +64,19 @@ type HarnessRunPO struct {
 	Config    string    `gorm:"column:config;size:512;not null;default:'{}'" json:"config"` // JSON RunConfig
 	Error     string    `gorm:"column:error;size:512;not null;default:''" json:"error"`
 	CreatedAt time.Time `gorm:"column:created_at" json:"created_at"`
+
+	// —— 可复现绑定（P4）：一次运行必须能说清「测的是哪个版本」——
+	//
+	// SnapshotID/SnapshotVersion 被测 Agent 的配置快照（model: 目标下为 0）；
+	// DatasetVersion/DatasetChecksum 数据集版本（用例内容哈希）；
+	// Model 实际被测模型；TraceID 本次运行的链路（评测自身也可观测）。
+	SnapshotID      uint64 `gorm:"column:snapshot_id;not null;default:0" json:"snapshot_id"`
+	SnapshotVersion int    `gorm:"column:snapshot_version;not null;default:0" json:"snapshot_version"`
+	DatasetVersion  int    `gorm:"column:dataset_version;not null;default:0" json:"dataset_version"`
+	DatasetChecksum string `gorm:"column:dataset_checksum;size:32;not null;default:''" json:"dataset_checksum"`
+	Model           string `gorm:"column:model;size:128;not null;default:''" json:"model"`
+	TraceID         string `gorm:"column:trace_id;size:32;not null;default:'';index:idx_harness_run_trace" json:"trace_id"`
+
 	// FinishedAt 终态时间；*time.Time 让未结束的运行写 NULL（MySQL 拒绝零值 datetime）
 	FinishedAt *time.Time `gorm:"column:finished_at" json:"finished_at"`
 }

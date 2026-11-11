@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Badge, Spinner } from './UI.jsx';
 import { LLMCallsTable, fmtTokens } from './LLMCalls.jsx';
 import { Markdown } from './Markdown.jsx';
+import { v2 } from '../api.js';
 
 // TaskDetailDrawer 任务链路抽屉（参考 Dify/n8n 运行详情与 SkyWalking 链路视图）：
 // 右侧滑出弹层，概要 → 输入/答案 → Trace 时间线（执行事件 + 操作历史合并）→ LLM 调用记录 → 关联调用历史。
@@ -12,16 +13,20 @@ export const STATUS_TONES = {
   running: 'indigo',
   pending: 'warn',
   paused: 'warn',
+  retry_wait: 'warn',
   failed: 'error',
   canceled: 'default',
+  timeout: 'error',
 };
 export const STATUS_LABELS = {
   pending: '排队中',
   running: '执行中',
   paused: '待审批',
+  retry_wait: '等待重试',
   succeeded: '成功',
   failed: '失败',
   canceled: '已取消',
+  timeout: '执行超时',
 };
 
 export const EVENT_LABELS = {
@@ -201,6 +206,79 @@ export function openConversation(convId) {
   setTimeout(() => window.dispatchEvent(new CustomEvent('wb:open-conv', { detail: convId })), 60);
 }
 
+// Span 类型配色：与后端 span.kind 属性一一对应（task / llm / tool / rag / graphrag）
+const SPAN_KINDS = {
+  task: { label: '任务', tone: 'indigo' },
+  llm: { label: 'LLM', tone: 'violet' },
+  tool: { label: '工具', tone: 'teal' },
+  rag: { label: 'RAG', tone: 'blue' },
+  graphrag: { label: '图谱', tone: 'warn' },
+  other: { label: '其他', tone: 'default' },
+};
+
+// buildSpanTree 按 parent_id 组装层级（父不在样本里的当根：采样丢失时也要能显示）
+function buildSpanTree(spans) {
+  const byId = new Map(spans.map((s) => [s.span_id, { ...s, children: [] }]));
+  const roots = [];
+  byId.forEach((node) => {
+    const parent = node.parent_id ? byId.get(node.parent_id) : null;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  });
+  const sortByStart = (list) => list.sort((a, b) => new Date(a.start) - new Date(b.start));
+  sortByStart(roots);
+  byId.forEach((n) => sortByStart(n.children));
+  return roots;
+}
+
+// fmtMicros 微元 → 元（1 元 = 1_000_000 微元）：成本一律按整数微元存储，避免浮点累加误差
+export function fmtMicros(micros) {
+  const v = Number(micros || 0) / 1e6;
+  if (v === 0) return '¥0';
+  if (v < 0.01) return `¥${v.toFixed(4)}`;
+  return `¥${v.toFixed(2)}`;
+}
+
+// renderSpanNodes 递归展开 span 树：缩进表示层级，属性只挑对排查有用的几项。
+// 不折叠：一次任务的 span 通常几十个，折叠反而多一次点击。
+function renderSpanNodes(nodes, depth = 0, out = []) {
+  nodes.forEach((n) => {
+    const meta = SPAN_KINDS[n.kind] || SPAN_KINDS.other;
+    const attrs = n.attrs || {};
+    out.push(
+      <div key={n.span_id} style={{ padding: `3px 0 3px ${depth * 14}px` }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <Badge tone={meta.tone}>{meta.label}</Badge>
+          <span className="mono" style={{ fontSize: 12 }}>{n.name}</span>
+          <span className="muted mono" style={{ fontSize: 11 }}>
+            {n.duration_ms > 0 ? `${n.duration_ms}ms` : '<1ms'}
+          </span>
+          {n.status === 'error' && <Badge tone="error">失败</Badge>}
+          {attrs['mcp.replayed'] === true && <Badge tone="warn">幂等回放</Badge>}
+          {attrs['task.snapshot_id'] ? (
+            <span className="muted mono" style={{ fontSize: 11 }}>snap#{attrs['task.snapshot_id']}</span>
+          ) : null}
+          {attrs['llm.model'] ? (
+            <span className="muted mono" style={{ fontSize: 11 }}>
+              {attrs['llm.model']}
+              {attrs['llm.prompt_tokens'] ? ` · ${attrs['llm.prompt_tokens']}/${attrs['llm.completion_tokens'] ?? 0} tok` : ''}
+            </span>
+          ) : null}
+          {attrs['tool.name'] ? (
+            <span className="muted mono" style={{ fontSize: 11 }}>{attrs['tool.name']}</span>
+          ) : null}
+          {attrs['rag.hits'] !== undefined ? (
+            <span className="muted mono" style={{ fontSize: 11 }}>命中 {attrs['rag.hits']}</span>
+          ) : null}
+        </div>
+        {n.error && <div className="cell-sub" style={{ color: 'var(--error, #dc2626)' }}>{n.error}</div>}
+      </div>,
+    );
+    if (n.children?.length) renderSpanNodes(n.children, depth + 1, out);
+  });
+  return out;
+}
+
 export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, onClose, onOpenTask, onCancel, onRetry, onApprove, width }) {
   // ESC 关闭 + 打开期间锁定背景滚动
   useEffect(() => {
@@ -217,6 +295,33 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
   const running = ['pending', 'running'].includes(detail.status);
   const paused = detail.status === 'paused';
   const fmtDuration = () => formatDuration(detail.started_at, detail.finished_at);
+
+  // 链路与成本（V2-P4）：这两个数据都不在 v1 proto 里，随抽屉打开单独拉一次。
+  // 失败一律静默降级——追踪没开 / 老部署没有 v2 接口时，抽屉其余部分照常可用。
+  const [trace, setTrace] = useState(null);
+  const [costRows, setCostRows] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setTrace(null);
+    setCostRows(null);
+    (async () => {
+      try {
+        const res = await v2.traces({ task_id: detail.id, limit: 1 });
+        if (alive && res?.enabled && res.traces?.length) setTrace(res.traces[0]);
+      } catch {
+        /* 追踪未启用或内存缓冲已淘汰：不展示链路区块 */
+      }
+      try {
+        const res = await v2.usageSummary({ task_id: String(detail.id), group_by: 'kind' });
+        if (alive && res?.buckets?.length) setCostRows(res.buckets);
+      } catch {
+        /* 成本中心未接线：不展示成本区块 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [detail.id, detail.status]);
 
   // 最近一次 paused 事件：展示挂起的能力与参数（审批卡片内容）
   const pausedEvt = paused
@@ -264,7 +369,7 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
               取消任务
             </button>
           )}
-          {['succeeded', 'failed', 'canceled'].includes(detail.status) && onRetry && (
+          {['succeeded', 'failed', 'canceled', 'timeout'].includes(detail.status) && onRetry && (
             <button className="btn ghost sm" type="button" disabled={busy === `retry-${detail.id}`} onClick={() => onRetry(detail)}>
               重试
             </button>
@@ -490,6 +595,66 @@ export function TaskDetailDrawer({ detail, events, calls, histories = [], busy, 
               </div>
             </>
           )}
+
+          {/* 执行链路（OpenTelemetry span 树）：一次执行一条 Trace，覆盖 task / LLM / MCP / Skill / RAG */}
+          {trace && (
+            <>
+              <div className="section-title" style={{ margin: '16px 0 8px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>执行链路（{trace.spans?.length || 0} 个 span{trace.running ? ' · 执行中' : ''}）</span>
+                <span className="muted mono" style={{ fontSize: 11 }} title="按 trace_id 可在 Jaeger/Tempo 里查同一条链路">
+                  {trace.trace_id}
+                </span>
+              </div>
+              {trace.spans?.length > 0 ? (
+                <div className="block" style={{ padding: '6px 10px', marginBottom: 8 }}>
+                  {renderSpanNodes(buildSpanTree(trace.spans))}
+                </div>
+              ) : (
+                <div className="muted" style={{ marginBottom: 8, fontSize: 13 }}>
+                  根节点 task.run 已开始，span 尚未结束（结束后出现在这里）…
+                </div>
+              )}
+            </>
+          )}
+
+          {/* 单任务成本：usage_records 里按 task_id 归集的账单（LLM 调用自动记账） */}
+          {costRows && costRows.length > 0 && (() => {
+            const totalCost = costRows.reduce((s, r) => s + (r.cost_micros ?? 0), 0);
+            const totalIn = costRows.reduce((s, r) => s + (r.input_tokens ?? 0), 0);
+            const totalOut = costRows.reduce((s, r) => s + (r.output_tokens ?? 0), 0);
+            const calls = costRows.reduce((s, r) => s + (r.calls ?? 0), 0);
+            return (
+              <>
+                <div className="section-title" style={{ margin: '16px 0 8px' }}>
+                  成本（{fmtMicros(totalCost)} · {calls} 次调用 · 输入 {fmtTokens(totalIn)} tok · 输出 {fmtTokens(totalOut)} tok）
+                </div>
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>成本来源</th>
+                        <th className="num">调用</th>
+                        <th className="num">输入 tok</th>
+                        <th className="num">输出 tok</th>
+                        <th className="num">成本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {costRows.map((r) => (
+                        <tr key={r.key || 'all'}>
+                          <td><Badge tone="default">{r.key || 'llm'}</Badge></td>
+                          <td className="num mono">{r.calls ?? 0}</td>
+                          <td className="num mono">{fmtTokens(r.input_tokens ?? 0)}</td>
+                          <td className="num mono">{fmtTokens(r.output_tokens ?? 0)}</td>
+                          <td className="num mono">{fmtMicros(r.cost_micros)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>

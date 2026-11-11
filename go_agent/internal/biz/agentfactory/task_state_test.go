@@ -16,6 +16,8 @@ func TestTaskStateMachine(t *testing.T) {
 		{TaskPending, TaskRunning}, {TaskPending, TaskCanceled}, {TaskPending, TaskFailed},
 		{TaskRunning, TaskSucceeded}, {TaskRunning, TaskFailed},
 		{TaskRunning, TaskPaused}, {TaskRunning, TaskCanceled},
+		{TaskRunning, TaskRetryWait}, {TaskRunning, TaskTimeout},
+		{TaskRetryWait, TaskPending}, {TaskRetryWait, TaskFailed}, {TaskRetryWait, TaskCanceled},
 		{TaskPaused, TaskPending}, {TaskPaused, TaskFailed}, {TaskPaused, TaskCanceled},
 	}
 	for _, c := range ok {
@@ -26,6 +28,13 @@ func TestTaskStateMachine(t *testing.T) {
 	bad := [][2]string{
 		{TaskSucceeded, TaskRunning}, {TaskCanceled, TaskPending},
 		{TaskPaused, TaskRunning}, {TaskSucceeded, TaskPaused},
+		// 重试等待不能直接回 running：必须经过 pending 重新认领，
+		// 否则 attempt 不累加，dead loop 永远撞不到上限
+		{TaskRetryWait, TaskRunning},
+		// 超时是终态，不能复活
+		{TaskTimeout, TaskPending}, {TaskTimeout, TaskRunning},
+		// 终态之间不互转
+		{TaskTimeout, TaskCanceled}, {TaskCanceled, TaskTimeout},
 	}
 	for _, c := range bad {
 		if CanTransit(c[0], c[1]) {
@@ -221,14 +230,18 @@ func TestTaskScopedByTenant(t *testing.T) {
 // 池内状态必须覆盖 paused：审批超时扫描靠 ListTasks(Status=paused) 找候选，
 // 漏掉它就会一直报「未知任务状态」，挂起任务永远不超时。
 func TestInPoolCoversEveryLiveStatus(t *testing.T) {
-	for _, s := range []string{TaskPending, TaskRunning, TaskPaused} {
+	for _, s := range []string{TaskPending, TaskRunning, TaskPaused, TaskRetryWait} {
 		if !InPool(s) {
 			t.Fatalf("%q 应属于任务池状态", s)
 		}
 	}
-	for _, s := range []string{TaskSucceeded, TaskFailed, TaskCanceled, ""} {
+	// timeout 与其余终态一样要归档：漏一个会让历史查询永远查不到超时任务
+	for _, s := range []string{TaskSucceeded, TaskFailed, TaskCanceled, TaskTimeout, ""} {
 		if InPool(s) {
 			t.Fatalf("%q 不该被当成任务池状态", s)
+		}
+		if s != "" && !IsTerminalStatus(s) {
+			t.Fatalf("%q 应是终态", s)
 		}
 	}
 }

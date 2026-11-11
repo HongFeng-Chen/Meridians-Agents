@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	nethttp "net/http"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/mediaauth"
 	"go_agent/internal/pkg/metrics"
+	"go_agent/internal/pkg/principal"
 	"go_agent/internal/pkg/ratelimit"
 
 	kerrors "github.com/go-kratos/kratos/v3/errors"
@@ -34,6 +37,11 @@ type gate struct {
 	header   string
 	dev      identity.Info
 	public   []string
+
+	// external 外部身份适配器（V2 External Identity）：本地 HS256 验签失败后，
+	// 依次尝试 JWKS / OIDC / Token Introspection / API Key。未配置时为 nil，
+	// 行为与 V1 完全一致。
+	external *principal.Resolver
 
 	limiter      *ratelimit.Limiter
 	writeLimiter *ratelimit.Limiter
@@ -82,6 +90,7 @@ func newGate(sec *conf.Security) *gate {
 	if a.GetTenantClaim() != "" {
 		g.verifier.TenantClaim = a.GetTenantClaim()
 	}
+	g.external = buildExternalIdentity(g.verifier)
 
 	rl := sec.GetRateLimit()
 	if rl.GetEnabled() {
@@ -186,20 +195,143 @@ func (g *gate) middleware() middleware.Middleware {
 				// 这样 AUTH_ENABLED=false + 0.0.0.0 监听时，公网请求拿不到管理面权限。
 				info := g.dev
 				info.Local = isLoopbackCtx(ctx)
-				return next(identity.With(ctx, info), req)
+				ctx = identity.With(ctx, info)
+				return next(principal.With(ctx, principal.FromIdentity(info)), req)
 			}
 			if g.isPublic(requestPath(ctx)) {
 				info := g.dev
 				info.Local = isLoopbackCtx(ctx)
-				return next(identity.With(ctx, info), req)
+				ctx = identity.With(ctx, info)
+				return next(principal.With(ctx, principal.FromIdentity(info)), req)
 			}
-			info, err := g.verifier.Verify(g.token(ctx))
+			tok := g.token(ctx)
+			info, err := g.verifier.Verify(tok)
+			if err != nil && g.external != nil {
+				// 本地验签不认识这个凭证：交给外部 IdP 适配器（JWKS / Introspection / API Key）。
+				// 失败时仍按 401 统一口径，不把「哪个 provider 失败」透给调用方。
+				if p, perr := g.external.Resolve(ctx, tok); perr == nil {
+					info, err = p.IdentityInfo(), nil
+				}
+			}
 			if err != nil {
 				return nil, kerrors.Unauthorized("UNAUTHENTICATED", "未认证："+err.Error())
 			}
-			return next(identity.With(ctx, info), req)
+			ctx = identity.With(ctx, info)
+			return next(principal.With(ctx, principal.FromIdentity(info)), req)
 		}
 	}
+}
+
+// buildExternalIdentity 从环境变量构建外部身份适配器。
+//
+// 为什么用环境变量而不是配置文件：这些参数（JWKS 地址、introspection 客户端密钥）
+// 属于部署期密钥，放 env 便于容器注入与轮换，也避免把 IdP 密钥写进仓库里的 yaml。
+//
+//	IDENTITY_JWKS_URL            外部 IdP 的 JWKS 地址（RS256/384/512）
+//	IDENTITY_JWKS_ISSUER         期望的 iss（可选但强烈建议）
+//	IDENTITY_JWKS_AUDIENCE       期望的 aud（可选）
+//	IDENTITY_OIDC_ISSUER         OIDC issuer；设置后自动发现 jwks_uri（与上者二选一）
+//	IDENTITY_INTROSPECTION_URL   RFC 7662 introspection 端点
+//	IDENTITY_CLIENT_ID / IDENTITY_CLIENT_SECRET  introspection 客户端凭证
+//	IDENTITY_API_KEYS            服务令牌，形如 "token1=svc1:public,token2=svc2:acme"
+//
+// 全部为空时返回 nil：网关行为与 V1 完全一致（只认本地 HS256 与静态令牌）。
+func buildExternalIdentity(local *auth.Verifier) *principal.Resolver {
+	var providers []principal.Provider
+
+	if local != nil {
+		providers = append(providers, principal.NewJWTProvider(local))
+	}
+
+	jwksURL := strings.TrimSpace(os.Getenv("IDENTITY_JWKS_URL"))
+	oidcIssuer := strings.TrimSpace(os.Getenv("IDENTITY_OIDC_ISSUER"))
+	if jwksURL == "" && oidcIssuer != "" {
+		if discovered := discoverJWKS(oidcIssuer); discovered != "" {
+			jwksURL = discovered
+			log.Info("外部身份：OIDC discovery 成功", "jwks_uri", jwksURL)
+		} else {
+			log.Warn("外部身份：OIDC issuer 发现失败，已跳过 JWKS 适配器", "issuer", oidcIssuer)
+		}
+	}
+	if jwksURL != "" {
+		opts := []principal.JWKSOption{}
+		if iss := firstNonEmpty(os.Getenv("IDENTITY_JWKS_ISSUER"), oidcIssuer); iss != "" {
+			opts = append(opts, principal.WithJWKSIssuer(iss))
+		}
+		if aud := strings.TrimSpace(os.Getenv("IDENTITY_JWKS_AUDIENCE")); aud != "" {
+			opts = append(opts, principal.WithJWKSAudience(aud))
+		}
+		if p := principal.NewJWKSProvider(jwksURL, opts...); p != nil {
+			providers = append(providers, p)
+			log.Info("外部身份：JWKS 适配器已启用", "jwks_url", jwksURL)
+		}
+	}
+
+	if endpoint := strings.TrimSpace(os.Getenv("IDENTITY_INTROSPECTION_URL")); endpoint != "" {
+		if p := principal.NewIntrospectionProvider(endpoint, os.Getenv("IDENTITY_CLIENT_ID"), os.Getenv("IDENTITY_CLIENT_SECRET")); p != nil {
+			providers = append(providers, p)
+			log.Info("外部身份：Token Introspection 适配器已启用", "endpoint", endpoint)
+		}
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("IDENTITY_API_KEYS")); raw != "" {
+		keys := map[string]*principal.Principal{}
+		for _, pair := range strings.Split(raw, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			tok, rest, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+			parts := strings.Split(rest, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			p := &principal.Principal{
+				Issuer:    "internal",
+				SubjectID: strings.TrimSpace(parts[0]),
+				TenantID:  strings.TrimSpace(parts[1]),
+				AuthType:  "apikey",
+			}
+			if len(parts) > 2 {
+				p.Roles = []string{strings.TrimSpace(parts[2])}
+				p.Admin = strings.EqualFold(parts[2], "platform_admin")
+			}
+			keys[strings.TrimSpace(tok)] = p
+		}
+		if p := principal.NewAPIKeyProvider(keys); p != nil {
+			providers = append(providers, p)
+			log.Info("外部身份：API Key 适配器已启用", "count", len(keys))
+		}
+	}
+
+	if len(providers) <= 1 {
+		return nil
+	}
+	return principal.NewResolver(providers...)
+}
+
+// discoverJWKS 读取 OIDC discovery 文档里的 jwks_uri（启动时一次，失败不影响启动）。
+func discoverJWKS(issuer string) string {
+	url := strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+	client := &nethttp.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != nethttp.StatusOK {
+		return ""
+	}
+	var doc struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.JWKSURI)
 }
 
 // insecureExposure 判断「认证关闭 + 监听非回环地址」这一组合是否成立。

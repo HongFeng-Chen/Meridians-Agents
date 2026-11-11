@@ -209,6 +209,10 @@ func (f *AgentFactory) Create(ctx context.Context, source string, in AgentInput)
 	if err := u.repo.CreateDef(ctx, def); err != nil {
 		return nil, err
 	}
+	// v1 配置快照：任务提交时钉住它，后续改定义不影响已提交任务的执行内容
+	if _, serr := u.publishSnapshot(ctx, def); serr != nil {
+		u.warn("Agent 快照生成失败", "agent", def.AgentKey, "err", serr)
+	}
 	// LLM 创建的 Agent：把角色提示词沉淀到提示词工程（key = agent.<key>.system）。
 	// 失败只记 Warning，不影响 Agent 创建本身。
 	if source == SourceLLM && u.prompts != nil {

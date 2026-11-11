@@ -14,6 +14,9 @@ import (
 	"go_agent/internal/biz/platformmcp"
 	"go_agent/internal/biz/prompt"
 	"go_agent/internal/biz/rag"
+	"go_agent/internal/biz/resource"
+	"go_agent/internal/biz/space"
+	"go_agent/internal/biz/usage"
 
 	"github.com/google/wire"
 )
@@ -30,6 +33,18 @@ var ProviderSet = wire.NewSet(
 
 	// RAG 用例（混合检索问答 + GraphRAG 图谱问答）
 	rag.NewRag,
+
+	// 知识空间（V2 第五章）：树形组织 + 继承 + 显式共享。
+	// 同时实现两个窄接口：RAG 的检索白名单、资源授权的空间继承。
+	space.NewUseCase,
+	wire.Bind(new(rag.SpaceScope), new(*space.UseCase)),
+	wire.Bind(new(resource.SpaceAuthorizer), new(*space.UseCase)),
+
+	// 统一资源模型与资源级授权（V2 第四章）：默认拒绝 + 跨租户硬隔离 + 显式 deny 优先
+	resource.NewUseCase,
+
+	// 成本中心（V2 第十二章）：追加式用量记录 + 多维聚合
+	usage.New,
 
 	// 记忆系统（短期 Redis / 长期 MySQL + Milvus 向量召回 + GraphRAG 图谱）
 	memory.New,

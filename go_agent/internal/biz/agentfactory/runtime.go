@@ -242,14 +242,16 @@ func (r *Recorder) setProgress(pct int) {
 // 多任务/多 Agent 场景下请求前缀尽可能长地保持一致，命中率最高的前缀缓存
 // （DashScope context cache / OpenAI 自动缓存）能省下大量输入 token；
 // 角色设定与能力列表随 Agent 变化，放在后面。
-func (u *UseCase) buildSystemPrompt(ctx context.Context, def *AgentDef) (string, error) {
+// caps 为**生效**的能力清单（委派子任务用交集结果，其他用定义白名单）：
+// 模型只应看到自己真的能调的能力，否则它会反复尝试一个必被拒绝的工具。
+func (u *UseCase) buildSystemPrompt(ctx context.Context, def *AgentDef, caps []string) (string, error) {
 	schemas, err := u.catalog.Schemas(ctx)
 	if err != nil {
 		return "", err
 	}
 	// 只保留白名单内的能力
-	allowed := make(map[string]struct{}, len(def.Capabilities))
-	for _, c := range def.Capabilities {
+	allowed := make(map[string]struct{}, len(caps))
+	for _, c := range caps {
 		allowed[c] = struct{}{}
 	}
 	var b strings.Builder
@@ -286,7 +288,7 @@ func (u *UseCase) buildSystemPrompt(ctx context.Context, def *AgentDef) (string,
 		b.WriteString("\n")
 	}
 	b.WriteString("\n## 可用能力\n")
-	if len(def.Capabilities) == 0 {
+	if len(caps) == 0 {
 		b.WriteString("（无外部能力，直接思考作答）\n")
 	} else {
 		for _, s := range schemas {
@@ -515,7 +517,7 @@ func (u *UseCase) chatWithOpts(ctx context.Context, def *AgentDef, system, user 
 
 // runReact ReAct 循环
 func (u *UseCase) runReact(ctx context.Context, def *AgentDef, input string, rec *Recorder, st *RunState) (*RunResult, error) {
-	system, err := u.buildSystemPrompt(ctx, def)
+	system, err := u.buildSystemPrompt(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -751,9 +753,13 @@ func (u *UseCase) runChildTask(ctx context.Context, parent *Task, agentKey, inpu
 		Status:       TaskPending,
 		ParentTaskID: parent.ID,
 		Depth:        parent.Depth + 1,
-		ConvID:       parent.ConvID, // 会话编排链路：子任务继承来源会话，保证任务树整层可按会话追溯
-		UserID:       parent.UserID, // 子任务继承父任务归属，避免委派后链路被拆到不同用户
 	}
+	// 委派上下文：能力交集（父 ∩ 子）、深度闸门、归属继承。
+	// 不这么做，委派就成了绕过父 Agent 能力边界的后门。
+	if err := u.ApplyDelegation(parent, child, def); err != nil {
+		return nil, "", err
+	}
+	child.SnapshotID = u.latestSnapshotID(ctx, def.ID)
 	if err := u.repo.CreateTask(ctx, child); err != nil {
 		return nil, "", fmt.Errorf("创建子任务失败: %w", err)
 	}

@@ -103,13 +103,13 @@ func (u *UseCase) memberKeys(def *AgentDef) []string {
 }
 
 // allowedSchemas 白名单内的能力（提示词与路由候选共用）
-func (u *UseCase) allowedSchemas(ctx context.Context, def *AgentDef) ([]CapabilitySchema, error) {
+func (u *UseCase) allowedSchemas(ctx context.Context, def *AgentDef, caps []string) ([]CapabilitySchema, error) {
 	all, err := u.catalog.Schemas(ctx)
 	if err != nil {
 		return nil, err
 	}
-	allowed := make(map[string]struct{}, len(def.Capabilities))
-	for _, c := range def.Capabilities {
+	allowed := make(map[string]struct{}, len(caps))
+	for _, c := range caps {
 		allowed[c] = struct{}{}
 	}
 	out := make([]CapabilitySchema, 0, len(all))
@@ -296,7 +296,7 @@ func (u *UseCase) runPlanExecute(ctx context.Context, def *AgentDef, input strin
 		rec.event(EventPlan, rec.turn, map[string]any{"steps": st.Steps, "resumed": true})
 	}
 
-	system, err := u.buildSystemPrompt(ctx, def)
+	system, err := u.buildSystemPrompt(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -623,7 +623,7 @@ func reflectorPrompt(def *AgentDef) string {
 }
 
 func (u *UseCase) runReflexion(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
-	system, err := u.buildSystemPrompt(ctx, def)
+	system, err := u.buildSystemPrompt(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -714,7 +714,7 @@ func directSystem(def *AgentDef) string {
 }
 
 func (u *UseCase) runRouter(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
-	schemas, err := u.allowedSchemas(ctx, def)
+	schemas, err := u.allowedSchemas(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +813,7 @@ func (u *UseCase) runSelfAsk(ctx context.Context, def *AgentDef, input string, r
 	}
 	rec.event(EventPlan, rec.turn, map[string]any{"questions": questions})
 
-	system, err := u.buildSystemPrompt(ctx, def)
+	system, err := u.buildSystemPrompt(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -876,7 +876,7 @@ func funcCallPrompt(def *AgentDef, schemas []CapabilitySchema) string {
 }
 
 func (u *UseCase) runFunctionCall(ctx context.Context, def *AgentDef, input string, rec *Recorder) (*RunResult, error) {
-	schemas, err := u.allowedSchemas(ctx, def)
+	schemas, err := u.allowedSchemas(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}
@@ -1113,7 +1113,7 @@ func (u *UseCase) runOrchestrator(ctx context.Context, def *AgentDef, input stri
 		rec.event(EventPlan, rec.turn, map[string]any{"steps": steps, "mode": def.GraphType})
 	}
 
-	system, err := u.buildSystemPrompt(ctx, def)
+	system, err := u.buildSystemPrompt(ctx, def, effectiveCapabilities(rec.task, def))
 	if err != nil {
 		return nil, err
 	}

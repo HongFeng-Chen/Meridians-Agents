@@ -81,8 +81,10 @@ const TRACE_STATUS = {
   pending: { text: '排队中', tone: 'default' },
   running: { text: '执行中', tone: 'indigo' },
   succeeded: { text: '成功', tone: 'ok' },
+  retry_wait: { text: '等待重试', tone: 'warn' },
   failed: { text: '失败', tone: 'error' },
   canceled: { text: '已取消', tone: 'warn' },
+  timeout: { text: '执行超时', tone: 'error' },
 };
 
 // TaskTraceInline 会话链路内嵌任务链路入口：

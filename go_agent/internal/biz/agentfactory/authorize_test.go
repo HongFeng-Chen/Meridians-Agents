@@ -122,11 +122,11 @@ func TestSandboxCannotEscalate(t *testing.T) {
 func TestCapabilityAllowedIsExactMatch(t *testing.T) {
 	def := &AgentDef{Capabilities: []string{"mcp:demo__calc"}}
 
-	if !capabilityAllowed(def, "mcp:demo__calc") {
+	if !capabilityAllowed(nil, def, "mcp:demo__calc") {
 		t.Fatal("精确匹配应放行")
 	}
 	for _, name := range []string{"mcp:demo__calc_all", "mcp:demo__", "mcp:*", "demo__calc", "MCP:demo__calc"} {
-		if capabilityAllowed(def, name) {
+		if capabilityAllowed(nil, def, name) {
 			t.Fatalf("%q 不应被视为已授权（白名单不支持前缀/通配/大小写模糊）", name)
 		}
 	}

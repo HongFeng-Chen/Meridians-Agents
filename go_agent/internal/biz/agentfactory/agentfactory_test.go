@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,9 @@ type fakeRepo struct {
 	transitionHook func()
 	// transitionFroms 每次 CAS 的源状态集合，用于断言「没有无守卫的状态写入」
 	transitionFroms [][]string
+	// snapshots 配置快照（P3）：内存 map + 自增 ID
+	snapshots map[uint64]Snapshot
+	snapSeq   uint64
 }
 
 func newFakeRepo() *fakeRepo {
@@ -185,7 +189,63 @@ func (r *fakeRepo) SaveTask(_ context.Context, t *Task) error {
 	return nil
 }
 
-func (r *fakeRepo) ClaimTask(_ context.Context, id uint64) (bool, error) {
+// —— 快照（测试用内存实现，只增不改） ——
+
+func (r *fakeRepo) CreateSnapshot(_ context.Context, snap *Snapshot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapSeq++
+	snap.ID = r.snapSeq
+	if r.snapshots == nil {
+		r.snapshots = map[uint64]Snapshot{}
+	}
+	r.snapshots[snap.ID] = *snap
+	return nil
+}
+
+func (r *fakeRepo) GetSnapshot(_ context.Context, id uint64) (*Snapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	snap, ok := r.snapshots[id]
+	if !ok {
+		return nil, nil
+	}
+	return &snap, nil
+}
+
+func (r *fakeRepo) LatestSnapshot(_ context.Context, agentDefID uint64) (*Snapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var latest *Snapshot
+	for id, snap := range r.snapshots {
+		if snap.AgentDefID != agentDefID {
+			continue
+		}
+		cp := snap
+		if latest == nil || id > latest.ID {
+			latest = &cp
+		}
+	}
+	return latest, nil
+}
+
+func (r *fakeRepo) ListSnapshots(_ context.Context, agentDefID uint64, limit int) ([]Snapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Snapshot, 0)
+	for _, snap := range r.snapshots {
+		if snap.AgentDefID == agentDefID {
+			out = append(out, snap)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) ClaimTask(_ context.Context, id uint64, lease Lease) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t, ok := r.tasks[id]
@@ -196,9 +256,112 @@ func (r *fakeRepo) ClaimTask(_ context.Context, id uint64) (bool, error) {
 		return false, nil
 	}
 	t.Status = TaskRunning
-	t.StartedAt = time.Now()
+	if t.StartedAt.IsZero() {
+		t.StartedAt = time.Now()
+	}
+	if lease.Attempt > 0 {
+		t.Attempt = lease.Attempt
+	} else {
+		t.Attempt++
+	}
+	t.LeaseOwner = lease.Owner
+	t.LeaseExpiresAt = lease.ExpiresAt
+	t.DeadlineAt = lease.Deadline
+	t.NextAttemptAt = time.Time{}
 	r.tasks[id] = t
 	return true, nil
+}
+
+func (r *fakeRepo) RenewLease(_ context.Context, id uint64, owner string, expiresAt time.Time) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tasks[id]
+	if !ok || t.Status != TaskRunning {
+		return false, nil
+	}
+	if owner != "" && t.LeaseOwner != owner {
+		return false, nil
+	}
+	t.LeaseExpiresAt = expiresAt
+	r.tasks[id] = t
+	return true, nil
+}
+
+func (r *fakeRepo) ListExpiredLeases(_ context.Context, now time.Time, limit int) ([]Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Task, 0)
+	for _, t := range r.tasks {
+		if t.Status != TaskRunning || t.LeaseOwner == "" {
+			continue
+		}
+		if t.LeaseExpiresAt.IsZero() || !t.LeaseExpiresAt.Before(now) {
+			continue
+		}
+		out = append(out, t)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) ListOverdueTasks(_ context.Context, now time.Time, limit int) ([]Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Task, 0)
+	for _, t := range r.tasks {
+		if t.Status != TaskRunning || t.DeadlineAt.IsZero() || !t.DeadlineAt.Before(now) {
+			continue
+		}
+		out = append(out, t)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) PromoteRetryWait(_ context.Context, now time.Time, limit int) ([]uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]uint64, 0)
+	for id, t := range r.tasks {
+		if t.Status != TaskRetryWait {
+			continue
+		}
+		if !t.NextAttemptAt.IsZero() && t.NextAttemptAt.After(now) {
+			continue
+		}
+		t.Status = TaskPending
+		t.NextAttemptAt = time.Time{}
+		r.tasks[id] = t
+		ids = append(ids, id)
+		if limit > 0 && len(ids) >= limit {
+			break
+		}
+	}
+	return ids, nil
+}
+
+// ListDeadLetters 伪实现里「归档」不迁表，按终态 + 死信原因过滤
+func (r *fakeRepo) ListDeadLetters(_ context.Context, tenantID string, limit int) ([]Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Task, 0)
+	for _, t := range r.tasks {
+		if t.DeadLetterReason == "" {
+			continue
+		}
+		if tenantID != "" && tenantOrDefault(t.TenantID) != tenantID {
+			continue
+		}
+		out = append(out, t)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (r *fakeRepo) ListTasks(_ context.Context, f TaskFilter) ([]Task, error) {
@@ -258,8 +421,6 @@ func (r *fakeRepo) CountTasksByStatus(_ context.Context) (map[string]int64, erro
 	}
 	return out, nil
 }
-
-func (r *fakeRepo) RequeueInterrupted(_ context.Context) ([]uint64, error) { return nil, nil }
 
 // —— checkpoint（O2/O3 测试用：内存保存全部快照，支持恢复与续跑断言）——
 
@@ -738,8 +899,8 @@ func TestReactFlow(t *testing.T) {
 		t.Fatalf("progress=%d", final.Progress)
 	}
 	types := u.repo.(*fakeRepo).eventTypes(final.ID)
-	// status → thought → tool_call → tool_result → thought → final → status
-	expect := []string{EventStatus, EventThought, EventToolCall, EventToolResult, EventThought, EventFinal, EventStatus}
+	// status → snapshot（P3：本次执行钉住的配置快照）→ thought → tool_call → …
+	expect := []string{EventStatus, EventSnapshot, EventThought, EventToolCall, EventToolResult, EventThought, EventFinal, EventStatus}
 	if len(types) != len(expect) {
 		t.Fatalf("事件序列 = %v, 期望 %v", types, expect)
 	}

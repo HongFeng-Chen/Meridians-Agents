@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go_agent/internal/biz/history"
+	"go_agent/internal/pkg/trace"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -650,9 +651,20 @@ func (u *UseCase) SearchTools(ctx context.Context, query string, limit int, name
 
 // CallTool 调用工具：toolID 与 uniqueName 二选一。
 // 每次调用异步落一条 MCP 调用历史（op_histories），任务内调用经 WithTask 自动关联 task。
+//
+// 幂等（见 idem.go）：context 带 WithIdemKey 时，先查 mcp_call_records，
+// 命中成功记录直接回放（Replayed=true）；执行成功后写记录——这是任务
+// 重试链路防重复副作用的最后防线。失败与 IsError 结果不缓存。
 func (u *UseCase) CallTool(ctx context.Context, toolID uint64, uniqueName string, args map[string]any) (res *CallResult, err error) {
 	start := time.Now()
+	// 工具调用 span：挂在任务链路的 task.run 下面。埋点放在最外层而不是
+	// callToolRaw 里，是因为「查库 / 幂等回放 / 代理转发」整段都属于这次调用，
+	// 只统计真正发 HTTP 的那截会漏掉最慢的幂等查询。
+	ctx, span := trace.Start(ctx, "mcp.call", trace.String(trace.AttrKind, trace.KindTool))
+	defer func() { span.End(err) }()
+
 	refName := uniqueName
+	replayed := false
 	defer func() {
 		if u.hist == nil {
 			return
@@ -670,6 +682,9 @@ func (u *UseCase) CallTool(ctx context.Context, toolID uint64, uniqueName string
 			rec.Summary = err.Error()
 		} else if res != nil {
 			rec.Summary = callResultSummary(res)
+			if replayed {
+				rec.Summary = "[幂等回放] " + rec.Summary
+			}
 		}
 		u.hist.Record(ctx, rec)
 	}()
@@ -684,6 +699,7 @@ func (u *UseCase) CallTool(ctx context.Context, toolID uint64, uniqueName string
 		return nil, err
 	}
 	refName = t.UniqueName
+	span.Set(trace.AttrToolName, t.UniqueName)
 	if !t.Enabled {
 		return nil, fmt.Errorf("%w: %s", ErrToolDisabled, t.UniqueName)
 	}
@@ -694,36 +710,88 @@ func (u *UseCase) CallTool(ctx context.Context, toolID uint64, uniqueName string
 	if !s.Enabled {
 		return nil, fmt.Errorf("%w: %s", ErrServerDisabled, s.Name)
 	}
+
+	// 幂等回放：命中成功记录直接返回，不再调用工具
+	idemKey := IdemKeyFrom(ctx)
+	if idemKey != "" {
+		if hit, rerr := u.repo.GetCallRecord(ctx, idemKey); rerr != nil {
+			// 幂等存储故障不能阻断调用：降级为不去重（有副作用重复的
+			// 风险，但比「存储一挂所有任务工具调用全失败」好得多）
+			log.Warn("幂等记录查询失败，降级为不去重", "key", idemKey, "err", rerr)
+		} else if hit != nil && hit.OK && hit.Result != nil {
+			replayed = true
+			span.Set(trace.AttrToolReplayed, true)
+			out := *hit.Result
+			out.Replayed = true
+			out.ElapsedMs = time.Since(start).Milliseconds()
+			return &out, nil
+		}
+	}
+
+	res, err = u.callToolRaw(ctx, *s, t, args)
+	if err != nil {
+		return nil, err
+	}
+	// 成功才落幂等记录（IsError 同样不缓存：工具端报错时副作用状态未知，
+	// 缓存错误回放会让重试永远停在同一个错上）
+	if idemKey != "" && !res.IsError {
+		if serr := u.repo.SaveCallRecord(ctx, &IdemRecord{
+			IdemKey:  idemKey,
+			TaskID:   taskIDFromIdemKey(idemKey),
+			Tool:     t.UniqueName,
+			ArgsHash: ArgsHash(args),
+			OK:       true,
+			Result:   res,
+		}); serr != nil {
+			// 记录写失败不阻断本次调用：最多损失一次重试保护
+			log.Warn("幂等记录写入失败", "key", idemKey, "err", serr)
+		}
+	}
+	return res, nil
+}
+
+// callToolRaw 按服务传输方式真正调用（proxy 映射 or 原生 MCP 协议）
+func (u *UseCase) callToolRaw(ctx context.Context, s Server, t *Tool, args map[string]any) (*CallResult, error) {
 	// 代理：按 route 映射拼 HTTP 请求并注入鉴权
 	if s.Transport == TransportProxy {
-		r, cerr := u.proxy.Call(ctx, *s, *t, args)
+		r, cerr := u.proxy.Call(ctx, s, *t, args)
 		if cerr != nil {
-			u.markError(ctx, *s, cerr)
+			u.markError(ctx, s, cerr)
 			return nil, fmt.Errorf("调用接口 %s 失败: %w", t.UniqueName, cerr)
 		}
-		u.saveStatus(ctx, *s, func(st *Status) {
+		u.saveStatus(ctx, s, func(st *Status) {
 			st.Running = true
 			st.LastPingAt = time.Now()
 			st.ErrorMsg = ""
 		})
 		return r, nil
 	}
-	cli, err := u.mgr.Ensure(ctx, *s, u.options(s.ID))
+	cli, err := u.mgr.Ensure(ctx, s, u.options(s.ID))
 	if err != nil {
-		u.markError(ctx, *s, err)
+		u.markError(ctx, s, err)
 		return nil, fmt.Errorf("连接 MCP 服务 %s 失败: %w", s.Name, err)
 	}
 	r, err := cli.CallTool(ctx, t.ToolName, args)
 	if err != nil {
-		u.markError(ctx, *s, err)
+		u.markError(ctx, s, err)
 		return nil, fmt.Errorf("调用工具 %s 失败: %w", t.UniqueName, err)
 	}
-	u.saveStatus(ctx, *s, func(st *Status) {
+	u.saveStatus(ctx, s, func(st *Status) {
 		st.Running = true
 		st.LastPingAt = time.Now()
 		st.ErrorMsg = ""
 	})
 	return &r, nil
+}
+
+// taskIDFromIdemKey 从幂等键里取回任务 ID（观测列用；解析失败返回 0，不影响主流程）
+func taskIDFromIdemKey(key string) uint64 {
+	// task:<id>:turn:<n>:<tool>:<hash>
+	var id uint64
+	if _, err := fmt.Sscanf(key, "task:%d:", &id); err != nil {
+		return 0
+	}
+	return id
 }
 
 // callResultSummary 调用结果摘要（文本内容拼接，截断到 500 字符内）

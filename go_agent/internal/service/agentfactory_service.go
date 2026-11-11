@@ -412,5 +412,12 @@ func toAgentTask(t *agentfactory.Task) *v1.AgentTask {
 		Archived:     t.Archived,
 		ConvId:       t.ConvID,
 		UserId:       t.UserID,
+		SnapshotId:   t.SnapshotID,
+		TraceId:      t.TraceID,
+		// DelegatedCaps 是 nil/空 有区别的三态：nil = 未受限（按 Agent 自身配置跑），
+		// 空切片 = 已被上游收紧到「什么都不许」。proto3 的 repeated 表达不了前者，
+		// 所以另用一个布尔带出「是否受限」。
+		DelegatedCaps:       t.DelegatedCaps,
+		DelegatedRestricted: t.DelegatedCaps != nil,
 	}
 }

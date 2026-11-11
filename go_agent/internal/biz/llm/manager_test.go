@@ -187,7 +187,7 @@ func TestChatSceneRouting(t *testing.T) {
 // 表为空时用 conf 播种 default
 func TestNewManagerSeedsFromConf(t *testing.T) {
 	repo := newFakeRepo()
-	m := NewManager(testConf("https://api.example.com/v1", "m1"), &conf.Security{}, repo, nil)
+	m := NewManager(testConf("https://api.example.com/v1", "m1"), &conf.Security{}, repo, nil, nil)
 
 	list, err := repo.List(context.Background())
 	if err != nil {

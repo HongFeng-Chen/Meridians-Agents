@@ -146,8 +146,15 @@ const ScopeAll = "*"
 // —— 任务状态 ——
 
 const (
+	// TaskPending 待执行：等价于架构文档里的 QUEUED。
+	// 沿用 pending 而不是改名为 queued，是为了不动历史数据、前端枚举与外部调用方；
+	// 语义上就是「已入队、等待执行体认领」。
 	TaskPending = "pending"
 	TaskRunning = "running"
+	// TaskRetryWait 重试等待：执行体失联（租约过期）或业务失败且允许重试时进入，
+	// 到 NextAttemptAt 后由清扫协程置回 pending 重新入队。
+	// 留在任务池（不归档），下一条 executed 记录 attempt 继续累加。
+	TaskRetryWait = "retry_wait"
 	// TaskPaused 挂起：命中 require_approval / 高危风险转人工，等待审批。
 	// 审批通过（approve）→ 置回 pending 从 checkpoint 续跑；驳回（reject）→ failed。
 	// 挂起任务留在任务池（不归档），RequeueInterrupted 不会误捞（只捞 running）。
@@ -155,12 +162,15 @@ const (
 	TaskSucceeded = "succeeded"
 	TaskFailed    = "failed"
 	TaskCanceled  = "canceled"
+	// TaskTimeout 执行超时（终态）：超过 DeadlineAt 仍未收敛，由执行体自身或
+	// 清扫协程落终态。与 canceled 区分开，避免「超时」被统计成「用户取消」。
+	TaskTimeout = "timeout"
 )
 
 // ValidTaskStatus 判断任务状态是否合法
 func ValidTaskStatus(s string) bool {
 	switch s {
-	case TaskPending, TaskRunning, TaskPaused, TaskSucceeded, TaskFailed, TaskCanceled:
+	case TaskPending, TaskRunning, TaskRetryWait, TaskPaused, TaskSucceeded, TaskFailed, TaskCanceled, TaskTimeout:
 		return true
 	}
 	return false
@@ -169,7 +179,7 @@ func ValidTaskStatus(s string) bool {
 // IsTerminalStatus 终态任务（任务池 → 任务历史表的迁移条件）
 func IsTerminalStatus(s string) bool {
 	switch s {
-	case TaskSucceeded, TaskFailed, TaskCanceled:
+	case TaskSucceeded, TaskFailed, TaskCanceled, TaskTimeout:
 		return true
 	}
 	return false
@@ -199,6 +209,8 @@ const (
 	EventResume = "resume"
 	// EventApproval 审批结论：payload: {"decision":"approve|reject","by":"","note":""}
 	EventApproval = "approval"
+	// EventSnapshot 本次执行所用的配置快照：payload: {"snapshot_id":n,"version":n,"checksum":""}
+	EventSnapshot = "snapshot"
 )
 
 // —— 领域错误 ——
@@ -218,6 +230,10 @@ var (
 	ErrNoChatter       = fmt.Errorf("没有可用的 LLM 数据源")
 	ErrCapabilityUnset = fmt.Errorf("能力不存在或已停用")
 	ErrSandboxDeny     = fmt.Errorf("沙箱 Agent 不允许委派其他 Agent")
+	// ErrDelegationDeny 委派上下文不成立（深度超限 / 父级没有可下放的能力）
+	ErrDelegationDeny = fmt.Errorf("委派被拒绝")
+	// ErrRuntimeDenied 运行时二次授权拒绝：快照配置有效，但当前主体已无权访问
+	ErrRuntimeDenied = fmt.Errorf("运行时授权拒绝")
 	// ErrApprovalNeeded 哨兵错误：能力调用命中人工审批闸门，任务转入 paused。
 	// 上层（worker / 父任务）必须用 errors.Is 识别，不得当作普通失败处理。
 	ErrApprovalNeeded = fmt.Errorf("等待人工审批")
@@ -661,6 +677,31 @@ type Task struct {
 	// TenantID 归属租户（比用户更外层的隔离键）：跨租户即使用户名相同也互不可见
 	TenantID string `json:"tenant_id"`
 
+	// SnapshotID 提交时钉住的配置快照（0 = 无快照，执行时回退当前定义）。
+	// 执行期按它加载 Prompt/能力/模型，定义改动不影响已提交的任务。
+	SnapshotID uint64 `json:"snapshot_id"`
+	// DelegatedCaps 委派上下文：子任务的有效能力集（nil = 未受限）。
+	// 非 nil 时执行期只认这份清单，父级能力边界不会被委派绕过。
+	DelegatedCaps []string `json:"delegated_caps,omitempty"`
+
+	// Attempt 已认领次数（含当前这次）：租约过期重排、重试上限的判定依据
+	Attempt int `json:"attempt"`
+	// MaxAttempts 业务失败重试上限（0 = 不重试；>1 时业务失败进 retry_wait）
+	MaxAttempts int `json:"max_attempts"`
+	// LeaseOwner 持有执行租约的执行体 key（空 = 无租约，兼容单机/测试态）
+	LeaseOwner string `json:"lease_owner"`
+	// LeaseExpiresAt 租约到期时间：执行期间自动续租，过期由清扫协程收回
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	// DeadlineAt 执行截止时间：认领时按 Options.TaskTimeout 计算，超时落 timeout
+	DeadlineAt time.Time `json:"deadline_at"`
+	// NextAttemptAt 重试等待到期时间（status=retry_wait 时有效）
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	// DeadLetterReason 死信原因：重试次数用尽仍无法完成时写入，任务已归档可检索
+	DeadLetterReason string `json:"dead_letter_reason"`
+	// TraceID 执行链路的 Trace（OpenTelemetry）：任务详情页据此拉 span 树。
+	// 内存 trace 被淘汰后这个 ID 仍能定位到 collector 里的历史链路。
+	TraceID string `json:"trace_id,omitempty"`
+
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
@@ -728,6 +769,8 @@ type TaskInput struct {
 	ParentTaskID uint64 `json:"-"`
 	// ConvID 来源会话 ID（会话编排调用 Agent 时填写，任务链路与会话链路共用）
 	ConvID string `json:"-"`
+	// MaxAttempts 业务失败重试上限（0 = 不重试；基础设施故障另按 Options.MaxAttempts 判定）
+	MaxAttempts int `json:"max_attempts"`
 }
 
 // Normalize 校验任务入参
@@ -743,8 +786,14 @@ func (in *TaskInput) Normalize() error {
 	if utf8.RuneCountInString(in.Input) > 8000 {
 		return fmt.Errorf("%w: 输入内容过长（≤8000 字）", ErrInvalidTask)
 	}
+	if in.MaxAttempts < 0 || in.MaxAttempts > MaxAttemptsLimit {
+		return fmt.Errorf("%w: max_attempts 取值范围 0~%d", ErrInvalidTask, MaxAttemptsLimit)
+	}
 	return nil
 }
+
+// MaxAttemptsLimit 重试上限硬顶：防止调用方写个 1000 次把队列打成雪崩
+const MaxAttemptsLimit = 10
 
 // —— 向量过滤 ——
 
@@ -769,8 +818,10 @@ type Stats struct {
 	Tasks         int64 `json:"tasks"`
 	Pending       int64 `json:"pending"`
 	Running       int64 `json:"running"`
+	RetryWait     int64 `json:"retry_wait"`
 	Succeeded     int64 `json:"succeeded"`
 	Failed        int64 `json:"failed"`
 	Canceled      int64 `json:"canceled"`
+	Timeout       int64 `json:"timeout"`
 	Capabilities  int64 `json:"capabilities"`
 }

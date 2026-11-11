@@ -1,7 +1,11 @@
 package harness
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -78,15 +82,19 @@ type Case struct {
 
 // Set 用例集：一个被测对象的一组用例（评测的调度单位）
 type Set struct {
-	ID          uint64    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Target      string    `json:"target"` // 默认被测对象，启动运行时可覆盖
-	Tags        []string  `json:"tags"`
-	Enabled     bool      `json:"enabled"`
-	CaseCount   int       `json:"case_count"` // 派生字段：启用用例数
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uint64   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Target      string   `json:"target"` // 默认被测对象，启动运行时可覆盖
+	Tags        []string `json:"tags"`
+	Enabled     bool     `json:"enabled"`
+	CaseCount   int      `json:"case_count"` // 派生字段：启用用例数
+	// Version 数据集版本：启用用例内容变化时递增（StartRun 自动维护）
+	Version int `json:"version"`
+	// Checksum 启用用例的内容哈希（sha256 前 16 位）
+	Checksum  string    `json:"checksum"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // RunConfig 运行配置
@@ -120,6 +128,25 @@ type Run struct {
 	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+
+	// —— 可复现绑定：回答「这次分数是哪一套东西跑出来的」——
+	// SnapshotID / SnapshotVersion 被测 Agent 的配置快照（model 目标下为 0）
+	SnapshotID      uint64 `json:"snapshot_id"`
+	SnapshotVersion int    `json:"snapshot_version"`
+	// DatasetVersion / DatasetChecksum 数据集版本与内容哈希
+	DatasetVersion  int    `json:"dataset_version"`
+	DatasetChecksum string `json:"dataset_checksum"`
+	// Model 实际被测模型（agent 目标为空：由快照里的 LLM 配置决定）
+	Model string `json:"model"`
+	// TraceID 本次评测运行的链路（harness.run 根 span）
+	TraceID string `json:"trace_id,omitempty"`
+}
+
+// TargetInfo 被测对象的版本信息：由 Runner 解析（它是唯一知道 target 语义的一层）。
+type TargetInfo struct {
+	SnapshotID      uint64
+	SnapshotVersion int
+	Model           string
 }
 
 // RunItem 单用例运行结果
@@ -187,4 +214,39 @@ func Score(checks []CheckResult) float64 {
 		return -1
 	}
 	return passed / total * 100
+}
+
+// DatasetChecksum 启用用例的内容哈希（sha256 前 16 位十六进制）。
+//
+// 只取影响判分结果的字段（输入 / 上下文 / 期望 / 断言），**不取**名称、标签、
+// 时间戳与 ID：改个用例名不该让数据集版本跳号，否则版本号的语义就废了。
+// 用例顺序也不参与（排序后再算），拖动排序不等于换了数据集。
+func DatasetChecksum(cases []Case) string {
+	type digest struct {
+		Input   string  `json:"i"`
+		Context string  `json:"c"`
+		Expect  string  `json:"e"`
+		Checks  []Check `json:"k"`
+	}
+	items := make([]digest, 0, len(cases))
+	for _, c := range cases {
+		if !c.Enabled {
+			continue
+		}
+		items = append(items, digest{Input: c.Input, Context: c.Context, Expect: c.Expect, Checks: c.Checks})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Input != items[j].Input {
+			return items[i].Input < items[j].Input
+		}
+		return items[i].Expect < items[j].Expect
+	})
+	raw, err := json.Marshal(items)
+	if err != nil {
+		// 序列化失败（正常不会发生）时返回空串：调用方据此跳过版本推进，
+		// 宁可版本号不动，也不要写一个假的 checksum
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:16]
 }

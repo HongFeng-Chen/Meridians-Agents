@@ -50,6 +50,13 @@ type Repo interface {
 //   - model:<name> → llm.Manager 指定模型直连对话（模型级横评）。
 type Runner interface {
 	Run(ctx context.Context, target, input string) (string, error)
+	// Resolve 解析被测对象的版本信息（快照 / 模型）。
+	//
+	// 放在 Runner 上而不是 harness 里：target 的语义只有执行器知道
+	// （agent: 要去 agentfactory 查最新快照，model: 直接就是模型名）。
+	// 解析失败时返回零值，不阻断运行——版本绑定是「尽可能记全」，
+	// 不是评测能否开跑的前置条件。
+	Resolve(ctx context.Context, target string) TargetInfo
 }
 
 // Chatter LLM 对话（绑定 llm.Manager）：LLM-as-Judge 用，签名与 agentfactory.Chatter 一致

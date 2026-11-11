@@ -11,13 +11,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/conf"
 	"go_agent/internal/data/db"
 	"go_agent/internal/data/db/models"
+	"go_agent/internal/pkg/identity"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // MCPRepo MCP 仓库
@@ -31,7 +34,7 @@ var _ mcp.Repo = (*MCPRepo)(nil)
 func NewMCPRepo(c *conf.Data, d *db.Data) (mcp.Repo, error) {
 	r := &MCPRepo{db: d.DB()}
 	if c.GetDatabase().GetAutoMigrate() {
-		if err := r.db.AutoMigrate(&models.MCPServerPO{}, &models.ToolPO{}); err != nil {
+		if err := r.db.AutoMigrate(&models.MCPServerPO{}, &models.ToolPO{}, &models.McpCallRecordPO{}); err != nil {
 			return nil, fmt.Errorf("迁移 mcp 表: %w", err)
 		}
 	}
@@ -582,4 +585,62 @@ func toolChanged(old *models.ToolPO, in *models.ToolPO) bool {
 		old.Tags != in.Tags ||
 		old.Version != in.Version ||
 		old.Route != in.Route
+}
+
+// —— 幂等记录（语义见 biz/mcp/idem.go） ——
+
+// GetCallRecord 按幂等键精确查询；不存在返回 (nil, nil)
+func (r *MCPRepo) GetCallRecord(ctx context.Context, key string) (*mcp.IdemRecord, error) {
+	var row models.McpCallRecordPO
+	err := r.db.WithContext(ctx).Where("idem_key = ?", key).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rec := &mcp.IdemRecord{
+		IdemKey:   row.IdemKey,
+		TaskID:    row.TaskID,
+		Tool:      row.ToolName,
+		ArgsHash:  row.ArgsHash,
+		OK:        row.OK,
+		CreatedAt: row.CreatedAt,
+	}
+	if row.Result != "" {
+		var cr mcp.CallResult
+		if json.Unmarshal([]byte(row.Result), &cr) == nil {
+			rec.Result = &cr
+		}
+	}
+	return rec, nil
+}
+
+// SaveCallRecord 写入幂等记录。并发写同一 key 时靠唯一索引兜底，
+// 后到的一方覆盖 ok/result_json（账面与最新执行结果一致）。
+func (r *MCPRepo) SaveCallRecord(ctx context.Context, rec *mcp.IdemRecord) error {
+	result := ""
+	if rec.Result != nil {
+		if b, err := json.Marshal(rec.Result); err == nil {
+			result = string(b)
+		}
+	}
+	tenant := identity.TenantID(ctx)
+	if tenant == "" {
+		tenant = "public"
+	}
+	row := models.McpCallRecordPO{
+		IdemKey:   rec.IdemKey,
+		TaskID:    rec.TaskID,
+		ToolName:  rec.Tool,
+		ArgsHash:  rec.ArgsHash,
+		OK:        rec.OK,
+		Result:    result,
+		TenantID:  tenant,
+		CreatedAt: time.Now(),
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "idem_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"ok", "result_json"}),
+	}).Create(&row).Error
 }

@@ -43,8 +43,32 @@ func (r *Runner) Run(ctx context.Context, target, input string) (string, error) 
 		if r.llm == nil {
 			return "", harness.ErrNoRunner
 		}
+		// 打上用途标记：trace 里能直接区分「评测直连模型」与「业务任务里的 LLM 调用」，
+		// 否则一排 llm.chat 看不出是谁发起的
+		ctx = llm.WithMeta(ctx, llm.CallMeta{Purpose: "harness.model"})
 		return r.llm.ChatTemp(ctx, "", input, 0.3)
 	default:
 		return "", fmt.Errorf("%w: %s", harness.ErrInvalidTarget, target)
+	}
+}
+
+// Resolve 解析被测对象的版本信息：评测报告里「这次测的是哪个版本」由它提供。
+//
+// 解析失败（Agent 不存在 / 尚无快照）返回零值并继续跑——版本绑定是记录项，
+// 不该让一次评测因为「还没发布过快照」直接失败。
+func (r *Runner) Resolve(ctx context.Context, target string) harness.TargetInfo {
+	target = strings.TrimSpace(target)
+	switch {
+	case strings.HasPrefix(target, harness.TargetAgentPrefix):
+		if r.af == nil {
+			return harness.TargetInfo{}
+		}
+		key := strings.TrimPrefix(target, harness.TargetAgentPrefix)
+		id, version := r.af.LatestSnapshotForKey(ctx, key)
+		return harness.TargetInfo{SnapshotID: id, SnapshotVersion: version}
+	case strings.HasPrefix(target, harness.TargetModelPrefix):
+		return harness.TargetInfo{Model: strings.TrimPrefix(target, harness.TargetModelPrefix)}
+	default:
+		return harness.TargetInfo{}
 	}
 }

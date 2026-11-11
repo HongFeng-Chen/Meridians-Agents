@@ -721,7 +721,20 @@ type AgentTask struct {
 	// 来源会话（会话编排调用 Agent 时写入；任务链路与会话链路共用）
 	ConvId string `protobuf:"bytes,16,opt,name=conv_id,proto3" json:"conv_id,omitempty"`
 	// 归属用户（隔离键）：任务中心只返回当前用户的任务
-	UserId        string `protobuf:"bytes,17,opt,name=user_id,proto3" json:"user_id,omitempty"`
+	UserId string `protobuf:"bytes,17,opt,name=user_id,proto3" json:"user_id,omitempty"`
+	// 提交时钉住的配置快照（0 = 无快照，执行期回退当前定义）。
+	// 详情页用它回答「这个任务是哪一版 Agent 配置跑出来的」。
+	SnapshotId uint64 `protobuf:"varint,18,opt,name=snapshot_id,proto3" json:"snapshot_id,omitempty"`
+	// 委派上下文：子任务的有效能力清单（父级收紧后下放的那部分）。
+	// 必须配合 delegated_restricted 用：proto3 的 repeated 区分不了
+	// 「未受限（nil）」和「受限但清单为空」，后者表示不允许任何能力。
+	DelegatedCaps []string `protobuf:"bytes,19,rep,name=delegated_caps,proto3" json:"delegated_caps,omitempty"`
+	// true = 能力已被上游收紧，delegated_caps 即为全部可用能力；
+	// false = 未受限，按 Agent 自身配置执行
+	DelegatedRestricted bool `protobuf:"varint,20,opt,name=delegated_restricted,proto3" json:"delegated_restricted,omitempty"`
+	// 执行链路 Trace（OpenTelemetry）：详情页据此拉 span 树。
+	// 进程内 trace 被淘汰后仍可用它去 collector 查历史链路。
+	TraceId       string `protobuf:"bytes,21,opt,name=trace_id,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -871,6 +884,34 @@ func (x *AgentTask) GetConvId() string {
 func (x *AgentTask) GetUserId() string {
 	if x != nil {
 		return x.UserId
+	}
+	return ""
+}
+
+func (x *AgentTask) GetSnapshotId() uint64 {
+	if x != nil {
+		return x.SnapshotId
+	}
+	return 0
+}
+
+func (x *AgentTask) GetDelegatedCaps() []string {
+	if x != nil {
+		return x.DelegatedCaps
+	}
+	return nil
+}
+
+func (x *AgentTask) GetDelegatedRestricted() bool {
+	if x != nil {
+		return x.DelegatedRestricted
+	}
+	return false
+}
+
+func (x *AgentTask) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
 	}
 	return ""
 }
@@ -2627,7 +2668,7 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\"\n" +
 	"\fargs_example\x18\x04 \x01(\tR\fargs_example\x12\x1a\n" +
-	"\bdisabled\x18\x05 \x01(\bR\bdisabled\"\xe3\x03\n" +
+	"\bdisabled\x18\x05 \x01(\bR\bdisabled\"\xfd\x04\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\"\n" +
 	"\fagent_def_id\x18\x02 \x01(\x04R\fagent_def_id\x12\x1c\n" +
@@ -2650,7 +2691,11 @@ const file_agentfactory_v1_agentfactory_proto_rawDesc = "" +
 	"\vfinished_at\x18\x0e \x01(\tR\vfinished_at\x12\x1a\n" +
 	"\barchived\x18\x0f \x01(\bR\barchived\x12\x18\n" +
 	"\aconv_id\x18\x10 \x01(\tR\aconv_id\x12\x18\n" +
-	"\auser_id\x18\x11 \x01(\tR\auser_id\"\x97\x01\n" +
+	"\auser_id\x18\x11 \x01(\tR\auser_id\x12 \n" +
+	"\vsnapshot_id\x18\x12 \x01(\x04R\vsnapshot_id\x12&\n" +
+	"\x0edelegated_caps\x18\x13 \x03(\tR\x0edelegated_caps\x122\n" +
+	"\x14delegated_restricted\x18\x14 \x01(\bR\x14delegated_restricted\x12\x1a\n" +
+	"\btrace_id\x18\x15 \x01(\tR\btrace_id\"\x97\x01\n" +
 	"\tTaskEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x18\n" +
 	"\atask_id\x18\x02 \x01(\x04R\atask_id\x12\x12\n" +

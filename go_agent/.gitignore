@@ -47,3 +47,4 @@ configs/*.local.yaml
 
 # 隔离验证配置（含明文测试令牌，由 scripts/make_isolation_config.py 生成）
 configs-isolation/
+cmd/go_agent/data/

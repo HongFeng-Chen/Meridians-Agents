@@ -7,8 +7,8 @@ import { IconArrowRight, IconDatabase, IconDoc, IconGraph, IconSearch, IconUploa
 // 仪表盘：知识库规模 + Agent 平台运行指标 + 最近动态。
 // 数据来自六个域的统计接口，Promise.allSettled 并行拉取，单域失败不影响整体。
 
-const STATUS_TONES = { succeeded: 'ok', running: 'indigo', pending: 'warn', failed: 'error', canceled: 'default' };
-const STATUS_LABELS = { pending: '排队', running: '执行中', succeeded: '成功', failed: '失败', canceled: '取消' };
+const STATUS_TONES = { succeeded: 'ok', running: 'indigo', pending: 'warn', paused: 'warn', retry_wait: 'warn', failed: 'error', canceled: 'default', timeout: 'error' };
+const STATUS_LABELS = { pending: '排队', running: '执行中', paused: '待审批', retry_wait: '等待重试', succeeded: '成功', failed: '失败', canceled: '取消', timeout: '超时' };
 
 function formatTime(v) {
   if (!v) return '—';
@@ -68,7 +68,7 @@ export default function Dashboard({ onNavigate }) {
   }).length;
   const agentLlm = agents.filter((a) => a.source === 'llm').length;
   const agentEnabled = agents.filter((a) => a.enabled).length;
-  const taskDone = (taskStats?.succeeded ?? 0) + (taskStats?.failed ?? 0) + (taskStats?.canceled ?? 0);
+  const taskDone = (taskStats?.succeeded ?? 0) + (taskStats?.failed ?? 0) + (taskStats?.canceled ?? 0) + (taskStats?.timeout ?? 0);
   const failRate = taskDone ? `${Math.round(((taskStats?.failed ?? 0) / taskDone) * 100)}% 失败` : '暂无终态';
   // 用量趋势：把调用记录按时间分桶（跨度 >48h 按天，否则按小时）
   // —— 用量趋势筛选：模型多选 + 时间范围 ——

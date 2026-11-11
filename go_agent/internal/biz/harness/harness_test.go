@@ -23,10 +23,17 @@ func (f *fakeChatter) ChatOpts(ctx context.Context, o llm.ChatOptions) (string, 
 func (f *fakeChatter) Model() string { return "fake-model" }
 
 // fakeRunner 可编程被测对象桩
-type fakeRunner struct{ output string }
+type fakeRunner struct {
+	output string
+	info   TargetInfo
+}
 
 func (f *fakeRunner) Run(ctx context.Context, target, input string) (string, error) {
 	return f.output, nil
+}
+
+func (f *fakeRunner) Resolve(ctx context.Context, target string) TargetInfo {
+	return f.info
 }
 
 func TestScore(t *testing.T) {

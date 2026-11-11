@@ -32,7 +32,11 @@ type Document struct {
 	TenantID string `json:"tenant_id"`
 	// Scope 知识作用域：system（全平台）/ tenant（同租户）/ user（仅本人）。
 	// 可见性由它与人、租户共同决定，见 scope.go 的 Visible。
-	Scope     string    `json:"scope"`
+	Scope string `json:"scope"`
+	// SpaceID 所属知识空间（V2）。迁移期与 Scope 双写：
+	// system → platform、tenant → tenant:<租户>、user → personal:<租户>:<用户>。
+	// 新数据按空间授权检索；空值表示尚未迁移，仍按三层作用域判定。
+	SpaceID   string    `json:"space_id"`
 	Source    string    `json:"source"`
 	Mode      string    `json:"mode"` // rag | graph
 	Status    string    `json:"status"`
@@ -99,6 +103,9 @@ type DocumentRepo interface {
 	// ListDocIDs 当前身份可见的全部文档 ID（检索时拼 Milvus 白名单过滤用，
 	// 同时决定 GraphRAG 的召回边界：图谱节点靠 chunk_refs 里的 doc_id 归属）
 	ListDocIDs(ctx context.Context, tenantID, userID string) ([]string, error)
+	// ListDocIDsBySpaces V2 空间授权白名单：space_id 命中允许空间，
+	// 或历史数据（space_id 为空）回落到三层作用域。
+	ListDocIDsBySpaces(ctx context.Context, tenantID, userID string, spaceIDs []string) ([]string, error)
 	Delete(ctx context.Context, docID string) error
 	Count(ctx context.Context) (int64, error)
 }

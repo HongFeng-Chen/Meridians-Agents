@@ -20,6 +20,7 @@ import (
 	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/skill"
+	"go_agent/internal/pkg/trace"
 )
 
 // Catalog 能力目录
@@ -129,6 +130,11 @@ func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[stri
 	if err := u.authorizeCapability(ctx, rec, name); err != nil {
 		return "", err
 	}
+	// 运行时二次授权：白名单只回答「这个 Agent 有没有这项能力」，
+	// 这里再问一次「当前主体此刻还能不能用这个资源」（快照 ≠ 永久权限）。
+	if err := u.authorizeCapabilityRuntime(ctx, rec, name); err != nil {
+		return "", err
+	}
 	if err := u.gateApproval(ctx, rec, name, args); err != nil {
 		return "", err
 	}
@@ -187,7 +193,14 @@ func (u *UseCase) toolCapability(ctx context.Context, uniqueName string, args ma
 			}
 		}
 	}
-	res, err := u.tools.CallTool(ctx, 0, uniqueName, args)
+	// 幂等键：任务 + 轮次 + 工具 + 参数摘要。任务重试（失联回收 / 审批续跑）
+	// 恢复到同一轮次后 LLM 重发同一调用时，mcp 层会回放上次的成功结果，
+	// 拦住重复副作用（语义与边界见 mcp/idem.go）。
+	callCtx := ctx
+	if rec.task != nil && rec.task.ID > 0 {
+		callCtx = mcp.WithIdemKey(ctx, mcp.TaskCallKey(rec.task.ID, rec.turn, uniqueName, args))
+	}
+	res, err := u.tools.CallTool(callCtx, 0, uniqueName, args)
 	if err != nil {
 		return "", fmt.Errorf("调用工具 %s 失败: %w", uniqueName, err)
 	}
@@ -196,7 +209,14 @@ func (u *UseCase) toolCapability(ctx context.Context, uniqueName string, args ma
 
 // skillCapability 调用技能：读取 SKILL.md 说明文本喂回 LLM（技能是指令包，不是可执行程序）。
 // args.purpose 可选，说明本次用技能要做什么，帮助模型按需裁剪工作流。
-func (u *UseCase) skillCapability(ctx context.Context, name string, args map[string]any) (string, error) {
+func (u *UseCase) skillCapability(ctx context.Context, name string, args map[string]any) (out string, err error) {
+	// 技能是本地读库，耗时通常在毫秒级；仍然埋点：这样「这一轮到底调了什么」
+	// 在 trace 树里是完整的，不会出现「只有 MCP 有节点、技能凭空消失」。
+	ctx, span := trace.Start(ctx, "skill.run",
+		trace.String(trace.AttrKind, trace.KindTool),
+		trace.String(trace.AttrToolName, CapSkillPrefix+name))
+	defer func() { span.End(err) }()
+
 	if u.catalog == nil || u.catalog.skills == nil {
 		return "", fmt.Errorf("技能供给未接线")
 	}

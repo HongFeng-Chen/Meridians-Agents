@@ -104,6 +104,8 @@ func (r *HarnessRepo) SaveSet(ctx context.Context, s *harness.Set) error {
 			"target":      s.Target,
 			"tags":        marshalStrings(s.Tags),
 			"is_enabled":  s.Enabled,
+			"version":     s.Version,
+			"checksum":    s.Checksum,
 			"updated_at":  s.UpdatedAt,
 		})
 	if res.Error != nil {
@@ -240,16 +242,26 @@ func (r *HarnessRepo) SaveRun(ctx context.Context, run *harness.Run) error {
 	res := r.db.WithContext(ctx).Model(&models.HarnessRunPO{}).
 		Where("id = ?", run.ID).
 		Updates(map[string]any{
-			"status":      run.Status,
-			"total":       run.Total,
-			"done":        run.Done,
-			"passed":      run.Passed,
-			"failed":      run.Failed,
-			"errored":     run.Errored,
-			"score":       run.Score,
-			"cost_ms":     run.CostMS,
-			"error":       run.Error,
-			"finished_at": run.FinishedAt,
+			"status":  run.Status,
+			"total":   run.Total,
+			"done":    run.Done,
+			"passed":  run.Passed,
+			"failed":  run.Failed,
+			"errored": run.Errored,
+			"score":   run.Score,
+			"cost_ms": run.CostMS,
+			"error":   run.Error,
+			// finished_at 必须走 nilIfZero：biz 层是值类型 time.Time，
+			// 未结束时是零值，直接写会变成 '0000-00-00' 被 MySQL 的
+			// NO_ZERO_DATE 整条拒掉（进度/状态都不会落库，前端一直显示 pending）
+			"finished_at": nilIfZero(run.FinishedAt),
+			// 版本绑定列：创建后不再变化，重复写入是为了让「先跑后补」的路径也能落库
+			"snapshot_id":      run.SnapshotID,
+			"snapshot_version": run.SnapshotVersion,
+			"dataset_version":  run.DatasetVersion,
+			"dataset_checksum": run.DatasetChecksum,
+			"model":            run.Model,
+			"trace_id":         run.TraceID,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -383,6 +395,8 @@ func setToPO(s *harness.Set) *models.HarnessSetPO {
 		Target:      s.Target,
 		Tags:        marshalStrings(s.Tags),
 		Enabled:     s.Enabled,
+		Version:     s.Version,
+		Checksum:    s.Checksum,
 		CreatedAt:   s.CreatedAt,
 		UpdatedAt:   s.UpdatedAt,
 	}
@@ -395,6 +409,8 @@ func setToBiz(po *models.HarnessSetPO) *harness.Set {
 		Description: po.Description,
 		Target:      po.Target,
 		Enabled:     po.Enabled,
+		Version:     po.Version,
+		Checksum:    po.Checksum,
 		CreatedAt:   po.CreatedAt,
 		UpdatedAt:   po.UpdatedAt,
 	}
@@ -454,6 +470,13 @@ func runToPO(run *harness.Run) *models.HarnessRunPO {
 		Error:      run.Error,
 		CreatedAt:  run.CreatedAt,
 		FinishedAt: nilIfZero(run.FinishedAt),
+
+		SnapshotID:      run.SnapshotID,
+		SnapshotVersion: run.SnapshotVersion,
+		DatasetVersion:  run.DatasetVersion,
+		DatasetChecksum: run.DatasetChecksum,
+		Model:           run.Model,
+		TraceID:         run.TraceID,
 	}
 }
 
@@ -473,6 +496,14 @@ func runToBiz(po *models.HarnessRunPO) *harness.Run {
 		CostMS:    po.CostMS,
 		Error:     po.Error,
 		CreatedAt: po.CreatedAt,
+
+		SnapshotID:      po.SnapshotID,
+		SnapshotVersion: po.SnapshotVersion,
+		DatasetVersion:  po.DatasetVersion,
+		DatasetChecksum: po.DatasetChecksum,
+		Model:           po.Model,
+		TraceID:         po.TraceID,
+
 		FinishedAt: func() time.Time {
 			if po.FinishedAt != nil {
 				return *po.FinishedAt

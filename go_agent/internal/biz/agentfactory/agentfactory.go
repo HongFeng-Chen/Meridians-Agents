@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"go_agent/internal/biz/audit"
 	"go_agent/internal/pkg/budget"
 	"go_agent/internal/pkg/identity"
+	"go_agent/internal/pkg/trace"
 
 	"github.com/go-kratos/kratos/v3/log"
 )
@@ -36,6 +38,27 @@ type Options struct {
 	// 0 表示不限制；超限时执行图走「预算耗尽」收敛分支。
 	BudgetTokens int64
 	BudgetCalls  int32
+
+	// —— V2-P2 执行链路（执行体注册 / 租约 / 超时重试）——
+
+	// LeaseTTL 任务执行租约有效期：执行期间按 TTL/3 自动续租，进程死亡即自然过期
+	LeaseTTL time.Duration
+	// HeartbeatInterval 执行体心跳间隔
+	HeartbeatInterval time.Duration
+	// HeartbeatTTL 心跳有效期（> 2×HeartbeatInterval，容忍漏一次心跳）
+	HeartbeatTTL time.Duration
+	// TaskTimeout 单任务执行截止时间，超过即落 timeout 终态
+	TaskTimeout time.Duration
+	// MaxAttempts 基础设施故障（执行体失联）重试上限；任务自身 max_attempts 优先
+	MaxAttempts int
+	// SweepInterval 清扫间隔：回收过期租约 / 超时任务 / 到期重试
+	SweepInterval time.Duration
+	// WorkerKey 执行体标识（空 = hostname-pid-随机后缀）
+	WorkerKey string
+
+	// MaxDelegationDepth 委派深度上限（根 = 0），0 走默认值。
+	// 防止 A→B→A 这类成环链路把预算烧光；与 MaxAgents 数量配额互补。
+	MaxDelegationDepth int
 }
 
 func (o *Options) fill() {
@@ -54,6 +77,27 @@ func (o *Options) fill() {
 	if o.ShutdownTimeout <= 0 {
 		o.ShutdownTimeout = 20 * time.Second
 	}
+	if o.MaxDelegationDepth <= 0 {
+		o.MaxDelegationDepth = MaxDelegationDepth
+	}
+	if o.LeaseTTL <= 0 {
+		o.LeaseTTL = 60 * time.Second
+	}
+	if o.HeartbeatInterval <= 0 {
+		o.HeartbeatInterval = 15 * time.Second
+	}
+	if o.HeartbeatTTL <= 2*o.HeartbeatInterval {
+		o.HeartbeatTTL = 3 * o.HeartbeatInterval
+	}
+	if o.TaskTimeout <= 0 {
+		o.TaskTimeout = 30 * time.Minute
+	}
+	if o.MaxAttempts <= 0 {
+		o.MaxAttempts = 3
+	}
+	if o.SweepInterval <= 0 {
+		o.SweepInterval = 20 * time.Second
+	}
 }
 
 // UseCase AgentFactory 用例
@@ -66,8 +110,17 @@ type UseCase struct {
 	emb     Embedder
 	tools   ToolPort
 	prompts PromptSaver // 可为 nil：LLM 创建 Agent 时沉淀角色提示词到提示词工程
+	// authz 运行时二次授权（可为 nil：单测 / 未接线的部署不做资源级判权）
+	authz   ResourceAuthorizer
 	catalog *Catalog
 	opt     Options
+	// workers 执行体注册表（可为 nil：单机/测试态退化为「无注册表」，
+	// 此时租约仍写库、仍能被清扫，只是看不到实例维度的心跳）
+	workers WorkerRepo
+	// leaseOwner 本进程的执行体标识：任务认领时写入 lease_owner
+	leaseOwner string
+	// workerStarted 本进程启动时间（注册表展示）
+	workerStarted time.Time
 
 	baseCtx context.Context // Recorder 落事件用（生命周期 = 进程）
 
@@ -92,25 +145,39 @@ type UseCase struct {
 	vecInit bool
 }
 
-// New 构造用例
+// New 构造用例（不含执行体注册表：单机 / 测试态）
 func New(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat Chatter, emb Embedder, tools ToolPort, skills SkillPort, prompts PromptSaver, opt Options) (*UseCase, error) {
+	return NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, nil, opt)
+}
+
+// NewWithWorkers 构造用例并注入执行体注册表（生产装配）。
+// workers 为 nil 时退化为无注册表模式：任务租约照常写库、失联任务照常能被清扫，
+// 只是实例心跳不可见（本进程回收自己遗留的 running 依然生效）。
+func NewWithWorkers(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat Chatter, emb Embedder, tools ToolPort, skills SkillPort, prompts PromptSaver, workers WorkerRepo, opt Options) (*UseCase, error) {
 	if repo == nil || vec == nil || cache == nil || emb == nil {
 		return nil, fmt.Errorf("AgentFactory 用例初始化失败: 依赖缺失")
 	}
 	opt.fill()
+	owner := strings.TrimSpace(opt.WorkerKey)
+	if owner == "" {
+		owner = newWorkerKey()
+	}
 	u := &UseCase{
-		repo:    repo,
-		vec:     vec,
-		cache:   cache,
-		lock:    lock,
-		chat:    chat,
-		emb:     emb,
-		tools:   tools,
-		prompts: prompts,
-		opt:     opt,
-		baseCtx: context.Background(),
-		cancels: make(map[uint64]context.CancelFunc),
-		drainCh: make(chan struct{}),
+		repo:          repo,
+		vec:           vec,
+		cache:         cache,
+		lock:          lock,
+		chat:          chat,
+		emb:           emb,
+		tools:         tools,
+		prompts:       prompts,
+		opt:           opt,
+		workers:       workers,
+		leaseOwner:    owner,
+		workerStarted: time.Now(),
+		baseCtx:       context.Background(),
+		cancels:       make(map[uint64]context.CancelFunc),
+		drainCh:       make(chan struct{}),
 	}
 	u.catalog = NewCatalog(tools, func(ctx context.Context) ([]AgentDef, error) {
 		return repo.ListDefs(ctx, DefFilter{Enabled: boolPtr(true), Limit: 500})
@@ -229,6 +296,11 @@ func (u *UseCase) UpdateDef(ctx context.Context, id uint64, in AgentInput) (*Age
 	def.Version++
 	if err := u.repo.UpdateDef(ctx, &def); err != nil {
 		return nil, err
+	}
+	// 生成配置快照（内容没变则复用最新一条）：已提交的任务继续跑旧快照，
+	// 新任务钉新快照，审计链因此可复现。
+	if _, serr := u.publishSnapshot(ctx, &def); serr != nil {
+		u.warn("Agent 快照生成失败", "agent", def.AgentKey, "err", serr)
 	}
 	if err := u.pushDefVectors(ctx, &def); err != nil {
 		u.warn("Agent 向量更新失败", "key", def.AgentKey, "err", err)
@@ -424,6 +496,11 @@ func (u *UseCase) SubmitTask(ctx context.Context, in TaskInput) (*Task, error) {
 		// cron 自动排期走 baseCtx（无请求身份）→ 落在 default 作用域。
 		UserID:   identity.UserID(ctx),
 		TenantID: identity.TenantID(ctx),
+		// 业务重试次数由调用方决定：默认 0（一次失败即终态），
+		// 基础设施故障的重试上限由 Options.MaxAttempts 兜底
+		MaxAttempts: in.MaxAttempts,
+		// 钉住提交时刻的配置快照：之后改提示词 / 能力不影响这条任务
+		SnapshotID: u.latestSnapshotID(ctx, def.ID),
 	}
 	if err := u.repo.CreateTask(ctx, task); err != nil {
 		return nil, err
@@ -479,13 +556,18 @@ func (u *UseCase) CancelTask(ctx context.Context, id uint64) (*Task, error) {
 			return nil, err
 		}
 		switch t.Status {
-		case TaskPending, TaskPaused:
+		case TaskPending, TaskPaused, TaskRetryWait:
 			prev := t.Status
 			t.Status = TaskCanceled
 			t.FinishedAt = time.Now()
-			if prev == TaskPaused {
+			t.LeaseOwner, t.LeaseExpiresAt, t.NextAttemptAt = "", time.Time{}, time.Time{}
+			switch prev {
+			case TaskPaused:
 				// 挂起任务取消 = 直接驳回终态（清 checkpoint，不再等审批）
 				t.ErrorMsg = "任务在审批挂起期间被取消"
+			case TaskRetryWait:
+				// 重试等待中的任务没有执行体在跑，直接终态，不必等退避到期
+				t.ErrorMsg = "任务在重试等待期间被取消"
 			}
 			ok, err := u.repo.TransitionTask(ctx, id, []string{prev}, t)
 			if err != nil {
@@ -507,7 +589,7 @@ func (u *UseCase) CancelTask(ctx context.Context, id uint64) (*Task, error) {
 				cancel()
 			}
 			return t, nil
-		case TaskSucceeded, TaskFailed, TaskCanceled:
+		case TaskSucceeded, TaskFailed, TaskCanceled, TaskTimeout:
 			return nil, fmt.Errorf("%w: 任务已是终态 %s", ErrTaskStateDeny, t.Status)
 		default:
 			return nil, ErrTaskStateDeny
@@ -707,6 +789,12 @@ func (u *UseCase) RetryTask(ctx context.Context, id uint64) (*Task, error) {
 	t.ErrorMsg = ""
 	t.FinishedAt = time.Time{}
 	t.Archived = false
+	// 手工重试是「人确认后再来一次」：预算重新给满，别让上次的死信原因与
+	// attempt 计数影响这次判定（否则第一次失联就直接又进死信）
+	t.Attempt = 0
+	t.DeadLetterReason = ""
+	t.LeaseOwner, t.LeaseExpiresAt = "", time.Time{}
+	t.NextAttemptAt, t.DeadlineAt = time.Time{}, time.Time{}
 	// 历史表 → 任务池（事务内完成插池 + 删历史）
 	if err := u.repo.ReviveTask(ctx, t); err != nil {
 		return nil, err
@@ -752,12 +840,16 @@ func (u *UseCase) Stats(ctx context.Context) (Stats, error) {
 			st.Pending = n
 		case TaskRunning:
 			st.Running = n
+		case TaskRetryWait:
+			st.RetryWait = n
 		case TaskSucceeded:
 			st.Succeeded = n
 		case TaskFailed:
 			st.Failed = n
 		case TaskCanceled:
 			st.Canceled = n
+		case TaskTimeout:
+			st.Timeout = n
 		}
 	}
 	if caps, err := u.catalog.Schemas(ctx); err == nil {
@@ -768,22 +860,28 @@ func (u *UseCase) Stats(ctx context.Context) (Stats, error) {
 
 // ———— 异步 worker ————
 
-// StartWorkers 启动 worker 池 + 崩溃恢复（在 wire cleanup 中调用 Stop）
+// StartWorkers 启动 worker 池 + 崩溃恢复 + 执行体心跳/清扫（在 wire cleanup 中调用 Stop）
 func (u *UseCase) StartWorkers() error {
-	// 崩溃恢复：上次进程退出时遗留的 running 置回 pending，与 pending 一起重新入队
-	ids, err := u.repo.RequeueInterrupted(u.baseCtx)
-	if err != nil {
-		u.warn("任务恢复扫描失败", "err", err)
-	}
-	for _, id := range ids {
-		if err := u.cache.EnqueueTask(u.baseCtx, id); err != nil {
-			u.warn("恢复入队失败", "task", id, "err", err)
-		}
-	}
-	if len(ids) > 0 {
-		log.Info("恢复中断任务", "count", len(ids))
-	}
 	u.workerCtx, u.stopFn = context.WithCancel(u.baseCtx)
+
+	// ① 执行体注册 + 心跳：多副本部署时，清扫协程靠它区分「活着但空闲」
+	// 与「进程已经没了，它手上的任务该收回来」
+	u.registerWorker(u.workerCtx)
+	if u.workers != nil && u.opt.HeartbeatInterval > 0 {
+		u.wg.Add(1)
+		go u.heartbeatLoop(u.workerCtx)
+	}
+
+	// ② 崩溃恢复：上个进程遗留的 running 按同一套重试策略收回重排，
+	// 顺带把「入队消息丢了但库里有」的 pending 重新入队
+	u.recoverInterrupted(u.workerCtx)
+
+	// ③ 清扫协程：过期租约 / 超时任务 / 到期重试 / 失联执行体
+	if u.opt.SweepInterval > 0 {
+		u.wg.Add(1)
+		go u.sweepLoop(u.workerCtx)
+	}
+
 	for i := 0; i < u.opt.WorkerCount; i++ {
 		u.wg.Add(1)
 		u.workerWG.Add(1)
@@ -792,6 +890,47 @@ func (u *UseCase) StartWorkers() error {
 	// cron 调度器：后台自动运行根 Agent（与 worker 同生命周期）
 	u.startScheduler(u.workerCtx)
 	return nil
+}
+
+// recoverInterrupted 启动时收回上个进程遗留的执行中任务。
+//
+// 不直接「running 一律改 pending」：那样崩溃循环里的任务会无限重排，
+// 永远撞不到重试上限。这里与运行期清扫共用 recoverLostTask，
+// 区别只是不等待退避——进程刚起来，任务应该马上继续。
+func (u *UseCase) recoverInterrupted(ctx context.Context) {
+	now := time.Now()
+	running, err := u.repo.ListTasks(ctx, TaskFilter{Status: TaskRunning, Limit: 1000})
+	if err != nil {
+		u.warn("任务恢复扫描失败", "err", err)
+	}
+	for i := range running {
+		u.recoverLostTask(ctx, &running[i], now, false)
+	}
+	if len(running) > 0 {
+		log.Info("恢复中断任务", "count", len(running))
+	}
+	// retry_wait 已到期的立即重排：进程重启不必再等一轮退避
+	if ids, err := u.repo.PromoteRetryWait(ctx, now, 1000); err != nil {
+		u.warn("重试任务恢复失败", "err", err)
+	} else {
+		for _, id := range ids {
+			if err := u.cache.EnqueueTask(ctx, id); err != nil {
+				u.warn("恢复入队失败", "task", id, "err", err)
+			}
+		}
+	}
+	// pending 行可能因为「保存成功但入队失败」或队列随进程重启丢失而没有消息，
+	// 一起重新入队（重复入队无害：认领是 CAS，抢不到直接跳过）
+	pending, err := u.repo.ListTasks(ctx, TaskFilter{Status: TaskPending, Limit: 1000})
+	if err != nil {
+		u.warn("待执行任务扫描失败", "err", err)
+		return
+	}
+	for _, t := range pending {
+		if err := u.cache.EnqueueTask(ctx, t.ID); err != nil {
+			u.warn("待执行任务入队失败", "task", t.ID, "err", err)
+		}
+	}
 }
 
 // Stop 硬停：取消 worker 上下文并等待退出。
@@ -803,6 +942,7 @@ func (u *UseCase) Stop() {
 		}
 	})
 	u.wg.Wait()
+	u.deregisterWorker()
 }
 
 // Drain 优雅停机：立刻停止领取新任务，等待「已在执行」的任务跑完再返回。
@@ -819,6 +959,8 @@ func (u *UseCase) Drain(ctx context.Context) error {
 	u.drainOnce.Do(func() {
 		u.draining.Store(true)
 		close(u.drainCh) // 唤醒阻塞在 DequeueTask 上的 worker
+		// 注册表同步置 draining：运维看板能区分「扩容中」与「正在下线」
+		u.setWorkerStatus(WorkerDraining)
 		log.Info("开始优雅停机：停止领取新任务，等待执行中的任务完成",
 			"in_flight", u.inFlight.Load(), "timeout", u.opt.ShutdownTimeout.String())
 	})
@@ -965,6 +1107,7 @@ func (u *UseCase) RunOnce(ctx context.Context, agentKey, input string) (string, 
 		Status:     TaskPending,
 		UserID:     identity.UserID(ctx),   // 试运行同样归属当前请求用户
 		TenantID:   identity.TenantID(ctx), // 租户同理
+		SnapshotID: u.latestSnapshotID(ctx, def.ID),
 	}
 	if err := u.repo.CreateTask(ctx, t); err != nil {
 		return "", err
@@ -981,15 +1124,23 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	}
 	defer release()
 
-	// ② 原子认领：pending → running（并发安全）
+	// ② 原子认领：pending → running（并发安全），同时写入执行租约。
+	// 租约让「进程被 OOM kill / 被驱逐」这类事故可以被自动发现：
+	// 续租一停，租约到期，清扫协程就会把任务收回重排（而不是永远卡在 running）。
 	if t.Status == TaskPending {
-		ok, err := u.repo.ClaimTask(ctx, t.ID)
+		lease := u.leaseFor(t, time.Now())
+		ok, err := u.repo.ClaimTask(ctx, t.ID, lease)
 		if err != nil {
 			return "", err
 		}
 		if !ok {
 			return "", fmt.Errorf("%w: 已被其他 worker 认领", ErrTaskStateDeny)
 		}
+		t.Attempt = lease.Attempt
+		t.LeaseOwner = lease.Owner
+		t.LeaseExpiresAt = lease.ExpiresAt
+		t.DeadlineAt = lease.Deadline
+		t.NextAttemptAt = time.Time{}
 	}
 	t.Status = TaskRunning
 	if t.StartedAt.IsZero() {
@@ -1000,12 +1151,55 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	}
 	_ = u.repo.SaveTask(ctx, t)
 
+	// 按任务钉住的快照加载配置（任务提交后定义再改也不影响这一条的执行内容）
+	def, snap := u.defForTask(ctx, t, def)
+
+	// 执行链路根 span：一次执行一条 Trace，LLM / MCP / RAG / Skill 的 span 都挂在它下面。
+	// 从 ctx 派生后，下游（runGraph → chatWith → CallTool → rag）拿到的就是这条 trace。
+	ctx, taskSpan := trace.Start(ctx, "task.run",
+		trace.String(trace.AttrKind, trace.KindTask),
+		trace.String(trace.AttrTaskID, strconv.FormatUint(t.ID, 10)),
+		trace.String(trace.AttrAgentKey, def.AgentKey),
+		trace.Int(trace.AttrAttempt, t.Attempt),
+		trace.Int(trace.AttrDepth, t.Depth),
+		trace.String(trace.AttrTenantID, t.TenantID),
+	)
+	var runErr error
+	// 用 EndPtr 而不是 End：defer 求值那一刻才知道最终错误
+	defer taskSpan.EndPtr(&runErr)
+	// trace id 落到任务行：内存 trace 被淘汰后，仍可拿它去 collector 查历史链路
+	t.TraceID = taskSpan.TraceID()
+	if t.TraceID != "" {
+		_ = u.repo.SaveTask(ctx, t)
+	}
+	if snap != nil {
+		taskSpan.Set(trace.AttrSnapshotID, snap.ID)
+	}
+
 	rec := &Recorder{u: u, task: t, def: def, mu: &sync.Mutex{}}
 	rec.status("", TaskRunning)
 	rec.snapshot()
+	if snap != nil {
+		rec.event(EventSnapshot, 0, map[string]any{
+			"snapshot_id": snap.ID,
+			"version":     snap.Version,
+			"checksum":    snap.Checksum,
+		})
+	}
+
+	// 截止时间：到期强制收敛为 timeout。不这么做就只能等外部掐断连接，
+	// 结果会被记成「用户取消」，超时率与取消率混在一起无法区分。
+	parent := ctx
+	if !t.DeadlineAt.IsZero() {
+		if left := time.Until(t.DeadlineAt); left > 0 {
+			var stopDeadline context.CancelFunc
+			parent, stopDeadline = context.WithTimeout(ctx, left)
+			defer stopDeadline()
+		}
+	}
 
 	// 注册取消句柄
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(parent)
 	u.runMu.Lock()
 	u.cancels[t.ID] = cancel
 	u.runMu.Unlock()
@@ -1016,7 +1210,18 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 		u.runMu.Unlock()
 	}()
 
-	runRes, runErr := u.runGraph(runCtx, def, t.Input, rec)
+	// 续租：执行期间定期延长 lease_expires_at；续不上说明任务已被收回，
+	// 立刻取消本次执行，避免两个执行体同时跑出重复的外部副作用。
+	stopLease := u.startLeaseRenewal(runCtx, t.ID, cancel)
+	defer stopLease()
+
+	// 运行时二次授权：快照冻结的是配置，不是权限。任务恢复 / 重试期间
+	// 归属或授权可能已变，执行前重新问一次「这个主体还能不能跑这个 Agent」。
+	var runRes *RunResult
+	runErr = u.authorizeTaskRuntime(ctx, t, def)
+	if runErr == nil {
+		runRes, runErr = u.runGraph(runCtx, def, t.Input, rec)
+	}
 	answer := ""
 	if runRes != nil {
 		answer = runRes.Answer
@@ -1042,6 +1247,9 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 
 	now := time.Now()
 	t.FinishedAt = now
+	// 超时判定以任务自身的截止时间为准，不看 ctx：sync 调用方的 ctx 也可能有
+	// 截止时间，那是「调用方失去耐心」，不该算成任务超时。
+	timedOut := !t.DeadlineAt.IsZero() && !now.Before(t.DeadlineAt)
 	if runErr != nil {
 		// 人工审批闸门（O3）：命中 require_approval / 高危转人工 → 任务挂起。
 		// 不写终态、不归档：任务留在任务池，批准后置回 pending 从 checkpoint 续跑。
@@ -1049,6 +1257,7 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 			t.Status = TaskPaused
 			t.ErrorMsg = "等待人工审批"
 			t.FinishedAt = time.Time{}
+			t.LeaseOwner, t.LeaseExpiresAt = "", time.Time{}
 			rec.status(TaskRunning, TaskPaused)
 			// running → paused 走 CAS：期间若已被取消，就不要再把状态改回 paused
 			if ok, perr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); perr == nil && !ok {
@@ -1058,7 +1267,8 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 			return "", runErr
 		}
 		// 停机导致的中断：不写终态。任务保持 running，下次启动由
-		// RequeueInterrupted 重新入队，避免被误标成「已取消」而丢失。
+		// recoverInterrupted 收回重排，避免被误标成「已取消」而丢失。
+		// 租约保留：新进程启动时靠它（或直接扫 running）识别遗留任务。
 		if u.draining.Load() && errors.Is(runErr, context.Canceled) {
 			rec.event(EventError, rec.turn, map[string]any{"message": "服务停止，任务中断，将在重启后自动重跑"})
 			rec.status(TaskRunning, TaskRunning)
@@ -1068,13 +1278,45 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 			rec.snapshot()
 			return "", runErr
 		}
-		if errors.Is(runCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// 业务失败且调用方显式要求重试（max_attempts>1）：进 retry_wait，
+		// 退避到期后由清扫协程置回 pending 重新入队。
+		// 默认 max_attempts=0 不走这条路——大模型任务的失败多是确定性的，
+		// 无脑重试只会把 token 烧在同一个坑里。
+		if !timedOut && u.shouldRetryBusiness(t) && retryableBusinessError(runErr) {
+			t.Status = TaskRetryWait
+			t.ErrorMsg = runErr.Error()
+			t.Progress = 0
+			t.FinishedAt = time.Time{}
+			t.LeaseOwner, t.LeaseExpiresAt = "", time.Time{}
+			t.NextAttemptAt = now.Add(RetryBackoff(t.Attempt))
+			rec.event(EventError, rec.turn, map[string]any{
+				"message":          "第 " + strconv.Itoa(t.Attempt) + " 次尝试失败，等待重试",
+				"retry_wait_until": t.NextAttemptAt.Format(time.RFC3339),
+				"attempt":          t.Attempt,
+			})
+			rec.status(TaskRunning, TaskRetryWait)
+			if ok, terr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); terr != nil || !ok {
+				if terr != nil {
+					u.warn("任务重试等待落库失败", "task", t.ID, "err", terr)
+				}
+			}
+			// checkpoint 保留：重排后从断点续跑，不重头再来
+			rec.snapshot()
+			return "", runErr
+		}
+		switch {
+		case timedOut:
+			t.Status = TaskTimeout
+			t.ErrorMsg = "任务执行超时（超过 " + u.opt.TaskTimeout.String() + "）"
+		case errors.Is(runCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 			t.Status = TaskCanceled
 			t.ErrorMsg = "任务被取消"
-		} else {
+		default:
 			t.Status = TaskFailed
 			t.ErrorMsg = runErr.Error()
 		}
+		t.FinishedAt = now
+		t.LeaseOwner, t.LeaseExpiresAt = "", time.Time{}
 		rec.event(EventError, rec.turn, map[string]any{"message": t.ErrorMsg})
 		rec.status(TaskRunning, t.Status)
 		t.Progress = 100
@@ -1092,6 +1334,7 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 	t.Status = TaskSucceeded
 	t.Result = answer
 	t.Progress = 100
+	t.LeaseOwner, t.LeaseExpiresAt = "", time.Time{}
 	rec.status(TaskRunning, TaskSucceeded)
 	// 同上：只有「当前仍是 running」才允许落成功终态
 	if ok, terr := u.repo.TransitionTask(u.baseCtx, t.ID, []string{TaskRunning}, t); terr != nil || !ok {

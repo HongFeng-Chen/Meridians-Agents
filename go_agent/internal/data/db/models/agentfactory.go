@@ -77,6 +77,28 @@ type AgentDefPO struct {
 
 func (AgentDefPO) TableName() string { return "agent_definitions" }
 
+// AgentSnapshotPO agent_snapshots：Agent 定义的不可变配置快照。
+//
+// 只增不改：任务提交时钉住 snapshot_id，执行时按快照加载 Prompt / 能力 / 模型，
+// 定义后续怎么改都不影响已提交任务；审计也能回答「当时跑的是哪一版配置」。
+type AgentSnapshotPO struct {
+	ID         uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	AgentDefID uint64 `gorm:"column:agent_def_id;not null;index:idx_agent_snapshots_def" json:"agent_def_id"`
+	AgentKey   string `gorm:"column:agent_key;size:64;not null;index:idx_agent_snapshots_key" json:"agent_key"`
+	// Version 对应 AgentDef.Version（内容未变的重复保存不会产生新行）
+	Version int `gorm:"column:version;not null;default:0" json:"version"`
+	// Checksum 配置摘要（sha256，排除运行态字段）；与最新一条相同即复用
+	Checksum string `gorm:"column:checksum;size:64;not null;index:idx_agent_snapshots_sum" json:"checksum"`
+	// Config 冻结的完整 AgentDef JSON
+	Config string `gorm:"column:config;type:mediumtext" json:"config"`
+	// Deps 依赖清单 JSON：{"agents":[],"tools":[],"skills":[]}
+	Deps      string    `gorm:"column:deps;type:text" json:"deps"`
+	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
+}
+
+// TableName 表名
+func (AgentSnapshotPO) TableName() string { return "agent_snapshots" }
+
 // AgentTaskPO agent_tasks：异步任务（worker 的基本单位；parent_task_id 形成多 Agent 协作链路树）
 type AgentTaskPO struct {
 	ID         uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -85,7 +107,7 @@ type AgentTaskPO struct {
 	AgentKey string `gorm:"column:agent_key;size:64;not null;index:idx_agent_tasks_key" json:"agent_key"`
 	Title    string `gorm:"column:title;size:128;not null" json:"title"`
 	Input    string `gorm:"column:input;type:text" json:"input"`
-	// Status: pending | running | succeeded | failed | canceled
+	// Status: pending | running | retry_wait | paused | succeeded | failed | canceled | timeout
 	Status string `gorm:"column:status;size:16;not null;default:'pending';index:idx_agent_tasks_status" json:"status"`
 	// Progress 0~100
 	Progress int    `gorm:"column:progress;not null;default:0" json:"progress"`
@@ -103,6 +125,29 @@ type AgentTaskPO struct {
 	// TenantID 租户隔离键：租户之间互不可见，即使 user_id 相同。
 	// 默认 'public'：加列时历史行按默认值回填，不会变成「谁都能看」。
 	TenantID string `gorm:"column:tenant_id;size:128;not null;default:'public';index:idx_agent_tasks_tenant" json:"tenant_id"`
+	// SnapshotID 提交时钉住的配置快照（0 = 无快照，执行时回退当前定义）
+	SnapshotID uint64 `gorm:"column:snapshot_id;not null;default:0" json:"snapshot_id"`
+	// DelegatedCaps 委派上下文（JSON 数组）：NULL 表示未受限，'[]' 表示受限且全禁。
+	// 必须区分 NULL 与 '[]'：前者是「父级没约束」，后者是「父级明确一项都不给」。
+	DelegatedCaps *string `gorm:"column:delegated_caps;type:text" json:"delegated_caps"`
+
+	// Attempt 已认领次数（含当前这次）：租约回收时判断是否还有重试机会
+	Attempt int `gorm:"column:attempt;not null;default:0" json:"attempt"`
+	// MaxAttempts 业务失败重试上限（0 = 不重试）
+	MaxAttempts int `gorm:"column:max_attempts;not null;default:0" json:"max_attempts"`
+	// LeaseOwner 持有执行租约的执行体 key（''=无租约）
+	LeaseOwner string `gorm:"column:lease_owner;size:128;not null;default:'';index:idx_agent_tasks_lease" json:"lease_owner"`
+	// LeaseExpiresAt 租约到期时间；执行期间自动续租，过期即视为执行体失联
+	LeaseExpiresAt *time.Time `gorm:"column:lease_expires_at;index:idx_agent_tasks_lease_exp" json:"lease_expires_at"`
+	// DeadlineAt 执行截止时间：认领时按配置计算，超时落 timeout 终态
+	DeadlineAt *time.Time `gorm:"column:deadline_at" json:"deadline_at"`
+	// NextAttemptAt 重试等待到期时间（status=retry_wait 时有效）
+	NextAttemptAt *time.Time `gorm:"column:next_attempt_at;index:idx_agent_tasks_next_attempt" json:"next_attempt_at"`
+	// DeadLetterReason 死信原因（重试次数用尽仍失败）：'' 表示不是死信
+	DeadLetterReason string `gorm:"column:dead_letter_reason;size:64;not null;default:''" json:"dead_letter_reason"`
+	// TraceID OpenTelemetry Trace（32 位十六进制）：任务详情跳转 span 树用。
+	// 每次执行（含重试）重新生成，只保留最后一次，历史尝试在 trace 存储里。
+	TraceID string `gorm:"column:trace_id;size:32;not null;default:'';index:idx_agent_tasks_trace" json:"trace_id"`
 
 	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_tasks_created" json:"created_at"`
 	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`
@@ -139,6 +184,20 @@ type AgentTaskHistoryPO struct {
 	UserID string `gorm:"column:user_id;size:128;not null;default:'default';index:idx_agent_task_history_user" json:"user_id"`
 	// TenantID 租户隔离键（归档时随行迁移）
 	TenantID string `gorm:"column:tenant_id;size:128;not null;default:'public';index:idx_agent_task_history_tenant" json:"tenant_id"`
+	// SnapshotID 执行所用的配置快照（归档保留，事后可追溯）
+	SnapshotID uint64 `gorm:"column:snapshot_id;not null;default:0" json:"snapshot_id"`
+	// DelegatedCaps 委派上下文（JSON 数组；NULL = 未受限，'[]' = 受限全禁）。
+	// 归档必须保留：否则「这个子任务当时被下放了哪些能力」事后无从查证，
+	// 而它正是权限事故复盘时最需要的那一列。
+	DelegatedCaps *string `gorm:"column:delegated_caps;type:text" json:"delegated_caps"`
+	// Attempt 归档时的已认领次数（死信排查用；任务池列不随归档迁移，这里留存）
+	Attempt int `gorm:"column:attempt;not null;default:0" json:"attempt"`
+	// MaxAttempts 业务重试上限（归档快照）
+	MaxAttempts int `gorm:"column:max_attempts;not null;default:0" json:"max_attempts"`
+	// DeadLetterReason 死信原因（''=非死信）：重试次数用尽的任务在这里留痕
+	DeadLetterReason string `gorm:"column:dead_letter_reason;size:64;not null;default:'';index:idx_agent_task_history_dlq" json:"dead_letter_reason"`
+	// TraceID 归档时的执行 Trace（与任务池同义，保留供事后追查）
+	TraceID string `gorm:"column:trace_id;size:32;not null;default:''" json:"trace_id"`
 
 	CreatedAt time.Time  `gorm:"column:created_at;not null;index:idx_agent_task_history_created" json:"created_at"`
 	StartedAt *time.Time `gorm:"column:started_at" json:"started_at"`
@@ -187,3 +246,32 @@ type AgentTaskCheckpointPO struct {
 }
 
 func (AgentTaskCheckpointPO) TableName() string { return "agent_task_checkpoints" }
+
+// WorkerInstancePO worker_instances：执行体注册表（一个进程一行）。
+//
+// 存在的意义只有一个：区分「活着但空闲」和「进程已经没了」。任务租约负责
+// 回收某条任务，这张表负责回答「谁还活着、谁手上压了多少任务」，扩容决策与
+// 事故复盘都看它。心跳过期即判失联，不依赖进程优雅退出（OOM / 断电没有退出钩子）。
+type WorkerInstancePO struct {
+	ID uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// WorkerKey 实例唯一标识（hostname-pid-随机后缀；重启即新实例）
+	WorkerKey string `gorm:"column:worker_key;size:160;not null;uniqueIndex:uk_worker_instances_key" json:"worker_key"`
+	Host      string `gorm:"column:host;size:128;not null;default:''" json:"host"`
+	// Capacity 并发容量（worker 协程数）
+	Capacity int `gorm:"column:capacity;not null;default:0" json:"capacity"`
+	// Running 当前正在执行的任务数（心跳刷新）
+	Running int `gorm:"column:running;not null;default:0" json:"running"`
+	// Status online | draining | offline
+	Status string `gorm:"column:status;size:16;not null;default:'online';index:idx_worker_instances_status" json:"status"`
+	// StartedAt 进程启动时间
+	StartedAt time.Time `gorm:"column:started_at;not null" json:"started_at"`
+	// HeartbeatAt 最近一次心跳
+	HeartbeatAt time.Time `gorm:"column:heartbeat_at;not null" json:"heartbeat_at"`
+	// ExpiresAt 心跳租约到期时间：超过即判失联
+	ExpiresAt *time.Time `gorm:"column:expires_at;index:idx_worker_instances_expires" json:"expires_at"`
+
+	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at;not null" json:"updated_at"`
+}
+
+func (WorkerInstancePO) TableName() string { return "worker_instances" }
