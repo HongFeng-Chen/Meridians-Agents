@@ -45,6 +45,8 @@ func (s *CostSink) RecordCost(ctx context.Context, ev llm.CostEvent) error {
 		SubjectID:    ev.UserID,
 		AgentID:      ev.AgentKey,
 		TaskID:       taskID,
+		RefKind:      ev.RefKind,
+		RefID:        ev.RefID,
 		Provider:     ev.Provider,
 		Model:        ev.Model,
 		Kind:         usage.KindLLM,

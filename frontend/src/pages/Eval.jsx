@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { harness } from '../api.js';
+import { harness, v2 } from '../api.js';
 import { Alert, Badge, EmptyState, FormDrawer, Pagination, Panel, Spinner, StatCard, usePagedList } from '../components/UI.jsx';
 import { IconFlask, IconRefresh, IconTrash } from '../components/Icons.jsx';
 
@@ -241,10 +241,17 @@ export default function Eval() {
 
   const openReport = async (r) => {
     setReportItem(null);
-    setReport({ run: r, items: [], loading: true });
+    setReport({ run: r, items: [], loading: true, cost: null });
     try {
-      const res = await harness.getRun({ id: r.id });
-      setReport({ run: res.run, items: res.items || [], loading: false });
+      // 成本与逐例结果并行取：成本按 ref(harness_run:<id>) 归集，
+      // 覆盖被测 Agent 内部调用 + model: 直连 + LLM Judge 三路
+      const [res, usage] = await Promise.all([
+        harness.getRun({ id: r.id }),
+        v2.usageSummary({ ref_kind: 'harness_run', ref_id: r.id }).catch(() => null),
+      ]);
+      const buckets = usage?.buckets || [];
+      const cost = buckets.find((b) => b.key === 'llm') || buckets[0] || null;
+      setReport({ run: res.run, items: res.items || [], loading: false, cost });
     } catch (err) {
       setError(err.message);
       setReport(null);
@@ -684,6 +691,11 @@ export default function Eval() {
               <StatCard label="通过" value={report.run.passed} hint={`失败 ${report.run.failed} · 异常 ${report.run.errored}`} tone="ok" />
               <StatCard label="得分" value={fmtScore(report.run.score)} hint="加权平均 0-100" tone="indigo" />
               <StatCard label="耗时" value={`${(report.run.cost_ms / 1000).toFixed(1)}s`} hint={fmtTime(report.run.finished_at)} />
+              <StatCard
+                label="成本"
+                value={report.cost ? `¥${(report.cost.cost_micros / 1e6).toFixed(4)}` : '—'}
+                hint={report.cost ? `${report.cost.calls} 次调用 · ${report.cost.total_tokens} tokens` : (report.loading ? '统计中' : '无用量记录')}
+              />
             </div>
             {report.loading && <Spinner text="加载逐例结果" />}
             <div className="table-wrap">

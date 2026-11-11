@@ -34,6 +34,14 @@ type Repo interface {
 	GetRun(ctx context.Context, id uint64) (*Run, error)
 	ListRuns(ctx context.Context, f RunFilter) ([]Run, error)
 	DeleteRun(ctx context.Context, id uint64) error
+	// TouchRun 续心跳：只更新 heartbeat_at，不碰状态与进度。
+	//
+	// 单独一条 UPDATE 而不是走 SaveRun：心跳频率远高于进度推进，
+	// 全量写会把并发的进度覆盖回旧值。
+	TouchRun(ctx context.Context, runID uint64, at time.Time) error
+	// ReapRuns 回收僵尸运行：心跳早于 before 的 pending/running 行改为 failed。
+	// 返回回收行数（0 表示没有失联的运行）。
+	ReapRuns(ctx context.Context, before time.Time, reason string) (int64, error)
 
 	// —— 逐例结果 ——
 	CreateItem(ctx context.Context, it *RunItem) error

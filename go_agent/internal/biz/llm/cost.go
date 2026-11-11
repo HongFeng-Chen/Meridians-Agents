@@ -26,6 +26,10 @@ type CostEvent struct {
 	AgentKey string
 	// TaskID 关联任务（任务链路才有）：单任务成本据此聚合
 	TaskID uint64
+	// RefKind / RefID 通用归属：评测运行等没有任务行的场景，
+	// 与 usage_records.ref_kind/ref_id 同构（如 harness_run / "12"）。
+	RefKind string
+	RefID   string
 
 	Provider string
 	Model    string

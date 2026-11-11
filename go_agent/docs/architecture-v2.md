@@ -262,6 +262,26 @@ SELECT COUNT(*) FROM rag_documents WHERE space_id = '';
 单任务成本：`GET /api/v2/usage/summary?task_id=123&group_by=kind`。
 `task_id` 与 trace 的 `task.id` 属性同构，**成本与链路用同一个键串联**。
 
+**归属维度 `ref`（P4 收尾）**：`task_id` 只覆盖「有任务行」的调用，
+评测的 `model:` 目标、LLM Judge 这类调用根本没有任务，成本会变成无主的 tokens。
+所以 `usage_records` 另开一对通用列 `ref_kind` / `ref_id`：
+
+| 字段 | 取值示例 | 说明 |
+|---|---|---|
+| `ref_kind` | `harness_run` / `conv` | 归属对象类型（`usage.Ref*` 常量） |
+| `ref_id` | `14` | 该对象的标识 |
+
+- 与 `task_id` **并存**而不是替代：任务链路两者都写（`task_id` 供详情页，
+  `ref` 供「一次评测 / 一个会话」这类跨任务聚合）。
+- 单次评测成本：`GET /api/v2/usage/summary?ref_kind=harness_run&ref_id=14`；
+  横向对比：`group_by=ref`（桶键为 `kind:id`，无归属的记录落空串）。
+- 归属键由 `harness.WithRunRef` 在运行 context 上挂一次，顺着 ctx 传到
+  `llm.Manager.charge`。它**同时**写进 `llm.CallMeta`——只挂在 harness 私有
+  context key 上会被 `agentfactory.runGraph` 重建元数据时丢掉（见 §13 第 21 条）。
+- `llm.WithMeta` 因此改为**按字段合并**：零值表示「不改这一项」。
+  否则下游设 `TaskID`/`Purpose` 时会把上游挂的 `ref` 一起冲掉。
+
+
 ---
 
 ## 8. /api/v2 接口
@@ -290,7 +310,7 @@ SELECT COUNT(*) FROM rag_documents WHERE space_id = '';
 | DELETE | `/api/v2/resources/grants?resource_id=&principal_type=&principal_id=&action=` | 撤销授权 |
 | GET | `/api/v2/resources/versions?resource_id=` | 版本历史 |
 | POST | `/api/v2/usage/records` | 记录用量 |
-| GET | `/api/v2/usage/summary?task_id=&group_by=agent\|task\|model\|kind\|day` | 成本聚合（带 `task_id` 即单任务成本） |
+| GET | `/api/v2/usage/summary?task_id=&ref_kind=&ref_id=&group_by=agent\|task\|ref\|model\|kind\|day` | 成本聚合（`task_id` = 单任务；`ref_kind+ref_id` = 单次评测运行） |
 | GET | `/api/v2/workers` | 执行体列表（在线/排空/离线，含在跑任务数）；仅管理员 |
 | GET | `/api/v2/tasks/leases?limit=` | 运行中任务的租约视图（owner / 到期 / 截止）；仅管理员 |
 | GET | `/api/v2/tasks/dead-letters?limit=` | 死信任务（重试用尽）；仅管理员，按租户隔离 |
@@ -584,6 +604,11 @@ trace 里直接可查「这一跑用的是哪一版」。
 | `OTEL_EXPORTER_OTLP_INSECURE` | true | 端点是否明文（内网 collector 一般为 true） |
 | `OTEL_TRACES_SAMPLE_RATIO` | 1 | 按 TraceID 概率采样，(0,1]；父级决定子级 |
 | `OTEL_TRACE_BUFFER` | 512 | 进程内保留的 trace 条数 |
+| `HARNESS_HEARTBEAT_SEC` | 15 | 评测运行心跳间隔（执行期续 `heartbeat_at`） |
+| `HARNESS_STALE_SEC` | 90 | 判失联阈值：心跳早于 `now - stale` 的 `running`/`pending` 行被回收 |
+
+评测的巡检周期取 `HARNESS_STALE_SEC / 2`：任何僵尸行的可见延迟不超过 1.5 倍阈值。
+阈值必须显著大于心跳间隔（≥3 倍），否则一次数据库抖动就会误杀正常运行的评测。
 
 ### 11.4 上线 SQL
 
@@ -607,7 +632,23 @@ ALTER TABLE harness_runs
   ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT '' AFTER dataset_checksum,
   ADD COLUMN trace_id VARCHAR(32) NOT NULL DEFAULT '' AFTER model,
   ADD KEY idx_harness_run_trace (trace_id);
+
+-- 成本归属维度：没有任务行的调用（评测 model: 目标 / LLM Judge）靠它归集
+ALTER TABLE usage_records
+  ADD COLUMN ref_kind VARCHAR(32) NOT NULL DEFAULT '' AFTER task_id,
+  ADD COLUMN ref_id VARCHAR(64) NOT NULL DEFAULT '' AFTER ref_kind,
+  ADD KEY idx_usage_ref (ref_kind, ref_id);
+
+-- 评测运行的存活判定：执行体失联后由巡检回收
+ALTER TABLE harness_runs
+  ADD COLUMN runner_id VARCHAR(64) NOT NULL DEFAULT '' AFTER trace_id,
+  ADD COLUMN heartbeat_at DATETIME NULL AFTER runner_id;
 ```
+
+上线后第一次巡检会把历史遗留的僵尸行收尾（`status IN ('running','pending')` 且
+`COALESCE(heartbeat_at, created_at)` 早于阈值），`error` 写「执行体失联：心跳超时」。
+如果希望它们显示为「人工取消」而不是失败，先手工执行一次：
+`UPDATE harness_runs SET status='canceled', finished_at=NOW() WHERE status IN ('running','pending');`
 
 历史 `agent_tasks` 行 `trace_id` 为空是正常的：那些任务在 P4 之前执行，没有链路可查。
 
@@ -623,6 +664,11 @@ ALTER TABLE harness_runs
    （典型是 `finished_at` 的零值时间）都会让**整条** UPDATE 被拒。
 6. **评测分数相邻版本可比吗** → 比 `dataset_checksum` 与 `snapshot_version`，
    两者都相同才是同一套东西；只比分数会得出错误结论。
+7. **评测一直 running** → 看 `harness_runs.heartbeat_at` 是否还在动、`runner_id` 是哪台：
+   心跳停了超过 `HARNESS_STALE_SEC` 会被巡检自动收为 `failed`（`error` 写「执行体失联」）。
+   心跳还在动说明用例确实在跑，看 `harness.case` span 卡在哪一层。
+8. **一次评测花了多少** → `GET /api/v2/usage/summary?ref_kind=harness_run&ref_id=<id>`，
+   与 trace 的 `llm.chat` 条数、token 逐个对得上。
 
 ### 11.6 评测的链路与成本归属
 
@@ -631,8 +677,19 @@ ALTER TABLE harness_runs
   `model:` 目标是 `harness.run → harness.case → llm.chat` 三层。
 - **`harness.case` span 带判分结果**（`harness.case` / `harness.passed` / `harness.score`）：
   打开链路就能看出「慢的那一例是不是也挂了」，不必再翻报告页。
-- **成本归属**：`agent:` 目标的成本落在它自动创建的任务上，`usage_records.task_id` 可查；
-  `model:` 目标没有任务行，成本只进 `usage_records` 而不带 `task_id`（见 §13 第 18 条）。
+- **成本归属**：一次运行的**全部** LLM 成本都归到 `ref_kind=harness_run` + `ref_id=<runID>`：
+  被测 Agent 内部调用（`agent:` 目标）、模型直连调用（`model:` 目标）、
+  LLM Judge 判分调用三路共用同一个归属键。`agent:` 目标的成本**同时**带 `task_id`，
+  所以既能按任务查，也能按运行查。
+  查询：`GET /api/v2/usage/summary?ref_kind=harness_run&ref_id=14&group_by=kind`；
+  报告页的「成本」卡片用的就是它（`Eval.jsx`）。
+  实测一次 `agent:` 评测：6 次 `llm.chat` → 一条 ref 记录集，5814 in / 2855 out / 11524 微元。
+- **崩溃恢复**：执行期每 `HARNESS_HEARTBEAT_SEC` 续 `harness_runs.heartbeat_at`，
+  进程被强杀即停跳；巡检（启动即扫一次，之后每 `stale/2`）把超时行收为 `failed`，
+  `error` 写「执行体失联：心跳超时（进程可能被强制终止）」。
+  多实例安全：活着的实例心跳新鲜，不会被别的实例误收。
+  心跳是**独立 UPDATE**（`TouchRun`，条件带 `status='running'`），
+  不走 `SaveRun`——否则全量写会把并发的进度覆盖回旧值。
 - **踩过的坑（已修）**：`Run.FinishedAt` 是值类型 `time.Time`，未结束时是零值，
   直接写进 map 更新会序列化成 `'0000-00-00'`，被 MySQL `NO_ZERO_DATE` 拒掉（1292）。
   由于调用方用 `_ =` 吞了错误，表现是**状态永远 pending、进度条一动不动**。
@@ -721,15 +778,21 @@ ALTER TABLE harness_runs
 17. **`span.kind` 分类靠约定**：新埋点忘了打这个属性时按名称前缀兜底
    （`task.` / `llm.` / `mcp.` / `rag.` / `graphrag.`），前缀也不匹配就落到 `other`。
    面板分组会变差，但不会丢数据。
-18. **`model:` 目标的评测成本无归属键**：这类运行不创建任务行，
-   `usage_records.task_id` 为空，只能按时间窗 + 模型聚合，
-   拿不到「这一 run 花了多少」。要按运行归集，需要给 `usage_records`
-   加一个 `ref` 维度（如 `harness:<run_id>`）——属于 schema 变更，未做。
-19. **评测运行无崩溃恢复**：执行体在评测中途退出，`harness_runs` 会永久停在
-   `running` / `pending`，没有心跳式的接管。手工清理：
-   `UPDATE harness_runs SET status='canceled', finished_at=NOW() WHERE status IN ('running','pending')`。
+18. **`model:` 目标的评测成本归属（已解决）**：这类运行不创建任务行，
+   以前只能按时间窗 + 模型聚合。现在由 `usage_records.ref_kind/ref_id` 承载，
+   `harness_run:<run_id>` 覆盖被测对象与判分模型两路（§7「归属维度 ref」）。
+19. **评测运行的崩溃恢复（已解决）**：执行体中途退出曾让 `harness_runs` 永久停在
+   `running`，只能手工 UPDATE。现在执行期心跳 + 巡检回收（§11.6），
+   回收后状态为 `failed` 且 `error` 写明「执行体失联」。
+   ——注意回收是**不重跑**：用例结果已写入的保留，未写入的丢失，需要重跑就新建一次运行。
 20. **`llm.chat` span 与用量记录一一对应**：一次真实请求 = 一条 span = 一条用量记录
    （重试 / 降级各算一次），所以 trace 里的 `llm.chat` 条数应与
    `usage_records.calls` 相等。不相等就说明有调用绕过了 `Manager.callOnce`——
    新增调用通道必须经过它，否则既没链路也没账单（P4 首次实现就把 `chat()` 漏在外面，
    评测的模型直连调用在 trace 里完全不可见）。
+21. **`ref` 只沿同步调用链传递**：归属键挂在 context 上，队列异步取起的任务
+   （`agent:` 目标若走排队执行）拿不到它，那部分成本只有 `task_id` 没有 `ref`。
+   要让「一次评测」跨异步任务汇总，得把 ref 写进任务行（新增列），当前未做。
+22. **回收判定依赖心跳与时钟**：与任务租约同理，节点间时钟漂移超过
+   `HARNESS_STALE_SEC` 会误判失联（后果是运行被标记 failed，但用例结果已落库的仍在）。
+   阈值不要低于 3 个心跳周期；跨机房部署时统一放大。

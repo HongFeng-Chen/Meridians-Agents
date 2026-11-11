@@ -314,7 +314,8 @@ func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource
 			})
 		})
 
-		// GET /api/v2/usage/summary?group_by=agent|model|kind|day&since=RFC3339&until=RFC3339
+		// GET /api/v2/usage/summary?group_by=agent|model|kind|day|task|ref&since=RFC3339&until=RFC3339
+		// 单任务：task_id；单次评测运行：ref_kind=harness_run&ref_id=<runID>（或 group_by=ref 纵横对比）
 		r.GET("/usage/summary", func(ctx khttp.Context) error {
 			return withMiddleware(ctx, func(c context.Context) error {
 				q := ctx.Query()
@@ -322,8 +323,14 @@ func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource
 					AgentID:   strings.TrimSpace(q.Get("agent_id")),
 					SubjectID: strings.TrimSpace(q.Get("subject_id")),
 					TaskID:    strings.TrimSpace(q.Get("task_id")),
-					Kind:      usage.KindOf(q.Get("kind")),
+					RefKind:   strings.TrimSpace(q.Get("ref_kind")),
+					RefID:     strings.TrimSpace(q.Get("ref_id")),
 					GroupBy:   strings.TrimSpace(q.Get("group_by")),
+				}
+				// kind 只在显式指定时过滤：KindOf("") 会归一化成 llm，
+				// 直接赋值等于把 embedding / mcp 等非 llm 成本永久排除在汇总之外
+				if k := strings.TrimSpace(q.Get("kind")); k != "" {
+					f.Kind = usage.KindOf(k)
 				}
 				var err error
 				if f.Since, err = parseTime(q.Get("since")); err != nil {

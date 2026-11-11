@@ -326,6 +326,33 @@ func (r *HarnessRepo) DeleteRun(ctx context.Context, id uint64) error {
 	})
 }
 
+// TouchRun 续心跳。
+//
+// 条件里带 status='running'：终态行不再续跳，避免「运行已结束但心跳还在动」
+// 让它看起来像活着的。终态与心跳的并发竞争最多让这次续跳影响 0 行，无害。
+func (r *HarnessRepo) TouchRun(ctx context.Context, runID uint64, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&models.HarnessRunPO{}).
+		Where("id = ? AND status = ?", runID, harness.RunRunning).
+		Update("heartbeat_at", at).Error
+}
+
+// ReapRuns 回收僵尸运行：心跳（未开始时退化为创建时间）早于 before 的
+// pending/running 行收为 failed。
+//
+// 不标记为 canceled：canceled 表示「人主动停的」，这里是执行体失联，
+// error 里写清原因，报告页能直接看出是基础设施问题而不是用例失败。
+func (r *HarnessRepo) ReapRuns(ctx context.Context, before time.Time, reason string) (int64, error) {
+	res := r.db.WithContext(ctx).Model(&models.HarnessRunPO{}).
+		Where("status IN ?", []string{harness.RunPending, harness.RunRunning}).
+		Where("COALESCE(heartbeat_at, created_at) < ?", before).
+		Updates(map[string]any{
+			"status":      harness.RunFailed,
+			"error":       reason,
+			"finished_at": time.Now(),
+		})
+	return res.RowsAffected, res.Error
+}
+
 // —— 逐例结果 ——
 
 // CreateItem 写入单例结果
@@ -477,6 +504,10 @@ func runToPO(run *harness.Run) *models.HarnessRunPO {
 		DatasetChecksum: run.DatasetChecksum,
 		Model:           run.Model,
 		TraceID:         run.TraceID,
+		// 存活字段只在创建时写；之后由 TouchRun / ReapRuns 独立维护，
+		// SaveRun 不碰它们（否则进度推进会把心跳写回旧时间）
+		RunnerID:    run.RunnerID,
+		HeartbeatAt: nilIfZero(run.HeartbeatAt),
 	}
 }
 
@@ -503,6 +534,14 @@ func runToBiz(po *models.HarnessRunPO) *harness.Run {
 		DatasetChecksum: po.DatasetChecksum,
 		Model:           po.Model,
 		TraceID:         po.TraceID,
+		RunnerID:        po.RunnerID,
+
+		HeartbeatAt: func() time.Time {
+			if po.HeartbeatAt != nil {
+				return *po.HeartbeatAt
+			}
+			return time.Time{}
+		}(),
 
 		FinishedAt: func() time.Time {
 			if po.FinishedAt != nil {

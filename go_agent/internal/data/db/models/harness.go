@@ -79,6 +79,12 @@ type HarnessRunPO struct {
 
 	// FinishedAt 终态时间；*time.Time 让未结束的运行写 NULL（MySQL 拒绝零值 datetime）
 	FinishedAt *time.Time `gorm:"column:finished_at" json:"finished_at"`
+
+	// —— 存活（崩溃恢复）——
+	// RunnerID 执行实例；HeartbeatAt 心跳时间。执行体被强杀后心跳停止，
+	// 巡检据此把永久 running 的行收尾（*time.Time：未开始时 NULL 而非零值 datetime）。
+	RunnerID    string     `gorm:"column:runner_id;size:64;not null;default:''" json:"runner_id"`
+	HeartbeatAt *time.Time `gorm:"column:heartbeat_at" json:"heartbeat_at"`
 }
 
 // TableName 表名

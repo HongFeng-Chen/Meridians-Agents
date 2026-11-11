@@ -95,3 +95,27 @@ func TestChargeWithoutSink(t *testing.T) {
 		Usage{PromptTokens: 10, TotalTokens: 10}, time.Second, nil)
 	time.Sleep(50 * time.Millisecond)
 }
+
+// TestWithMetaMerges 归属元数据按字段合并，不是整体替换。
+//
+// 这是「一次评测的总成本」能不能算全的关键：评测把 harness_run 挂在 ctx 上，
+// 下层任务执行再 WithMeta 设置 TaskID / Purpose 时如果整体覆盖，ref 就丢了，
+// 于是 model: 目标与判分模型的成本都成了无主账。
+func TestWithMetaMerges(t *testing.T) {
+	ctx := WithMeta(context.Background(), CallMeta{RefKind: "harness_run", RefID: "12"})
+	ctx = WithMeta(ctx, CallMeta{TaskID: 900, AgentKey: "writer", Purpose: "agentfactory.react"})
+
+	got := MetaFrom(ctx)
+	if got.RefKind != "harness_run" || got.RefID != "12" {
+		t.Fatalf("上层归属被覆盖: %+v", got)
+	}
+	if got.TaskID != 900 || got.AgentKey != "writer" || got.Purpose != "agentfactory.react" {
+		t.Fatalf("下层元数据未生效: %+v", got)
+	}
+
+	// 子任务覆盖父任务的任务维度（零值表示不改，非零才覆盖）
+	child := WithMeta(ctx, CallMeta{TaskID: 901, Purpose: "agentfactory.sub"})
+	if c := MetaFrom(child); c.TaskID != 901 || c.RefID != "12" {
+		t.Fatalf("子任务应只覆盖任务维度: %+v", c)
+	}
+}

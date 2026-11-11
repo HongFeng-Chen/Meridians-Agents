@@ -28,8 +28,19 @@ type UseCase struct {
 
 	now clock
 
+	// —— 存活（崩溃恢复）——
+	// instance 本进程标识：写进 run.runner_id，事后能回答「这次是谁跑的」。
+	// heartbeatEvery 心跳间隔；staleAfter 判失联阈值（≥ 3 个心跳周期）。
+	instance       string
+	heartbeatEvery time.Duration
+	staleAfter     time.Duration
+
 	mu      sync.Mutex                    // 保护以下字段
 	cancels map[uint64]context.CancelFunc // runID → 取消函数
+
+	recoverOnce  sync.Once
+	recoveryStop chan struct{}
+	recoveryDone chan struct{}
 }
 
 // New 构造评测 Harness
@@ -41,6 +52,20 @@ func New(repo Repo, runner Runner, chat Chatter, scores ScoreRecorder) *UseCase 
 		scores:  scores,
 		now:     time.Now,
 		cancels: make(map[uint64]context.CancelFunc),
+
+		instance:       newInstanceKey(),
+		heartbeatEvery: 15 * time.Second,
+		staleAfter:     90 * time.Second,
+	}
+}
+
+// SetRecovery 覆盖心跳间隔与失联阈值（启动时从环境变量注入；非正值忽略）。
+func (u *UseCase) SetRecovery(staleAfter, every time.Duration) {
+	if staleAfter > 0 {
+		u.staleAfter = staleAfter
+	}
+	if every > 0 {
+		u.heartbeatEvery = every
 	}
 }
 
@@ -256,6 +281,8 @@ func (u *UseCase) StartRun(ctx context.Context, setID uint64, cfg RunConfig) (*R
 		DatasetVersion:  set.Version,
 		DatasetChecksum: set.Checksum,
 		Model:           info.Model,
+		RunnerID:        u.instance,
+		HeartbeatAt:     u.now(),
 	}
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -276,6 +303,10 @@ func (u *UseCase) StartRun(ctx context.Context, setID uint64, cfg RunConfig) (*R
 	u.mu.Lock()
 	u.cancels[run.ID] = cancel
 	u.mu.Unlock()
+
+	// 归属键在 ID 落库之后才能挂上：run 内部所有 LLM 调用（被测 Agent、
+	// model: 直连、LLM Judge）都从这里继承 ref，成本才能按 run 聚合。
+	runCtx = WithRunRef(runCtx, run.ID)
 
 	go func() {
 		defer span.End(nil)
@@ -349,7 +380,11 @@ func (u *UseCase) persistRun(ctx context.Context, what string, run *Run) {
 func (u *UseCase) executeRun(ctx context.Context, run Run, cases []Case) {
 	start := u.now()
 	run.Status = RunRunning
+	run.HeartbeatAt = u.now()
 	u.persistRun(ctx, "推进为 running", &run)
+	// 心跳：进程被强杀后停止，巡检据此判定失联（见 RecoverStaleRuns）
+	stopHeartbeat := u.startHeartbeat(ctx, run.ID)
+	defer stopHeartbeat()
 	_ = u.repo.DeleteItemsOfRun(ctx, run.ID)
 
 	perCase := time.Duration(run.Config.PerCaseTimeoutSec) * time.Second

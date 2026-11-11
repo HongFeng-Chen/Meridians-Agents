@@ -428,6 +428,8 @@ func (m *Manager) charge(ctx context.Context, provider, model string, usage Usag
 		UserID:           info.UserID,
 		AgentKey:         meta.AgentKey,
 		TaskID:           meta.TaskID,
+		RefKind:          meta.RefKind,
+		RefID:            meta.RefID,
 		Provider:         provider,
 		Model:            model,
 		Purpose:          meta.Purpose,

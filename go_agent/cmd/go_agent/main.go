@@ -12,6 +12,7 @@ import (
 
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/harness"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/egress"
@@ -51,7 +52,15 @@ func init() {
 //
 // 另外在 AfterStart 里自注册平台内置 MCP 服务（/mcp/platform）并同步工具：
 // 必须等 HTTP 端口起来后再连接（自调用），所以放后台协程 + 有限重试。
-func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, platformMCP *service.PlatformMCPService) *kratos.App {
+func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, harnessUC *harness.UseCase, platformMCP *service.PlatformMCPService) *kratos.App {
+	// 评测运行的存活参数：心跳间隔与失联阈值。阈值必须显著大于心跳间隔，
+	// 否则数据库抖动一次就把正常运行的评测判成失联。
+	if harnessUC != nil {
+		harnessUC.SetRecovery(
+			time.Duration(envInt("HARNESS_STALE_SEC", 90))*time.Second,
+			time.Duration(envInt("HARNESS_HEARTBEAT_SEC", 15))*time.Second,
+		)
+	}
 	return kratos.New(
 		kratos.ID(id),
 		kratos.Name(Name),
@@ -63,7 +72,14 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 			hs,
 		),
 		kratos.BeforeStart(func(ctx context.Context) error {
-			return afUC.StartWorkers()
+			if err := afUC.StartWorkers(); err != nil {
+				return err
+			}
+			// 僵尸巡检：启动即扫一次，回收上一个进程留下的 running 行
+			if harnessUC != nil {
+				harnessUC.StartRecovery()
+			}
+			return nil
 		}),
 		kratos.AfterStart(func(ctx context.Context) error {
 			if platformMCP == nil {
@@ -96,6 +112,10 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 		kratos.AfterStop(func(ctx context.Context) error {
 			// 兜底硬停：Drain 已完成时立即返回；超时场景负责取消并回收 worker
 			afUC.Stop()
+			// 巡检协程先停，避免退出过程中还在写库
+			if harnessUC != nil {
+				harnessUC.StopRecovery()
+			}
 			// 审计是异步批量写的，把缓冲区里最近 2s 的事件落库再退出
 			if uc := audit.Default(); uc != nil {
 				uc.Close()

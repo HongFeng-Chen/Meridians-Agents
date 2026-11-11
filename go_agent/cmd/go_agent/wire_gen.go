@@ -296,7 +296,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	auditUseCase := audit.New(auditRepo)
 	usageUseCase := usage.New(usageRepo)
 	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, policyService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
-	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, platformMCPService)
+	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService)
 	return app, func() {
 		cleanup3()
 		cleanup2()

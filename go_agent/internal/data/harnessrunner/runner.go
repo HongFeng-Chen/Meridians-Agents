@@ -44,8 +44,12 @@ func (r *Runner) Run(ctx context.Context, target, input string) (string, error) 
 			return "", harness.ErrNoRunner
 		}
 		// 打上用途标记：trace 里能直接区分「评测直连模型」与「业务任务里的 LLM 调用」，
-		// 否则一排 llm.chat 看不出是谁发起的
-		ctx = llm.WithMeta(ctx, llm.CallMeta{Purpose: "harness.model"})
+		// 否则一排 llm.chat 看不出是谁发起的。
+		// 归属键（harness_run:<id>）已由 harness.WithRunRef 写进调用元数据，
+		// 这里只补用途，不能再整体覆盖 CallMeta。
+		meta := llm.MetaFrom(ctx)
+		meta.Purpose = "harness.model"
+		ctx = llm.WithMeta(ctx, meta)
 		return r.llm.ChatTemp(ctx, "", input, 0.3)
 	default:
 		return "", fmt.Errorf("%w: %s", harness.ErrInvalidTarget, target)

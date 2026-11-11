@@ -29,6 +29,18 @@ const (
 	KindWorker    = "worker"
 )
 
+// Ref 归属对象类型（usage_records.ref_kind）。
+//
+// task_id 是任务维度的固定列（与 trace 的 task.id 同键，已有查询依赖它）；
+// ref 覆盖「没有任务行」的场景——评测 model: 目标、单轮直连调试等，
+// 这类成本如果没有归属键，就只是一堆无主的 tokens。
+const (
+	// RefHarnessRun 评测运行：一次 run 的全部 LLM 调用（被测对象 + 判分模型）
+	RefHarnessRun = "harness_run"
+	// RefConv 会话：跨任务的多轮对话
+	RefConv = "conv"
+)
+
 var ErrInvalid = errors.New("用量记录参数不合法")
 
 // Record 一条用量记录（追加式）。
@@ -40,6 +52,12 @@ type Record struct {
 
 	AgentID string `json:"agent_id"`
 	TaskID  string `json:"task_id"`
+
+	// RefKind / RefID 通用归属：回答「这笔成本属于哪一次业务动作」。
+	// 与 TaskID 并存而不是替代：任务链路两者都写（task_id 供详情页，
+	// ref 供「一次评测 / 一个会话」这类跨任务聚合）。
+	RefKind string `json:"ref_kind"`
+	RefID   string `json:"ref_id"`
 
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -66,10 +84,13 @@ type Filter struct {
 	SubjectID string
 	// TaskID 单任务成本：与 trace 用同一个 task_id 串联（任务详情页的数据源）
 	TaskID string
-	Kind   string
-	Since  time.Time
-	Until  time.Time
-	// GroupBy tenant | agent | subject | task | model | kind | day
+	// RefKind / RefID 通用归属（例如 harness_run + 运行 ID）
+	RefKind string
+	RefID   string
+	Kind    string
+	Since   time.Time
+	Until   time.Time
+	// GroupBy tenant | agent | subject | task | ref | model | kind | day
 	GroupBy string
 }
 
@@ -155,7 +176,7 @@ func (u *UseCase) Summary(ctx context.Context, p *principal.Principal, f Filter)
 		return nil, fmt.Errorf("%w: 不能跨租户查看成本", ErrInvalid)
 	}
 	switch f.GroupBy {
-	case "", "agent", "model", "kind", "day", "tenant", "subject", "task":
+	case "", "agent", "model", "kind", "day", "tenant", "subject", "task", "ref":
 	default:
 		return nil, fmt.Errorf("%w: 未知分组 %q", ErrInvalid, f.GroupBy)
 	}

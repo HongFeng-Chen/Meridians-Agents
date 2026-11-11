@@ -388,3 +388,40 @@ func (f *fakeRepo) DeleteItemsOfRun(ctx context.Context, runID uint64) error {
 	delete(f.items, runID)
 	return nil
 }
+
+func (f *fakeRepo) TouchRun(ctx context.Context, runID uint64, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.runs[runID]
+	if !ok {
+		return ErrRunNotFound
+	}
+	// 与 MySQL 实现同语义：只有 running 的行才续跳
+	if r.Status == RunRunning {
+		r.HeartbeatAt = at
+	}
+	return nil
+}
+
+func (f *fakeRepo) ReapRuns(ctx context.Context, before time.Time, reason string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for _, r := range f.runs {
+		if r.Status != RunPending && r.Status != RunRunning {
+			continue
+		}
+		beat := r.HeartbeatAt
+		if beat.IsZero() {
+			beat = r.CreatedAt
+		}
+		if !beat.Before(before) {
+			continue
+		}
+		r.Status = RunFailed
+		r.Error = reason
+		r.FinishedAt = time.Now()
+		n++
+	}
+	return n, nil
+}

@@ -39,6 +39,8 @@ func (r *UsageRepo) Add(ctx context.Context, rec *usage.Record) error {
 		SubjectID:    rec.SubjectID,
 		AgentID:      rec.AgentID,
 		TaskID:       rec.TaskID,
+		RefKind:      rec.RefKind,
+		RefID:        rec.RefID,
 		Provider:     rec.Provider,
 		Model:        rec.Model,
 		Kind:         rec.Kind,
@@ -82,6 +84,13 @@ func (r *UsageRepo) Summary(ctx context.Context, f usage.Filter) ([]usage.Bucket
 	if f.TaskID != "" {
 		q = q.Where("task_id = ?", f.TaskID)
 	}
+	// ref 是二元组：只给 ref_id 会让不同来源的同号 ID 撞在一起
+	if f.RefKind != "" {
+		q = q.Where("ref_kind = ?", f.RefKind)
+	}
+	if f.RefID != "" {
+		q = q.Where("ref_id = ?", f.RefID)
+	}
 	if f.Kind != "" {
 		q = q.Where("kind = ?", f.Kind)
 	}
@@ -105,7 +114,9 @@ var groupExpr = map[string]string{
 	"subject": "subject_id",
 	"agent":   "agent_id",
 	"task":    "task_id",
-	"model":   "model",
-	"kind":    "kind",
-	"day":     "DATE_FORMAT(created_at, '%Y-%m-%d')",
+	// 空 ref 归到空串（而不是难看的 ':'），没有归属的成本自成一组
+	"ref":   "CASE WHEN ref_kind = '' THEN '' ELSE CONCAT(ref_kind, ':', ref_id) END",
+	"model": "model",
+	"kind":  "kind",
+	"day":   "DATE_FORMAT(created_at, '%Y-%m-%d')",
 }

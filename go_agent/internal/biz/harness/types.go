@@ -140,6 +140,12 @@ type Run struct {
 	Model string `json:"model"`
 	// TraceID 本次评测运行的链路（harness.run 根 span）
 	TraceID string `json:"trace_id,omitempty"`
+
+	// —— 存活（崩溃恢复）——
+	// RunnerID 执行本运行的进程实例；HeartbeatAt 最近一次心跳。
+	// 执行体被强杀后心跳停止，行会永远停在 running —— 靠这两个字段判定并回收。
+	RunnerID    string    `json:"runner_id,omitempty"`
+	HeartbeatAt time.Time `json:"heartbeat_at,omitempty"`
 }
 
 // TargetInfo 被测对象的版本信息：由 Runner 解析（它是唯一知道 target 语义的一层）。

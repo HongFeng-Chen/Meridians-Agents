@@ -189,11 +189,35 @@ type CallMeta struct {
 	TaskID   uint64 // 关联任务（agentfactory）
 	AgentKey string // 关联 Agent
 	Purpose  string // 调用用途，如 agentfactory.react / agentfactory.factory / llm.test
+	// RefKind / RefID 通用归属：没有任务行的调用（评测 model: 目标、单轮直连）
+	// 靠它把成本归到「哪一次业务动作」上，取值与 usage_records.ref_* 同构。
+	RefKind string
+	RefID   string
 }
 
-// WithMeta 把调用元数据放进 context（不可变覆盖，子任务各自覆盖自己的）
+// WithMeta 把调用元数据放进 context。
+//
+// 按字段合并而不是整体替换：上游挂在 context 上的归属（例如评测运行把
+// harness_run:<id> 挂上去）不能被下游的任务执行覆盖掉——一旦覆盖，
+// 一次评测的总成本就少了被测 Agent 那部分。零值字段表示「不改这一项」。
 func WithMeta(ctx context.Context, meta CallMeta) context.Context {
-	return context.WithValue(ctx, ctxMetaKey{}, meta)
+	cur := MetaFrom(ctx)
+	if meta.TaskID != 0 {
+		cur.TaskID = meta.TaskID
+	}
+	if meta.AgentKey != "" {
+		cur.AgentKey = meta.AgentKey
+	}
+	if meta.Purpose != "" {
+		cur.Purpose = meta.Purpose
+	}
+	if meta.RefKind != "" {
+		cur.RefKind = meta.RefKind
+	}
+	if meta.RefID != "" {
+		cur.RefID = meta.RefID
+	}
+	return context.WithValue(ctx, ctxMetaKey{}, cur)
 }
 
 // MetaFrom 取调用元数据（未设置返回零值）

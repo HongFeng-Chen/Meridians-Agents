@@ -14,6 +14,11 @@ type UsageRecordPO struct {
 	AgentID   string `gorm:"column:agent_id;size:64;not null;default:'';index:idx_usage_agent" json:"agent_id"`
 	TaskID    string `gorm:"column:task_id;size:64;not null;default:'';index:idx_usage_task" json:"task_id"`
 
+	// RefKind / RefID 通用归属（评测运行 / 会话等没有任务行的场景）。
+	// 复合索引按「先类型后标识」：查 ref 一定是确定类型下的某个 ID。
+	RefKind string `gorm:"column:ref_kind;size:32;not null;default:'';index:idx_usage_ref,priority:1" json:"ref_kind"`
+	RefID   string `gorm:"column:ref_id;size:64;not null;default:'';index:idx_usage_ref,priority:2" json:"ref_id"`
+
 	Provider string `gorm:"column:provider;size:64;not null;default:''" json:"provider"`
 	Model    string `gorm:"column:model;size:128;not null;default:'';index:idx_usage_model" json:"model"`
 	Kind     string `gorm:"column:kind;size:32;not null;default:'llm';index:idx_usage_kind" json:"kind"`
