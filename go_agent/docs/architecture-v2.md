@@ -171,6 +171,17 @@ IDENTITY_JWKS_AUDIENCE=meridians
 `PolicyService`（含 `/api/auth/policies`、`/api/auth/bindings` 六个端点）、
 前端「授权策略」页、`casbin/*` 三个依赖、`casbin_rule` 表。
 
+已有部署下线这张表（先备份，确认没有外部系统还在读）：
+
+```bash
+mysqldump -u root -p go_agent casbin_rule > casbin_rule.bak.sql
+mysql -u root -p go_agent -e "DROP TABLE IF EXISTS casbin_rule;"
+```
+
+表里的 p 规则是内置角色矩阵的种子（删了也能从代码重建），真正会丢的只有
+运维手工加的「额外授予」——删除前先 `SELECT * FROM casbin_rule WHERE ptype='p'
+AND p_v0 NOT LIKE 'role:%';` 看一眼，需要保留的改配成资源授权。
+
 需要「给某个具体用户额外放权」时，正确做法是把资源授权给它
 （`POST /api/v2/resources/grants`），而不是再造一张全局策略表。
 
