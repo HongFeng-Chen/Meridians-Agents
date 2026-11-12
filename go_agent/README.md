@@ -168,6 +168,22 @@ Milvus 分块主键是 autoID，重新入库只会新增行。旧实现直接 `I
 - 多数据源并存（OpenAI 兼容协议），按场景路由，失败自动切换
 - 调用历史与 token 用量统计：按模型聚合、任务关联、时间范围筛选
 
+### 媒体生成（文生图 / 图生图 / 视频生成）
+
+- 统一接口在 `biz/llm`（`ports_media.go` + `media.go` 的 `MediaManager`），
+  厂商适配与记录仓储在 `internal/data/image_generations` 与 `internal/data/video_generations`：
+  - 图片：OpenAI 兼容 `POST {base}/images/generations`（OpenAI / SiliconFlow / Ark 通用），
+    图生图 openai kind 走 multipart `/images/edits`、其余 kind 走请求里的 image 参考字段
+  - 视频：异步任务协议适配（SiliconFlow `/video/submit`+`/video/status`、火山 Ark
+    `/content/generation/tasks`、OpenAI `/videos`），提交后由后台轮询器（5s）推进到终态
+  - 厂商产物（b64 / 临时 URL）一律转存本地 `data/uploads/gen/`，记录存 `/api/files/` 稳定地址
+- 数据源配置：`llm_providers.image_models` / `video_models` 列存模型名清单（JSON），
+  空表示该数据源不参与媒体生成路由；前端「媒体生成」页据此渲染模型下拉
+- 记录表 `image_generations`（同步终态）/ `video_generations`（queued→running→终态），
+  归属 `tenant_id`/`user_id`，查询按身份收窄（管理员全平台）
+- 接口：`POST /api/llm/media/images`（同步）、`POST /api/llm/media/videos`（提交）、
+  `GET /api/llm/media/videos/{id}`（查询+惰性轮询）、`GET /api/llm/media/records?kind=image|video`
+
 ### 会话与辩论
 
 - 多轮对话：记忆 / 文档 / 图谱 三路上下文召回 + Agent / MCP 工具委派，最多 6 轮自主编排，每轮链路 JSON 落库
@@ -794,7 +810,7 @@ curl -s -H 'Authorization: Bearer ops-token'   'http://localhost:8000/api/admin/
 | `/api/ingest` `/api/query` `/api/graph/**` | RAG 入库 / 混合检索问答 / GraphRAG 构建与问答 |
 | `/api/prompts/**` | 提示词模板、版本发布、激活回滚、渲染预览 |
 | `/api/memory/**` | 短期会话、长期记忆、向量 / 图谱召回、记忆问答 |
-| `/api/llm/**` `/api/llm/calls/**` | 数据源 CRUD、默认切换、连通性测试、调用历史 |
+| `/api/llm/**` `/api/llm/calls/**` | 数据源 CRUD、默认切换、连通性测试、调用历史、媒体生成（images/videos/records） |
 | `/api/skills/**` `/api/skillhub/**` | 技能安装启停、文件、市场搜索与下载 |
 | `/api/mcp/**` | MCP 服务配置、探活、工具同步、语义召回、工具调用 |
 | `/api/aiplatform/**` | 外部 AI 平台（千问 / 百炼）：平台 CRUD、连通性测试、目录搜索、MCP 一键接入 |

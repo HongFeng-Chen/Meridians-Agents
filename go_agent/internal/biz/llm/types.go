@@ -48,24 +48,28 @@ var (
 // Provider LLM 数据源（DO）。APIKey 为明文，仅内部使用；
 // 对外输出必须经 Masked() 脱敏。
 type Provider struct {
-	ID           uint64    `json:"id"`
-	Name         string    `json:"name"`
-	Kind         string    `json:"kind"`
-	BaseURL      string    `json:"base_url"`
-	APIKey       string    `json:"-"`
-	HasKey       bool      `json:"has_key"`
-	Models       []string  `json:"models"`
-	DefaultModel string    `json:"default_model"`
-	Temperature  float64   `json:"temperature"`
-	MaxTokens    int       `json:"max_tokens"`
-	TimeoutSec   int       `json:"timeout_seconds"`
-	Enabled      bool      `json:"enabled"`
-	IsDefault    bool      `json:"is_default"`
-	Priority     int       `json:"priority"`
-	Scenes       []string  `json:"scenes"`
-	Description  string    `json:"description"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uint64   `json:"id"`
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`
+	BaseURL      string   `json:"base_url"`
+	APIKey       string   `json:"-"`
+	HasKey       bool     `json:"has_key"`
+	Models       []string `json:"models"`
+	DefaultModel string   `json:"default_model"`
+	// ImageModels / VideoModels 该数据源支持的图像/视频生成模型名（媒体生成用，
+	// 与对话模型 models 互相独立；空表示该数据源不参与媒体生成路由）。
+	ImageModels []string  `json:"image_models"`
+	VideoModels []string  `json:"video_models"`
+	Temperature float64   `json:"temperature"`
+	MaxTokens   int       `json:"max_tokens"`
+	TimeoutSec  int       `json:"timeout_seconds"`
+	Enabled     bool      `json:"enabled"`
+	IsDefault   bool      `json:"is_default"`
+	Priority    int       `json:"priority"`
+	Scenes      []string  `json:"scenes"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Masked 返回脱敏副本（供管理接口输出）
@@ -119,6 +123,8 @@ type CreateProviderInput struct {
 	APIKey       string   `json:"api_key"`
 	Models       []string `json:"models"`
 	DefaultModel string   `json:"default_model"`
+	ImageModels  []string `json:"image_models"`
+	VideoModels  []string `json:"video_models"`
 	Temperature  float64  `json:"temperature"`
 	MaxTokens    int      `json:"max_tokens"`
 	TimeoutSec   int      `json:"timeout_seconds"`
@@ -136,6 +142,8 @@ type UpdateProviderInput struct {
 	APIKey       *string   `json:"api_key"`
 	Models       *[]string `json:"models"`
 	DefaultModel *string   `json:"default_model"`
+	ImageModels  *[]string `json:"image_models"`
+	VideoModels  *[]string `json:"video_models"`
 	Temperature  *float64  `json:"temperature"`
 	MaxTokens    *int      `json:"max_tokens"`
 	TimeoutSec   *int      `json:"timeout_seconds"`

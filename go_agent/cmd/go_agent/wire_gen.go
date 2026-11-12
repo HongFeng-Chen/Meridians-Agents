@@ -31,12 +31,14 @@ import (
 	"go_agent/internal/data/db"
 	repo2 "go_agent/internal/data/db/repo"
 	"go_agent/internal/data/harnessrunner"
+	"go_agent/internal/data/image_generations"
 	"go_agent/internal/data/milvusdb"
 	"go_agent/internal/data/milvusdb/repo"
 	"go_agent/internal/data/redis"
 	"go_agent/internal/data/third_service/aiplatform"
 	"go_agent/internal/data/third_service/mcpclient"
 	"go_agent/internal/data/third_service/skillhub"
+	"go_agent/internal/data/video_generations"
 	"go_agent/internal/server"
 	"go_agent/internal/service"
 	"log/slog"
@@ -156,7 +158,24 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 		return nil, nil, err
 	}
 	memoryService := service.NewMemoryService(memoryUseCase, confData)
-	llmService := service.NewLLMService(manager)
+	imageGenRepo, err := image_generations.NewImageRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	videoGenRepo, err := video_generations.NewVideoRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	imageClient := image_generations.NewImageClient()
+	videoClient := video_generations.NewVideoClient()
+	mediaManager := llm.NewMediaManager(manager, imageGenRepo, videoGenRepo, imageClient, videoClient)
+	llmService := service.NewLLMService(manager, mediaManager)
 	skillRepo, err := repo2.NewSkillRepo(confData, dbData)
 	if err != nil {
 		cleanup3()
@@ -288,7 +307,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	auditUseCase := audit.New(auditRepo)
 	usageUseCase := usage.New(usageRepo)
 	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
-	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService)
+	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService, mediaManager)
 	return app, func() {
 		cleanup3()
 		cleanup2()

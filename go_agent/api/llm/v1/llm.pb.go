@@ -50,8 +50,12 @@ type Provider struct {
 	// 数值越大优先级越高
 	Priority int32 `protobuf:"varint,13,opt,name=priority,proto3" json:"priority,omitempty"`
 	// general | rag | graph | extract | memory，空表示通用
-	Scenes        []string `protobuf:"bytes,14,rep,name=scenes,proto3" json:"scenes,omitempty"`
-	Description   string   `protobuf:"bytes,15,opt,name=description,proto3" json:"description,omitempty"`
+	Scenes      []string `protobuf:"bytes,14,rep,name=scenes,proto3" json:"scenes,omitempty"`
+	Description string   `protobuf:"bytes,15,opt,name=description,proto3" json:"description,omitempty"`
+	// 该数据源支持的图像生成模型（文生图 / 图生图；空 = 不参与图像生成路由）
+	ImageModels []string `protobuf:"bytes,18,rep,name=image_models,proto3" json:"image_models,omitempty"`
+	// 该数据源支持的视频生成模型（空 = 不参与视频生成路由）
+	VideoModels   []string `protobuf:"bytes,19,rep,name=video_models,proto3" json:"video_models,omitempty"`
 	CreatedAt     string   `protobuf:"bytes,16,opt,name=created_at,proto3" json:"created_at,omitempty"`
 	UpdatedAt     string   `protobuf:"bytes,17,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -191,6 +195,20 @@ func (x *Provider) GetDescription() string {
 		return x.Description
 	}
 	return ""
+}
+
+func (x *Provider) GetImageModels() []string {
+	if x != nil {
+		return x.ImageModels
+	}
+	return nil
+}
+
+func (x *Provider) GetVideoModels() []string {
+	if x != nil {
+		return x.VideoModels
+	}
+	return nil
 }
 
 func (x *Provider) GetCreatedAt() string {
@@ -749,6 +767,8 @@ type CreateProviderRequest struct {
 	Priority      int32    `protobuf:"varint,12,opt,name=priority,proto3" json:"priority,omitempty"`
 	Scenes        []string `protobuf:"bytes,13,rep,name=scenes,proto3" json:"scenes,omitempty"`
 	Description   string   `protobuf:"bytes,14,opt,name=description,proto3" json:"description,omitempty"`
+	ImageModels   []string `protobuf:"bytes,15,rep,name=image_models,proto3" json:"image_models,omitempty"`
+	VideoModels   []string `protobuf:"bytes,16,rep,name=video_models,proto3" json:"video_models,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -881,6 +901,20 @@ func (x *CreateProviderRequest) GetDescription() string {
 	return ""
 }
 
+func (x *CreateProviderRequest) GetImageModels() []string {
+	if x != nil {
+		return x.ImageModels
+	}
+	return nil
+}
+
+func (x *CreateProviderRequest) GetVideoModels() []string {
+	if x != nil {
+		return x.VideoModels
+	}
+	return nil
+}
+
 // UpdateProviderRequest 指针语义：字段缺省表示不修改。
 type UpdateProviderRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -898,6 +932,8 @@ type UpdateProviderRequest struct {
 	Priority       *int32                 `protobuf:"varint,12,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
 	Scenes         []string               `protobuf:"bytes,13,rep,name=scenes,proto3" json:"scenes,omitempty"`
 	Description    *string                `protobuf:"bytes,14,opt,name=description,proto3,oneof" json:"description,omitempty"`
+	ImageModels    []string               `protobuf:"bytes,15,rep,name=image_models,proto3" json:"image_models,omitempty"`
+	VideoModels    []string               `protobuf:"bytes,16,rep,name=video_models,proto3" json:"video_models,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1028,6 +1064,20 @@ func (x *UpdateProviderRequest) GetDescription() string {
 		return *x.Description
 	}
 	return ""
+}
+
+func (x *UpdateProviderRequest) GetImageModels() []string {
+	if x != nil {
+		return x.ImageModels
+	}
+	return nil
+}
+
+func (x *UpdateProviderRequest) GetVideoModels() []string {
+	if x != nil {
+		return x.VideoModels
+	}
+	return nil
 }
 
 type DeleteProviderRequest struct {
@@ -2073,11 +2123,833 @@ func (x *BreakdownReply) GetRows() []*BreakdownRow {
 	return nil
 }
 
+// GenerateImagesRequest 图片生成请求
+type GenerateImagesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 指定数据源名（空 = 自动路由到第一个配置了图像模型的启用数据源）
+	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	// 指定模型名（空 = 数据源 image_models 首个）
+	Model string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	// text2img（默认）| img2img
+	Mode string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	// 生成提示词；img2img 时表示「改成什么样」
+	Prompt string `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// img2img 参考图（https URL 或 data URI）
+	Images []string `protobuf:"bytes,5,rep,name=images,proto3" json:"images,omitempty"`
+	// 分辨率（如 1024x1024；空 = 厂商默认）
+	Size string `protobuf:"bytes,6,opt,name=size,proto3" json:"size,omitempty"`
+	// 生成张数（1-4，默认 1）
+	Count int32 `protobuf:"varint,7,opt,name=count,proto3" json:"count,omitempty"`
+	// 随机种子（不传 = 不指定）
+	Seed          *int64 `protobuf:"varint,8,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateImagesRequest) Reset() {
+	*x = GenerateImagesRequest{}
+	mi := &file_llm_v1_llm_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateImagesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateImagesRequest) ProtoMessage() {}
+
+func (x *GenerateImagesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateImagesRequest.ProtoReflect.Descriptor instead.
+func (*GenerateImagesRequest) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *GenerateImagesRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *GenerateImagesRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *GenerateImagesRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *GenerateImagesRequest) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *GenerateImagesRequest) GetImages() []string {
+	if x != nil {
+		return x.Images
+	}
+	return nil
+}
+
+func (x *GenerateImagesRequest) GetSize() string {
+	if x != nil {
+		return x.Size
+	}
+	return ""
+}
+
+func (x *GenerateImagesRequest) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *GenerateImagesRequest) GetSeed() int64 {
+	if x != nil && x.Seed != nil {
+		return *x.Seed
+	}
+	return 0
+}
+
+// ImageGenRecord 一次图片生成的记录（含产物地址）
+type ImageGenRecord struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Provider string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model    string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	Mode     string                 `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	Prompt   string                 `protobuf:"bytes,5,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Size     string                 `protobuf:"bytes,6,opt,name=size,proto3" json:"size,omitempty"`
+	Count    int32                  `protobuf:"varint,7,opt,name=count,proto3" json:"count,omitempty"`
+	// img2img 参考图（data URI 已脱敏）
+	Inputs []string `protobuf:"bytes,8,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	// 生成产物（本地 /api/files/ 稳定地址）
+	Outputs       []string `protobuf:"bytes,9,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	Ok            bool     `protobuf:"varint,10,opt,name=ok,proto3" json:"ok,omitempty"`
+	Error         string   `protobuf:"bytes,11,opt,name=error,proto3" json:"error,omitempty"`
+	DurationMs    int64    `protobuf:"varint,12,opt,name=duration_ms,proto3" json:"duration_ms,omitempty"`
+	CreatedAt     string   `protobuf:"bytes,13,opt,name=created_at,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ImageGenRecord) Reset() {
+	*x = ImageGenRecord{}
+	mi := &file_llm_v1_llm_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ImageGenRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ImageGenRecord) ProtoMessage() {}
+
+func (x *ImageGenRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ImageGenRecord.ProtoReflect.Descriptor instead.
+func (*ImageGenRecord) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ImageGenRecord) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *ImageGenRecord) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetSize() string {
+	if x != nil {
+		return x.Size
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *ImageGenRecord) GetInputs() []string {
+	if x != nil {
+		return x.Inputs
+	}
+	return nil
+}
+
+func (x *ImageGenRecord) GetOutputs() []string {
+	if x != nil {
+		return x.Outputs
+	}
+	return nil
+}
+
+func (x *ImageGenRecord) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *ImageGenRecord) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ImageGenRecord) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *ImageGenRecord) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+type GenerateImagesReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *ImageGenRecord        `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateImagesReply) Reset() {
+	*x = GenerateImagesReply{}
+	mi := &file_llm_v1_llm_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateImagesReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateImagesReply) ProtoMessage() {}
+
+func (x *GenerateImagesReply) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateImagesReply.ProtoReflect.Descriptor instead.
+func (*GenerateImagesReply) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *GenerateImagesReply) GetRecord() *ImageGenRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+// SubmitVideoRequest 视频生成提交（异步任务）
+type SubmitVideoRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Provider string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model    string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	Prompt   string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// 首帧参考图（图生视频；空 = 纯文生视频）
+	Image           string `protobuf:"bytes,4,opt,name=image,proto3" json:"image,omitempty"`
+	Size            string `protobuf:"bytes,5,opt,name=size,proto3" json:"size,omitempty"`
+	DurationSeconds int32  `protobuf:"varint,6,opt,name=duration_seconds,proto3" json:"duration_seconds,omitempty"`
+	Seed            *int64 `protobuf:"varint,7,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SubmitVideoRequest) Reset() {
+	*x = SubmitVideoRequest{}
+	mi := &file_llm_v1_llm_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitVideoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitVideoRequest) ProtoMessage() {}
+
+func (x *SubmitVideoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitVideoRequest.ProtoReflect.Descriptor instead.
+func (*SubmitVideoRequest) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *SubmitVideoRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *SubmitVideoRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *SubmitVideoRequest) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *SubmitVideoRequest) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *SubmitVideoRequest) GetSize() string {
+	if x != nil {
+		return x.Size
+	}
+	return ""
+}
+
+func (x *SubmitVideoRequest) GetDurationSeconds() int32 {
+	if x != nil {
+		return x.DurationSeconds
+	}
+	return 0
+}
+
+func (x *SubmitVideoRequest) GetSeed() int64 {
+	if x != nil && x.Seed != nil {
+		return *x.Seed
+	}
+	return 0
+}
+
+// VideoGenRecord 视频生成任务记录
+type VideoGenRecord struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Provider        string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model           string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	Prompt          string                 `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Size            string                 `protobuf:"bytes,5,opt,name=size,proto3" json:"size,omitempty"`
+	DurationSeconds int32                  `protobuf:"varint,6,opt,name=duration_seconds,proto3" json:"duration_seconds,omitempty"`
+	Inputs          []string               `protobuf:"bytes,7,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	// queued | running | succeeded | failed
+	Status        string `protobuf:"bytes,8,opt,name=status,proto3" json:"status,omitempty"`
+	Output        string `protobuf:"bytes,9,opt,name=output,proto3" json:"output,omitempty"`
+	Error         string `protobuf:"bytes,10,opt,name=error,proto3" json:"error,omitempty"`
+	DurationMs    int64  `protobuf:"varint,11,opt,name=duration_ms,proto3" json:"duration_ms,omitempty"`
+	SubmittedAt   string `protobuf:"bytes,12,opt,name=submitted_at,proto3" json:"submitted_at,omitempty"`
+	FinishedAt    string `protobuf:"bytes,13,opt,name=finished_at,proto3" json:"finished_at,omitempty"`
+	CreatedAt     string `protobuf:"bytes,14,opt,name=created_at,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VideoGenRecord) Reset() {
+	*x = VideoGenRecord{}
+	mi := &file_llm_v1_llm_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VideoGenRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VideoGenRecord) ProtoMessage() {}
+
+func (x *VideoGenRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VideoGenRecord.ProtoReflect.Descriptor instead.
+func (*VideoGenRecord) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *VideoGenRecord) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *VideoGenRecord) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetSize() string {
+	if x != nil {
+		return x.Size
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetDurationSeconds() int32 {
+	if x != nil {
+		return x.DurationSeconds
+	}
+	return 0
+}
+
+func (x *VideoGenRecord) GetInputs() []string {
+	if x != nil {
+		return x.Inputs
+	}
+	return nil
+}
+
+func (x *VideoGenRecord) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetOutput() string {
+	if x != nil {
+		return x.Output
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetDurationMs() int64 {
+	if x != nil {
+		return x.DurationMs
+	}
+	return 0
+}
+
+func (x *VideoGenRecord) GetSubmittedAt() string {
+	if x != nil {
+		return x.SubmittedAt
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetFinishedAt() string {
+	if x != nil {
+		return x.FinishedAt
+	}
+	return ""
+}
+
+func (x *VideoGenRecord) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+type SubmitVideoReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *VideoGenRecord        `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitVideoReply) Reset() {
+	*x = SubmitVideoReply{}
+	mi := &file_llm_v1_llm_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitVideoReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitVideoReply) ProtoMessage() {}
+
+func (x *SubmitVideoReply) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitVideoReply.ProtoReflect.Descriptor instead.
+func (*SubmitVideoReply) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *SubmitVideoReply) GetRecord() *VideoGenRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+type GetVideoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVideoRequest) Reset() {
+	*x = GetVideoRequest{}
+	mi := &file_llm_v1_llm_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVideoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVideoRequest) ProtoMessage() {}
+
+func (x *GetVideoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVideoRequest.ProtoReflect.Descriptor instead.
+func (*GetVideoRequest) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *GetVideoRequest) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type GetVideoReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *VideoGenRecord        `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetVideoReply) Reset() {
+	*x = GetVideoReply{}
+	mi := &file_llm_v1_llm_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetVideoReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetVideoReply) ProtoMessage() {}
+
+func (x *GetVideoReply) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetVideoReply.ProtoReflect.Descriptor instead.
+func (*GetVideoReply) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetVideoReply) GetRecord() *VideoGenRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+// ListMediaRecordsRequest 生成历史查询（服务端按登录身份收窄：
+// 普通用户只看本租户自己的记录，管理员可看全平台）
+type ListMediaRecordsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// image | video
+	Kind     string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Provider string `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model    string `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	// ok / failed / 空（不过滤）
+	Result        string `protobuf:"bytes,4,opt,name=result,proto3" json:"result,omitempty"`
+	Limit         int32  `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	Offset        int32  `protobuf:"varint,6,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMediaRecordsRequest) Reset() {
+	*x = ListMediaRecordsRequest{}
+	mi := &file_llm_v1_llm_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMediaRecordsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMediaRecordsRequest) ProtoMessage() {}
+
+func (x *ListMediaRecordsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMediaRecordsRequest.ProtoReflect.Descriptor instead.
+func (*ListMediaRecordsRequest) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ListMediaRecordsRequest) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ListMediaRecordsRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ListMediaRecordsRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *ListMediaRecordsRequest) GetResult() string {
+	if x != nil {
+		return x.Result
+	}
+	return ""
+}
+
+func (x *ListMediaRecordsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListMediaRecordsRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type ListMediaRecordsReply struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// kind=image 时填充
+	Images []*ImageGenRecord `protobuf:"bytes,1,rep,name=images,proto3" json:"images,omitempty"`
+	// kind=video 时填充
+	Videos        []*VideoGenRecord `protobuf:"bytes,2,rep,name=videos,proto3" json:"videos,omitempty"`
+	Total         int64             `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMediaRecordsReply) Reset() {
+	*x = ListMediaRecordsReply{}
+	mi := &file_llm_v1_llm_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMediaRecordsReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMediaRecordsReply) ProtoMessage() {}
+
+func (x *ListMediaRecordsReply) ProtoReflect() protoreflect.Message {
+	mi := &file_llm_v1_llm_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMediaRecordsReply.ProtoReflect.Descriptor instead.
+func (*ListMediaRecordsReply) Descriptor() ([]byte, []int) {
+	return file_llm_v1_llm_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ListMediaRecordsReply) GetImages() []*ImageGenRecord {
+	if x != nil {
+		return x.Images
+	}
+	return nil
+}
+
+func (x *ListMediaRecordsReply) GetVideos() []*VideoGenRecord {
+	if x != nil {
+		return x.Videos
+	}
+	return nil
+}
+
+func (x *ListMediaRecordsReply) GetTotal() int64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
 var File_llm_v1_llm_proto protoreflect.FileDescriptor
 
 const file_llm_v1_llm_proto_rawDesc = "" +
 	"\n" +
-	"\x10llm/v1/llm.proto\x12\x06llm.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xf2\x03\n" +
+	"\x10llm/v1/llm.proto\x12\x06llm.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xba\x04\n" +
 	"\bProvider\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -2098,7 +2970,9 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"is_default\x12\x1a\n" +
 	"\bpriority\x18\r \x01(\x05R\bpriority\x12\x16\n" +
 	"\x06scenes\x18\x0e \x03(\tR\x06scenes\x12 \n" +
-	"\vdescription\x18\x0f \x01(\tR\vdescription\x12\x1e\n" +
+	"\vdescription\x18\x0f \x01(\tR\vdescription\x12\"\n" +
+	"\fimage_models\x18\x12 \x03(\tR\fimage_models\x12\"\n" +
+	"\fvideo_models\x18\x13 \x03(\tR\fvideo_models\x12\x1e\n" +
 	"\n" +
 	"created_at\x18\x10 \x01(\tR\n" +
 	"created_at\x12\x1e\n" +
@@ -2141,7 +3015,7 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"\tproviders\x18\x01 \x03(\v2\x10.llm.v1.ProviderR\tproviders\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\"-\n" +
 	"\x12GetProviderRequest\x12\x17\n" +
-	"\x04name\x18\x01 \x01(\tB\x03\xe0A\x02R\x04name\"\xcf\x03\n" +
+	"\x04name\x18\x01 \x01(\tB\x03\xe0A\x02R\x04name\"\x97\x04\n" +
 	"\x15CreateProviderRequest\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tB\x03\xe0A\x02R\x04name\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1f\n" +
@@ -2161,9 +3035,11 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"is_default\x12\x1a\n" +
 	"\bpriority\x18\f \x01(\x05R\bpriority\x12\x16\n" +
 	"\x06scenes\x18\r \x03(\tR\x06scenes\x12 \n" +
-	"\vdescription\x18\x0e \x01(\tR\vdescriptionB\n" +
+	"\vdescription\x18\x0e \x01(\tR\vdescription\x12\"\n" +
+	"\fimage_models\x18\x0f \x03(\tR\fimage_models\x12\"\n" +
+	"\fvideo_models\x18\x10 \x03(\tR\fvideo_modelsB\n" +
 	"\n" +
-	"\b_enabled\"\x8a\x05\n" +
+	"\b_enabled\"\xd2\x05\n" +
 	"\x15UpdateProviderRequest\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tB\x03\xe0A\x02R\x04name\x12\x17\n" +
 	"\x04kind\x18\x02 \x01(\tH\x00R\x04kind\x88\x01\x01\x12\x1f\n" +
@@ -2184,7 +3060,9 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"\bpriority\x18\f \x01(\x05H\tR\bpriority\x88\x01\x01\x12\x16\n" +
 	"\x06scenes\x18\r \x03(\tR\x06scenes\x12%\n" +
 	"\vdescription\x18\x0e \x01(\tH\n" +
-	"R\vdescription\x88\x01\x01B\a\n" +
+	"R\vdescription\x88\x01\x01\x12\"\n" +
+	"\fimage_models\x18\x0f \x03(\tR\fimage_models\x12\"\n" +
+	"\fvideo_models\x18\x10 \x03(\tR\fvideo_modelsB\a\n" +
 	"\x05_kindB\v\n" +
 	"\t_base_urlB\n" +
 	"\n" +
@@ -2276,7 +3154,80 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"\bfailures\x18\x06 \x01(\x03R\bfailures\"L\n" +
 	"\x0eBreakdownReply\x12\x10\n" +
 	"\x03dim\x18\x01 \x01(\tR\x03dim\x12(\n" +
-	"\x04rows\x18\x02 \x03(\v2\x14.llm.v1.BreakdownRowR\x04rows2\x8b\v\n" +
+	"\x04rows\x18\x02 \x03(\v2\x14.llm.v1.BreakdownRowR\x04rows\"\xde\x01\n" +
+	"\x15GenerateImagesRequest\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x1b\n" +
+	"\x06prompt\x18\x04 \x01(\tB\x03\xe0A\x02R\x06prompt\x12\x16\n" +
+	"\x06images\x18\x05 \x03(\tR\x06images\x12\x12\n" +
+	"\x04size\x18\x06 \x01(\tR\x04size\x12\x14\n" +
+	"\x05count\x18\a \x01(\x05R\x05count\x12\x17\n" +
+	"\x04seed\x18\b \x01(\x03H\x00R\x04seed\x88\x01\x01B\a\n" +
+	"\x05_seed\"\xc2\x02\n" +
+	"\x0eImageGenRecord\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12\x12\n" +
+	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x16\n" +
+	"\x06prompt\x18\x05 \x01(\tR\x06prompt\x12\x12\n" +
+	"\x04size\x18\x06 \x01(\tR\x04size\x12\x14\n" +
+	"\x05count\x18\a \x01(\x05R\x05count\x12\x16\n" +
+	"\x06inputs\x18\b \x03(\tR\x06inputs\x12\x18\n" +
+	"\aoutputs\x18\t \x03(\tR\aoutputs\x12\x0e\n" +
+	"\x02ok\x18\n" +
+	" \x01(\bR\x02ok\x12\x14\n" +
+	"\x05error\x18\v \x01(\tR\x05error\x12 \n" +
+	"\vduration_ms\x18\f \x01(\x03R\vduration_ms\x12\x1e\n" +
+	"\n" +
+	"created_at\x18\r \x01(\tR\n" +
+	"created_at\"E\n" +
+	"\x13GenerateImagesReply\x12.\n" +
+	"\x06record\x18\x01 \x01(\v2\x16.llm.v1.ImageGenRecordR\x06record\"\xdb\x01\n" +
+	"\x12SubmitVideoRequest\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1b\n" +
+	"\x06prompt\x18\x03 \x01(\tB\x03\xe0A\x02R\x06prompt\x12\x14\n" +
+	"\x05image\x18\x04 \x01(\tR\x05image\x12\x12\n" +
+	"\x04size\x18\x05 \x01(\tR\x04size\x12*\n" +
+	"\x10duration_seconds\x18\x06 \x01(\x05R\x10duration_seconds\x12\x17\n" +
+	"\x04seed\x18\a \x01(\x03H\x00R\x04seed\x88\x01\x01B\a\n" +
+	"\x05_seed\"\x90\x03\n" +
+	"\x0eVideoGenRecord\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12\x16\n" +
+	"\x06prompt\x18\x04 \x01(\tR\x06prompt\x12\x12\n" +
+	"\x04size\x18\x05 \x01(\tR\x04size\x12*\n" +
+	"\x10duration_seconds\x18\x06 \x01(\x05R\x10duration_seconds\x12\x16\n" +
+	"\x06inputs\x18\a \x03(\tR\x06inputs\x12\x16\n" +
+	"\x06status\x18\b \x01(\tR\x06status\x12\x16\n" +
+	"\x06output\x18\t \x01(\tR\x06output\x12\x14\n" +
+	"\x05error\x18\n" +
+	" \x01(\tR\x05error\x12 \n" +
+	"\vduration_ms\x18\v \x01(\x03R\vduration_ms\x12\"\n" +
+	"\fsubmitted_at\x18\f \x01(\tR\fsubmitted_at\x12 \n" +
+	"\vfinished_at\x18\r \x01(\tR\vfinished_at\x12\x1e\n" +
+	"\n" +
+	"created_at\x18\x0e \x01(\tR\n" +
+	"created_at\"B\n" +
+	"\x10SubmitVideoReply\x12.\n" +
+	"\x06record\x18\x01 \x01(\v2\x16.llm.v1.VideoGenRecordR\x06record\"&\n" +
+	"\x0fGetVideoRequest\x12\x13\n" +
+	"\x02id\x18\x01 \x01(\x04B\x03\xe0A\x02R\x02id\"?\n" +
+	"\rGetVideoReply\x12.\n" +
+	"\x06record\x18\x01 \x01(\v2\x16.llm.v1.VideoGenRecordR\x06record\"\xaa\x01\n" +
+	"\x17ListMediaRecordsRequest\x12\x17\n" +
+	"\x04kind\x18\x01 \x01(\tB\x03\xe0A\x02R\x04kind\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12\x16\n" +
+	"\x06result\x18\x04 \x01(\tR\x06result\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\x06 \x01(\x05R\x06offset\"\x8d\x01\n" +
+	"\x15ListMediaRecordsReply\x12.\n" +
+	"\x06images\x18\x01 \x03(\v2\x16.llm.v1.ImageGenRecordR\x06images\x12.\n" +
+	"\x06videos\x18\x02 \x03(\v2\x16.llm.v1.VideoGenRecordR\x06videos\x12\x14\n" +
+	"\x05total\x18\x03 \x01(\x03R\x05total2\xb6\x0e\n" +
 	"\n" +
 	"LLMService\x12e\n" +
 	"\rListProviders\x12\x1c.llm.v1.ListProvidersRequest\x1a\x1a.llm.v1.ListProvidersReply\"\x1a\x82\xd3\xe4\x93\x02\x14\x12\x12/api/llm/providers\x12^\n" +
@@ -2294,7 +3245,11 @@ const file_llm_v1_llm_proto_rawDesc = "" +
 	"GetCurrent\x12\x19.llm.v1.GetCurrentRequest\x1a\x12.llm.v1.CurrentLLM\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/api/llm/current\x12U\n" +
 	"\n" +
 	"ListScenes\x12\x19.llm.v1.GetCurrentRequest\x1a\x13.llm.v1.ScenesReply\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/api/llm/scenes\x12H\n" +
-	"\x04Chat\x12\x13.llm.v1.ChatRequest\x1a\x11.llm.v1.ChatReply\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/api/llm/chat2\xc3\x02\n" +
+	"\x04Chat\x12\x13.llm.v1.ChatRequest\x1a\x11.llm.v1.ChatReply\"\x18\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/api/llm/chat\x12n\n" +
+	"\x0eGenerateImages\x12\x1d.llm.v1.GenerateImagesRequest\x1a\x1b.llm.v1.GenerateImagesReply\" \x82\xd3\xe4\x93\x02\x1a:\x01*\"\x15/api/llm/media/images\x12e\n" +
+	"\vSubmitVideo\x12\x1a.llm.v1.SubmitVideoRequest\x1a\x18.llm.v1.SubmitVideoReply\" \x82\xd3\xe4\x93\x02\x1a:\x01*\"\x15/api/llm/media/videos\x12^\n" +
+	"\bGetVideo\x12\x17.llm.v1.GetVideoRequest\x1a\x15.llm.v1.GetVideoReply\"\"\x82\xd3\xe4\x93\x02\x1c\x12\x1a/api/llm/media/videos/{id}\x12r\n" +
+	"\x10ListMediaRecords\x12\x1f.llm.v1.ListMediaRecordsRequest\x1a\x1d.llm.v1.ListMediaRecordsReply\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/api/llm/media/records2\xc3\x02\n" +
 	"\x13LLMCallQueryService\x12^\n" +
 	"\fListLLMCalls\x12\x1b.llm.v1.ListLLMCallsRequest\x1a\x19.llm.v1.ListLLMCallsReply\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/api/llm/calls\x12e\n" +
 	"\x0fGetLLMCallStats\x12\x1e.llm.v1.GetLLMCallStatsRequest\x1a\x14.llm.v1.LLMCallStats\"\x1c\x82\xd3\xe4\x93\x02\x16\x12\x14/api/llm/calls/stats\x12e\n" +
@@ -2312,81 +3267,104 @@ func file_llm_v1_llm_proto_rawDescGZIP() []byte {
 	return file_llm_v1_llm_proto_rawDescData
 }
 
-var file_llm_v1_llm_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_llm_v1_llm_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_llm_v1_llm_proto_goTypes = []any{
-	(*Provider)(nil),               // 0: llm.v1.Provider
-	(*LLMStats)(nil),               // 1: llm.v1.LLMStats
-	(*CurrentLLM)(nil),             // 2: llm.v1.CurrentLLM
-	(*ScenesReply)(nil),            // 3: llm.v1.ScenesReply
-	(*TestResult)(nil),             // 4: llm.v1.TestResult
-	(*ChatRequest)(nil),            // 5: llm.v1.ChatRequest
-	(*ChatReply)(nil),              // 6: llm.v1.ChatReply
-	(*ListProvidersRequest)(nil),   // 7: llm.v1.ListProvidersRequest
-	(*ListProvidersReply)(nil),     // 8: llm.v1.ListProvidersReply
-	(*GetProviderRequest)(nil),     // 9: llm.v1.GetProviderRequest
-	(*CreateProviderRequest)(nil),  // 10: llm.v1.CreateProviderRequest
-	(*UpdateProviderRequest)(nil),  // 11: llm.v1.UpdateProviderRequest
-	(*DeleteProviderRequest)(nil),  // 12: llm.v1.DeleteProviderRequest
-	(*DeleteProviderReply)(nil),    // 13: llm.v1.DeleteProviderReply
-	(*ToggleProviderRequest)(nil),  // 14: llm.v1.ToggleProviderRequest
-	(*RemoteModelsRequest)(nil),    // 15: llm.v1.RemoteModelsRequest
-	(*RemoteModelsReply)(nil),      // 16: llm.v1.RemoteModelsReply
-	(*GetLLMStatsRequest)(nil),     // 17: llm.v1.GetLLMStatsRequest
-	(*GetCurrentRequest)(nil),      // 18: llm.v1.GetCurrentRequest
-	(*ListLLMCallsRequest)(nil),    // 19: llm.v1.ListLLMCallsRequest
-	(*LLMCall)(nil),                // 20: llm.v1.LLMCall
-	(*ListLLMCallsReply)(nil),      // 21: llm.v1.ListLLMCallsReply
-	(*GetLLMCallStatsRequest)(nil), // 22: llm.v1.GetLLMCallStatsRequest
-	(*LLMModelUsage)(nil),          // 23: llm.v1.LLMModelUsage
-	(*LLMCallStats)(nil),           // 24: llm.v1.LLMCallStats
-	(*BreakdownRequest)(nil),       // 25: llm.v1.BreakdownRequest
-	(*BreakdownRow)(nil),           // 26: llm.v1.BreakdownRow
-	(*BreakdownReply)(nil),         // 27: llm.v1.BreakdownReply
+	(*Provider)(nil),                // 0: llm.v1.Provider
+	(*LLMStats)(nil),                // 1: llm.v1.LLMStats
+	(*CurrentLLM)(nil),              // 2: llm.v1.CurrentLLM
+	(*ScenesReply)(nil),             // 3: llm.v1.ScenesReply
+	(*TestResult)(nil),              // 4: llm.v1.TestResult
+	(*ChatRequest)(nil),             // 5: llm.v1.ChatRequest
+	(*ChatReply)(nil),               // 6: llm.v1.ChatReply
+	(*ListProvidersRequest)(nil),    // 7: llm.v1.ListProvidersRequest
+	(*ListProvidersReply)(nil),      // 8: llm.v1.ListProvidersReply
+	(*GetProviderRequest)(nil),      // 9: llm.v1.GetProviderRequest
+	(*CreateProviderRequest)(nil),   // 10: llm.v1.CreateProviderRequest
+	(*UpdateProviderRequest)(nil),   // 11: llm.v1.UpdateProviderRequest
+	(*DeleteProviderRequest)(nil),   // 12: llm.v1.DeleteProviderRequest
+	(*DeleteProviderReply)(nil),     // 13: llm.v1.DeleteProviderReply
+	(*ToggleProviderRequest)(nil),   // 14: llm.v1.ToggleProviderRequest
+	(*RemoteModelsRequest)(nil),     // 15: llm.v1.RemoteModelsRequest
+	(*RemoteModelsReply)(nil),       // 16: llm.v1.RemoteModelsReply
+	(*GetLLMStatsRequest)(nil),      // 17: llm.v1.GetLLMStatsRequest
+	(*GetCurrentRequest)(nil),       // 18: llm.v1.GetCurrentRequest
+	(*ListLLMCallsRequest)(nil),     // 19: llm.v1.ListLLMCallsRequest
+	(*LLMCall)(nil),                 // 20: llm.v1.LLMCall
+	(*ListLLMCallsReply)(nil),       // 21: llm.v1.ListLLMCallsReply
+	(*GetLLMCallStatsRequest)(nil),  // 22: llm.v1.GetLLMCallStatsRequest
+	(*LLMModelUsage)(nil),           // 23: llm.v1.LLMModelUsage
+	(*LLMCallStats)(nil),            // 24: llm.v1.LLMCallStats
+	(*BreakdownRequest)(nil),        // 25: llm.v1.BreakdownRequest
+	(*BreakdownRow)(nil),            // 26: llm.v1.BreakdownRow
+	(*BreakdownReply)(nil),          // 27: llm.v1.BreakdownReply
+	(*GenerateImagesRequest)(nil),   // 28: llm.v1.GenerateImagesRequest
+	(*ImageGenRecord)(nil),          // 29: llm.v1.ImageGenRecord
+	(*GenerateImagesReply)(nil),     // 30: llm.v1.GenerateImagesReply
+	(*SubmitVideoRequest)(nil),      // 31: llm.v1.SubmitVideoRequest
+	(*VideoGenRecord)(nil),          // 32: llm.v1.VideoGenRecord
+	(*SubmitVideoReply)(nil),        // 33: llm.v1.SubmitVideoReply
+	(*GetVideoRequest)(nil),         // 34: llm.v1.GetVideoRequest
+	(*GetVideoReply)(nil),           // 35: llm.v1.GetVideoReply
+	(*ListMediaRecordsRequest)(nil), // 36: llm.v1.ListMediaRecordsRequest
+	(*ListMediaRecordsReply)(nil),   // 37: llm.v1.ListMediaRecordsReply
 }
 var file_llm_v1_llm_proto_depIdxs = []int32{
 	0,  // 0: llm.v1.ListProvidersReply.providers:type_name -> llm.v1.Provider
 	20, // 1: llm.v1.ListLLMCallsReply.calls:type_name -> llm.v1.LLMCall
 	23, // 2: llm.v1.LLMCallStats.by_model:type_name -> llm.v1.LLMModelUsage
 	26, // 3: llm.v1.BreakdownReply.rows:type_name -> llm.v1.BreakdownRow
-	7,  // 4: llm.v1.LLMService.ListProviders:input_type -> llm.v1.ListProvidersRequest
-	9,  // 5: llm.v1.LLMService.GetProvider:input_type -> llm.v1.GetProviderRequest
-	10, // 6: llm.v1.LLMService.CreateProvider:input_type -> llm.v1.CreateProviderRequest
-	11, // 7: llm.v1.LLMService.UpdateProvider:input_type -> llm.v1.UpdateProviderRequest
-	12, // 8: llm.v1.LLMService.DeleteProvider:input_type -> llm.v1.DeleteProviderRequest
-	14, // 9: llm.v1.LLMService.EnableProvider:input_type -> llm.v1.ToggleProviderRequest
-	14, // 10: llm.v1.LLMService.DisableProvider:input_type -> llm.v1.ToggleProviderRequest
-	14, // 11: llm.v1.LLMService.SetDefaultProvider:input_type -> llm.v1.ToggleProviderRequest
-	14, // 12: llm.v1.LLMService.TestProvider:input_type -> llm.v1.ToggleProviderRequest
-	15, // 13: llm.v1.LLMService.ListRemoteModels:input_type -> llm.v1.RemoteModelsRequest
-	17, // 14: llm.v1.LLMService.GetLLMStats:input_type -> llm.v1.GetLLMStatsRequest
-	18, // 15: llm.v1.LLMService.GetCurrent:input_type -> llm.v1.GetCurrentRequest
-	18, // 16: llm.v1.LLMService.ListScenes:input_type -> llm.v1.GetCurrentRequest
-	5,  // 17: llm.v1.LLMService.Chat:input_type -> llm.v1.ChatRequest
-	19, // 18: llm.v1.LLMCallQueryService.ListLLMCalls:input_type -> llm.v1.ListLLMCallsRequest
-	22, // 19: llm.v1.LLMCallQueryService.GetLLMCallStats:input_type -> llm.v1.GetLLMCallStatsRequest
-	25, // 20: llm.v1.LLMCallQueryService.BreakdownTokens:input_type -> llm.v1.BreakdownRequest
-	8,  // 21: llm.v1.LLMService.ListProviders:output_type -> llm.v1.ListProvidersReply
-	0,  // 22: llm.v1.LLMService.GetProvider:output_type -> llm.v1.Provider
-	0,  // 23: llm.v1.LLMService.CreateProvider:output_type -> llm.v1.Provider
-	0,  // 24: llm.v1.LLMService.UpdateProvider:output_type -> llm.v1.Provider
-	13, // 25: llm.v1.LLMService.DeleteProvider:output_type -> llm.v1.DeleteProviderReply
-	0,  // 26: llm.v1.LLMService.EnableProvider:output_type -> llm.v1.Provider
-	0,  // 27: llm.v1.LLMService.DisableProvider:output_type -> llm.v1.Provider
-	0,  // 28: llm.v1.LLMService.SetDefaultProvider:output_type -> llm.v1.Provider
-	4,  // 29: llm.v1.LLMService.TestProvider:output_type -> llm.v1.TestResult
-	16, // 30: llm.v1.LLMService.ListRemoteModels:output_type -> llm.v1.RemoteModelsReply
-	1,  // 31: llm.v1.LLMService.GetLLMStats:output_type -> llm.v1.LLMStats
-	2,  // 32: llm.v1.LLMService.GetCurrent:output_type -> llm.v1.CurrentLLM
-	3,  // 33: llm.v1.LLMService.ListScenes:output_type -> llm.v1.ScenesReply
-	6,  // 34: llm.v1.LLMService.Chat:output_type -> llm.v1.ChatReply
-	21, // 35: llm.v1.LLMCallQueryService.ListLLMCalls:output_type -> llm.v1.ListLLMCallsReply
-	24, // 36: llm.v1.LLMCallQueryService.GetLLMCallStats:output_type -> llm.v1.LLMCallStats
-	27, // 37: llm.v1.LLMCallQueryService.BreakdownTokens:output_type -> llm.v1.BreakdownReply
-	21, // [21:38] is the sub-list for method output_type
-	4,  // [4:21] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	29, // 4: llm.v1.GenerateImagesReply.record:type_name -> llm.v1.ImageGenRecord
+	32, // 5: llm.v1.SubmitVideoReply.record:type_name -> llm.v1.VideoGenRecord
+	32, // 6: llm.v1.GetVideoReply.record:type_name -> llm.v1.VideoGenRecord
+	29, // 7: llm.v1.ListMediaRecordsReply.images:type_name -> llm.v1.ImageGenRecord
+	32, // 8: llm.v1.ListMediaRecordsReply.videos:type_name -> llm.v1.VideoGenRecord
+	7,  // 9: llm.v1.LLMService.ListProviders:input_type -> llm.v1.ListProvidersRequest
+	9,  // 10: llm.v1.LLMService.GetProvider:input_type -> llm.v1.GetProviderRequest
+	10, // 11: llm.v1.LLMService.CreateProvider:input_type -> llm.v1.CreateProviderRequest
+	11, // 12: llm.v1.LLMService.UpdateProvider:input_type -> llm.v1.UpdateProviderRequest
+	12, // 13: llm.v1.LLMService.DeleteProvider:input_type -> llm.v1.DeleteProviderRequest
+	14, // 14: llm.v1.LLMService.EnableProvider:input_type -> llm.v1.ToggleProviderRequest
+	14, // 15: llm.v1.LLMService.DisableProvider:input_type -> llm.v1.ToggleProviderRequest
+	14, // 16: llm.v1.LLMService.SetDefaultProvider:input_type -> llm.v1.ToggleProviderRequest
+	14, // 17: llm.v1.LLMService.TestProvider:input_type -> llm.v1.ToggleProviderRequest
+	15, // 18: llm.v1.LLMService.ListRemoteModels:input_type -> llm.v1.RemoteModelsRequest
+	17, // 19: llm.v1.LLMService.GetLLMStats:input_type -> llm.v1.GetLLMStatsRequest
+	18, // 20: llm.v1.LLMService.GetCurrent:input_type -> llm.v1.GetCurrentRequest
+	18, // 21: llm.v1.LLMService.ListScenes:input_type -> llm.v1.GetCurrentRequest
+	5,  // 22: llm.v1.LLMService.Chat:input_type -> llm.v1.ChatRequest
+	28, // 23: llm.v1.LLMService.GenerateImages:input_type -> llm.v1.GenerateImagesRequest
+	31, // 24: llm.v1.LLMService.SubmitVideo:input_type -> llm.v1.SubmitVideoRequest
+	34, // 25: llm.v1.LLMService.GetVideo:input_type -> llm.v1.GetVideoRequest
+	36, // 26: llm.v1.LLMService.ListMediaRecords:input_type -> llm.v1.ListMediaRecordsRequest
+	19, // 27: llm.v1.LLMCallQueryService.ListLLMCalls:input_type -> llm.v1.ListLLMCallsRequest
+	22, // 28: llm.v1.LLMCallQueryService.GetLLMCallStats:input_type -> llm.v1.GetLLMCallStatsRequest
+	25, // 29: llm.v1.LLMCallQueryService.BreakdownTokens:input_type -> llm.v1.BreakdownRequest
+	8,  // 30: llm.v1.LLMService.ListProviders:output_type -> llm.v1.ListProvidersReply
+	0,  // 31: llm.v1.LLMService.GetProvider:output_type -> llm.v1.Provider
+	0,  // 32: llm.v1.LLMService.CreateProvider:output_type -> llm.v1.Provider
+	0,  // 33: llm.v1.LLMService.UpdateProvider:output_type -> llm.v1.Provider
+	13, // 34: llm.v1.LLMService.DeleteProvider:output_type -> llm.v1.DeleteProviderReply
+	0,  // 35: llm.v1.LLMService.EnableProvider:output_type -> llm.v1.Provider
+	0,  // 36: llm.v1.LLMService.DisableProvider:output_type -> llm.v1.Provider
+	0,  // 37: llm.v1.LLMService.SetDefaultProvider:output_type -> llm.v1.Provider
+	4,  // 38: llm.v1.LLMService.TestProvider:output_type -> llm.v1.TestResult
+	16, // 39: llm.v1.LLMService.ListRemoteModels:output_type -> llm.v1.RemoteModelsReply
+	1,  // 40: llm.v1.LLMService.GetLLMStats:output_type -> llm.v1.LLMStats
+	2,  // 41: llm.v1.LLMService.GetCurrent:output_type -> llm.v1.CurrentLLM
+	3,  // 42: llm.v1.LLMService.ListScenes:output_type -> llm.v1.ScenesReply
+	6,  // 43: llm.v1.LLMService.Chat:output_type -> llm.v1.ChatReply
+	30, // 44: llm.v1.LLMService.GenerateImages:output_type -> llm.v1.GenerateImagesReply
+	33, // 45: llm.v1.LLMService.SubmitVideo:output_type -> llm.v1.SubmitVideoReply
+	35, // 46: llm.v1.LLMService.GetVideo:output_type -> llm.v1.GetVideoReply
+	37, // 47: llm.v1.LLMService.ListMediaRecords:output_type -> llm.v1.ListMediaRecordsReply
+	21, // 48: llm.v1.LLMCallQueryService.ListLLMCalls:output_type -> llm.v1.ListLLMCallsReply
+	24, // 49: llm.v1.LLMCallQueryService.GetLLMCallStats:output_type -> llm.v1.LLMCallStats
+	27, // 50: llm.v1.LLMCallQueryService.BreakdownTokens:output_type -> llm.v1.BreakdownReply
+	30, // [30:51] is the sub-list for method output_type
+	9,  // [9:30] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_llm_v1_llm_proto_init() }
@@ -2396,13 +3374,15 @@ func file_llm_v1_llm_proto_init() {
 	}
 	file_llm_v1_llm_proto_msgTypes[10].OneofWrappers = []any{}
 	file_llm_v1_llm_proto_msgTypes[11].OneofWrappers = []any{}
+	file_llm_v1_llm_proto_msgTypes[28].OneofWrappers = []any{}
+	file_llm_v1_llm_proto_msgTypes[31].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llm_v1_llm_proto_rawDesc), len(file_llm_v1_llm_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   28,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

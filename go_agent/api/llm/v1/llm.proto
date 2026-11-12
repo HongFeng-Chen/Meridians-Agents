@@ -35,6 +35,10 @@ message Provider {
   // general | rag | graph | extract | memory，空表示通用
   repeated string scenes = 14 [json_name = "scenes"];
   string description = 15 [json_name = "description"];
+  // 该数据源支持的图像生成模型（文生图 / 图生图；空 = 不参与图像生成路由）
+  repeated string image_models = 18 [json_name = "image_models"];
+  // 该数据源支持的视频生成模型（空 = 不参与视频生成路由）
+  repeated string video_models = 19 [json_name = "video_models"];
   string created_at = 16 [json_name = "created_at"];
   string updated_at = 17 [json_name = "updated_at"];
 }
@@ -115,6 +119,8 @@ message CreateProviderRequest {
   int32 priority = 12 [json_name = "priority"];
   repeated string scenes = 13 [json_name = "scenes"];
   string description = 14 [json_name = "description"];
+  repeated string image_models = 15 [json_name = "image_models"];
+  repeated string video_models = 16 [json_name = "video_models"];
 }
 
 // UpdateProviderRequest 指针语义：字段缺省表示不修改。
@@ -133,6 +139,8 @@ message UpdateProviderRequest {
   optional int32 priority = 12 [json_name = "priority"];
   repeated string scenes = 13 [json_name = "scenes"];
   optional string description = 14 [json_name = "description"];
+  repeated string image_models = 15 [json_name = "image_models"];
+  repeated string video_models = 16 [json_name = "video_models"];
 }
 
 message DeleteProviderRequest {
@@ -262,6 +270,36 @@ service LLMService {
       body: "*"
     };
   }
+
+  // GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+  rpc GenerateImages(GenerateImagesRequest) returns (GenerateImagesReply) {
+    option (google.api.http) = {
+      post: "/api/llm/media/images"
+      body: "*"
+    };
+  }
+
+  // SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+  rpc SubmitVideo(SubmitVideoRequest) returns (SubmitVideoReply) {
+    option (google.api.http) = {
+      post: "/api/llm/media/videos"
+      body: "*"
+    };
+  }
+
+  // GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+  rpc GetVideo(GetVideoRequest) returns (GetVideoReply) {
+    option (google.api.http) = {
+      get: "/api/llm/media/videos/{id}"
+    };
+  }
+
+  // ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+  rpc ListMediaRecords(ListMediaRecordsRequest) returns (ListMediaRecordsReply) {
+    option (google.api.http) = {
+      get: "/api/llm/media/records"
+    };
+  }
 }
 
 // —— LLM 调用历史 ——
@@ -376,4 +414,113 @@ message BreakdownRow {
 message BreakdownReply {
   string dim = 1 [json_name = "dim"];
   repeated BreakdownRow rows = 2 [json_name = "rows"];
+}
+
+// —— 媒体生成（文生图 / 图生图 / 视频生成） ——
+
+// GenerateImagesRequest 图片生成请求
+message GenerateImagesRequest {
+  // 指定数据源名（空 = 自动路由到第一个配置了图像模型的启用数据源）
+  string provider = 1 [json_name = "provider"];
+  // 指定模型名（空 = 数据源 image_models 首个）
+  string model = 2 [json_name = "model"];
+  // text2img（默认）| img2img
+  string mode = 3 [json_name = "mode"];
+  // 生成提示词；img2img 时表示「改成什么样」
+  string prompt = 4 [(google.api.field_behavior) = REQUIRED, json_name = "prompt"];
+  // img2img 参考图（https URL 或 data URI）
+  repeated string images = 5 [json_name = "images"];
+  // 分辨率（如 1024x1024；空 = 厂商默认）
+  string size = 6 [json_name = "size"];
+  // 生成张数（1-4，默认 1）
+  int32 count = 7 [json_name = "count"];
+  // 随机种子（不传 = 不指定）
+  optional int64 seed = 8 [json_name = "seed"];
+}
+
+// ImageGenRecord 一次图片生成的记录（含产物地址）
+message ImageGenRecord {
+  uint64 id = 1 [json_name = "id"];
+  string provider = 2 [json_name = "provider"];
+  string model = 3 [json_name = "model"];
+  string mode = 4 [json_name = "mode"];
+  string prompt = 5 [json_name = "prompt"];
+  string size = 6 [json_name = "size"];
+  int32 count = 7 [json_name = "count"];
+  // img2img 参考图（data URI 已脱敏）
+  repeated string inputs = 8 [json_name = "inputs"];
+  // 生成产物（本地 /api/files/ 稳定地址）
+  repeated string outputs = 9 [json_name = "outputs"];
+  bool ok = 10 [json_name = "ok"];
+  string error = 11 [json_name = "error"];
+  int64 duration_ms = 12 [json_name = "duration_ms"];
+  string created_at = 13 [json_name = "created_at"];
+}
+
+message GenerateImagesReply {
+  ImageGenRecord record = 1 [json_name = "record"];
+}
+
+// SubmitVideoRequest 视频生成提交（异步任务）
+message SubmitVideoRequest {
+  string provider = 1 [json_name = "provider"];
+  string model = 2 [json_name = "model"];
+  string prompt = 3 [(google.api.field_behavior) = REQUIRED, json_name = "prompt"];
+  // 首帧参考图（图生视频；空 = 纯文生视频）
+  string image = 4 [json_name = "image"];
+  string size = 5 [json_name = "size"];
+  int32 duration_seconds = 6 [json_name = "duration_seconds"];
+  optional int64 seed = 7 [json_name = "seed"];
+}
+
+// VideoGenRecord 视频生成任务记录
+message VideoGenRecord {
+  uint64 id = 1 [json_name = "id"];
+  string provider = 2 [json_name = "provider"];
+  string model = 3 [json_name = "model"];
+  string prompt = 4 [json_name = "prompt"];
+  string size = 5 [json_name = "size"];
+  int32 duration_seconds = 6 [json_name = "duration_seconds"];
+  repeated string inputs = 7 [json_name = "inputs"];
+  // queued | running | succeeded | failed
+  string status = 8 [json_name = "status"];
+  string output = 9 [json_name = "output"];
+  string error = 10 [json_name = "error"];
+  int64 duration_ms = 11 [json_name = "duration_ms"];
+  string submitted_at = 12 [json_name = "submitted_at"];
+  string finished_at = 13 [json_name = "finished_at"];
+  string created_at = 14 [json_name = "created_at"];
+}
+
+message SubmitVideoReply {
+  VideoGenRecord record = 1 [json_name = "record"];
+}
+
+message GetVideoRequest {
+  uint64 id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "id"];
+}
+
+message GetVideoReply {
+  VideoGenRecord record = 1 [json_name = "record"];
+}
+
+// ListMediaRecordsRequest 生成历史查询（服务端按登录身份收窄：
+// 普通用户只看本租户自己的记录，管理员可看全平台）
+message ListMediaRecordsRequest {
+  // image | video
+  string kind = 1 [(google.api.field_behavior) = REQUIRED, json_name = "kind"];
+  string provider = 2 [json_name = "provider"];
+  string model = 3 [json_name = "model"];
+  // ok / failed / 空（不过滤）
+  string result = 4 [json_name = "result"];
+  int32 limit = 5 [json_name = "limit"];
+  int32 offset = 6 [json_name = "offset"];
+}
+
+message ListMediaRecordsReply {
+  // kind=image 时填充
+  repeated ImageGenRecord images = 1 [json_name = "images"];
+  // kind=video 时填充
+  repeated VideoGenRecord videos = 2 [json_name = "videos"];
+  int64 total = 3 [json_name = "total"];
 }

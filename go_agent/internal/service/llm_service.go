@@ -18,7 +18,8 @@ import (
 type LLMService struct {
 	v1.UnimplementedLLMServiceServer
 
-	uc *llm.Manager
+	uc    *llm.Manager
+	media *llm.MediaManager
 }
 
 var (
@@ -26,8 +27,10 @@ var (
 	_ v1.LLMServiceServer     = (*LLMService)(nil)
 )
 
-// NewLLMService 创建 LLM 管理服务
-func NewLLMService(uc *llm.Manager) *LLMService { return &LLMService{uc: uc} }
+// NewLLMService 创建 LLM 管理服务（media 为媒体生成用例，可为 nil：媒体能力降级报错）
+func NewLLMService(uc *llm.Manager, media *llm.MediaManager) *LLMService {
+	return &LLMService{uc: uc, media: media}
+}
 
 // ListProviders 数据源列表。
 func (s *LLMService) ListProviders(ctx context.Context, req *v1.ListProvidersRequest) (*v1.ListProvidersReply, error) {
@@ -65,6 +68,8 @@ func (s *LLMService) CreateProvider(ctx context.Context, req *v1.CreateProviderR
 		APIKey:       req.GetApiKey(),
 		Models:       req.GetModels(),
 		DefaultModel: req.GetDefaultModel(),
+		ImageModels:  req.GetImageModels(),
+		VideoModels:  req.GetVideoModels(),
 		Temperature:  req.GetTemperature(),
 		MaxTokens:    int(req.GetMaxTokens()),
 		TimeoutSec:   int(req.GetTimeoutSeconds()),
@@ -102,6 +107,15 @@ func (s *LLMService) UpdateProvider(ctx context.Context, req *v1.UpdateProviderR
 	}
 	if scenes := req.GetScenes(); len(scenes) > 0 {
 		in.Scenes = &scenes
+	}
+	// 媒体模型：repeated 无法区分「未传」与「清空」，遵循 models/scenes 同款约定
+	// ——传了才改；清空场景让用户在列表里留一个占位值或直接置空数组走前端显式提交。
+	// 为支持清空，前端编辑弹层永远显式携带完整数组。
+	if imgs := req.GetImageModels(); req.ImageModels != nil {
+		in.ImageModels = &imgs
+	}
+	if vids := req.GetVideoModels(); req.VideoModels != nil {
+		in.VideoModels = &vids
 	}
 	p, err := s.uc.UpdateProvider(ctx, req.GetName(), in)
 	if err != nil {
@@ -229,6 +243,8 @@ func toProvider(p llm.Provider) *v1.Provider {
 		HasKey:         p.HasKey,
 		Models:         p.Models,
 		DefaultModel:   p.DefaultModel,
+		ImageModels:    p.ImageModels,
+		VideoModels:    p.VideoModels,
 		Temperature:    p.Temperature,
 		MaxTokens:      int32(p.MaxTokens),
 		TimeoutSeconds: int32(p.TimeoutSec),

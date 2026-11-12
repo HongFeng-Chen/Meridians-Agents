@@ -107,6 +107,12 @@ func mapLLMErr(err error) error {
 		errors.Is(err, llm.ErrNoProvider),
 		errors.Is(err, llm.ErrLastProvider):
 		return badRequest(err.Error())
+	case errors.Is(err, llm.ErrMediaNotFound):
+		return notFound(err.Error())
+	case errors.Is(err, llm.ErrMediaNoProvider),
+		errors.Is(err, llm.ErrMediaNoModel),
+		errors.Is(err, llm.ErrMediaInvalid):
+		return badRequest(err.Error())
 	default:
 		return internalErr(err)
 	}

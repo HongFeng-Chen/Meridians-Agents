@@ -814,6 +814,8 @@ func buildProvider(in CreateProviderInput) (*Provider, error) {
 		APIKey:       strings.TrimSpace(in.APIKey),
 		Models:       cleanStrings(in.Models),
 		DefaultModel: strings.TrimSpace(in.DefaultModel),
+		ImageModels:  cleanStrings(in.ImageModels),
+		VideoModels:  cleanStrings(in.VideoModels),
 		Temperature:  clampTemp(in.Temperature),
 		MaxTokens:    in.MaxTokens,
 		TimeoutSec:   in.TimeoutSec,
@@ -853,6 +855,12 @@ func applyPatch(p *Provider, in UpdateProviderInput) {
 	}
 	if in.DefaultModel != nil {
 		p.DefaultModel = strings.TrimSpace(*in.DefaultModel)
+	}
+	if in.ImageModels != nil {
+		p.ImageModels = cleanStrings(*in.ImageModels)
+	}
+	if in.VideoModels != nil {
+		p.VideoModels = cleanStrings(*in.VideoModels)
 	}
 	if in.Temperature != nil {
 		p.Temperature = clampTemp(*in.Temperature)

@@ -40,6 +40,10 @@ const (
 	LLMService_GetCurrent_FullMethodName         = "/llm.v1.LLMService/GetCurrent"
 	LLMService_ListScenes_FullMethodName         = "/llm.v1.LLMService/ListScenes"
 	LLMService_Chat_FullMethodName               = "/llm.v1.LLMService/Chat"
+	LLMService_GenerateImages_FullMethodName     = "/llm.v1.LLMService/GenerateImages"
+	LLMService_SubmitVideo_FullMethodName        = "/llm.v1.LLMService/SubmitVideo"
+	LLMService_GetVideo_FullMethodName           = "/llm.v1.LLMService/GetVideo"
+	LLMService_ListMediaRecords_FullMethodName   = "/llm.v1.LLMService/ListMediaRecords"
 )
 
 // LLMServiceClient is the client API for LLMService service.
@@ -76,6 +80,14 @@ type LLMServiceClient interface {
 	ListScenes(ctx context.Context, in *GetCurrentRequest, opts ...grpc.CallOption) (*ScenesReply, error)
 	// Chat 调试对话（管理端手动调用）。
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatReply, error)
+	// GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+	GenerateImages(ctx context.Context, in *GenerateImagesRequest, opts ...grpc.CallOption) (*GenerateImagesReply, error)
+	// SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+	SubmitVideo(ctx context.Context, in *SubmitVideoRequest, opts ...grpc.CallOption) (*SubmitVideoReply, error)
+	// GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+	GetVideo(ctx context.Context, in *GetVideoRequest, opts ...grpc.CallOption) (*GetVideoReply, error)
+	// ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+	ListMediaRecords(ctx context.Context, in *ListMediaRecordsRequest, opts ...grpc.CallOption) (*ListMediaRecordsReply, error)
 }
 
 type lLMServiceClient struct {
@@ -226,6 +238,46 @@ func (c *lLMServiceClient) Chat(ctx context.Context, in *ChatRequest, opts ...gr
 	return out, nil
 }
 
+func (c *lLMServiceClient) GenerateImages(ctx context.Context, in *GenerateImagesRequest, opts ...grpc.CallOption) (*GenerateImagesReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateImagesReply)
+	err := c.cc.Invoke(ctx, LLMService_GenerateImages_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lLMServiceClient) SubmitVideo(ctx context.Context, in *SubmitVideoRequest, opts ...grpc.CallOption) (*SubmitVideoReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitVideoReply)
+	err := c.cc.Invoke(ctx, LLMService_SubmitVideo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lLMServiceClient) GetVideo(ctx context.Context, in *GetVideoRequest, opts ...grpc.CallOption) (*GetVideoReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVideoReply)
+	err := c.cc.Invoke(ctx, LLMService_GetVideo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *lLMServiceClient) ListMediaRecords(ctx context.Context, in *ListMediaRecordsRequest, opts ...grpc.CallOption) (*ListMediaRecordsReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMediaRecordsReply)
+	err := c.cc.Invoke(ctx, LLMService_ListMediaRecords_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LLMServiceServer is the server API for LLMService service.
 // All implementations must embed UnimplementedLLMServiceServer
 // for forward compatibility.
@@ -260,6 +312,14 @@ type LLMServiceServer interface {
 	ListScenes(context.Context, *GetCurrentRequest) (*ScenesReply, error)
 	// Chat 调试对话（管理端手动调用）。
 	Chat(context.Context, *ChatRequest) (*ChatReply, error)
+	// GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+	GenerateImages(context.Context, *GenerateImagesRequest) (*GenerateImagesReply, error)
+	// SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+	SubmitVideo(context.Context, *SubmitVideoRequest) (*SubmitVideoReply, error)
+	// GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+	GetVideo(context.Context, *GetVideoRequest) (*GetVideoReply, error)
+	// ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+	ListMediaRecords(context.Context, *ListMediaRecordsRequest) (*ListMediaRecordsReply, error)
 	mustEmbedUnimplementedLLMServiceServer()
 }
 
@@ -311,6 +371,18 @@ func (UnimplementedLLMServiceServer) ListScenes(context.Context, *GetCurrentRequ
 }
 func (UnimplementedLLMServiceServer) Chat(context.Context, *ChatRequest) (*ChatReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
+}
+func (UnimplementedLLMServiceServer) GenerateImages(context.Context, *GenerateImagesRequest) (*GenerateImagesReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method GenerateImages not implemented")
+}
+func (UnimplementedLLMServiceServer) SubmitVideo(context.Context, *SubmitVideoRequest) (*SubmitVideoReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitVideo not implemented")
+}
+func (UnimplementedLLMServiceServer) GetVideo(context.Context, *GetVideoRequest) (*GetVideoReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetVideo not implemented")
+}
+func (UnimplementedLLMServiceServer) ListMediaRecords(context.Context, *ListMediaRecordsRequest) (*ListMediaRecordsReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMediaRecords not implemented")
 }
 func (UnimplementedLLMServiceServer) mustEmbedUnimplementedLLMServiceServer() {}
 func (UnimplementedLLMServiceServer) testEmbeddedByValue()                    {}
@@ -585,6 +657,78 @@ func _LLMService_Chat_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LLMService_GenerateImages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateImagesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LLMServiceServer).GenerateImages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LLMService_GenerateImages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LLMServiceServer).GenerateImages(ctx, req.(*GenerateImagesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LLMService_SubmitVideo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitVideoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LLMServiceServer).SubmitVideo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LLMService_SubmitVideo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LLMServiceServer).SubmitVideo(ctx, req.(*SubmitVideoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LLMService_GetVideo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVideoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LLMServiceServer).GetVideo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LLMService_GetVideo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LLMServiceServer).GetVideo(ctx, req.(*GetVideoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LLMService_ListMediaRecords_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMediaRecordsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LLMServiceServer).ListMediaRecords(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LLMService_ListMediaRecords_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LLMServiceServer).ListMediaRecords(ctx, req.(*ListMediaRecordsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LLMService_ServiceDesc is the grpc.ServiceDesc for LLMService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -647,6 +791,22 @@ var LLMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Chat",
 			Handler:    _LLMService_Chat_Handler,
+		},
+		{
+			MethodName: "GenerateImages",
+			Handler:    _LLMService_GenerateImages_Handler,
+		},
+		{
+			MethodName: "SubmitVideo",
+			Handler:    _LLMService_SubmitVideo_Handler,
+		},
+		{
+			MethodName: "GetVideo",
+			Handler:    _LLMService_GetVideo_Handler,
+		},
+		{
+			MethodName: "ListMediaRecords",
+			Handler:    _LLMService_ListMediaRecords_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

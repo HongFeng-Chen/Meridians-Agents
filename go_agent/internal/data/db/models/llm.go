@@ -14,6 +14,8 @@ type LLMProviderPO struct {
 	APIKey       string    `gorm:"column:api_key;type:text"`
 	Models       string    `gorm:"column:models;type:text"`
 	DefaultModel string    `gorm:"column:default_model;size:191;not null;default:''"`
+	ImageModels  string    `gorm:"column:image_models;type:text"`
+	VideoModels  string    `gorm:"column:video_models;type:text"`
 	Temperature  float64   `gorm:"column:temperature;not null;default:0.3"`
 	MaxTokens    int       `gorm:"column:max_tokens;not null;default:0"`
 	TimeoutSec   int       `gorm:"column:timeout_seconds;not null;default:120"`

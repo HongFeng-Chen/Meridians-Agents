@@ -1781,6 +1781,105 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/llm.v1.CurrentLLM'
+    /api/llm/media/images:
+        post:
+            tags:
+                - LLMService
+            description: GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+            operationId: LLMService_GenerateImages
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/llm.v1.GenerateImagesRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/llm.v1.GenerateImagesReply'
+    /api/llm/media/records:
+        get:
+            tags:
+                - LLMService
+            description: ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+            operationId: LLMService_ListMediaRecords
+            parameters:
+                - name: kind
+                  in: query
+                  description: image | video
+                  schema:
+                    type: string
+                - name: provider
+                  in: query
+                  schema:
+                    type: string
+                - name: model
+                  in: query
+                  schema:
+                    type: string
+                - name: result
+                  in: query
+                  description: ok / failed / 空（不过滤）
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: offset
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/llm.v1.ListMediaRecordsReply'
+    /api/llm/media/videos:
+        post:
+            tags:
+                - LLMService
+            description: SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+            operationId: LLMService_SubmitVideo
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/llm.v1.SubmitVideoRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/llm.v1.SubmitVideoReply'
+    /api/llm/media/videos/{id}:
+        get:
+            tags:
+                - LLMService
+            description: GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+            operationId: LLMService_GetVideo
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/llm.v1.GetVideoReply'
     /api/llm/providers:
         get:
             tags:
@@ -3656,7 +3755,7 @@ paths:
                     type: string
                 - name: mode
                   in: query
-                  description: rag（默认）| graph
+                  description: rag（默认，向量）| graph（图谱）| both（双索引）
                   schema:
                     type: string
                 - name: doc_id
@@ -5620,6 +5719,14 @@ components:
                         type: string
                 description:
                     type: string
+                image_models:
+                    type: array
+                    items:
+                        type: string
+                video_models:
+                    type: array
+                    items:
+                        type: string
         llm.v1.CurrentLLM:
             type: object
             properties:
@@ -5637,6 +5744,86 @@ components:
             properties:
                 deleted:
                     type: boolean
+        llm.v1.GenerateImagesReply:
+            type: object
+            properties:
+                record:
+                    $ref: '#/components/schemas/llm.v1.ImageGenRecord'
+        llm.v1.GenerateImagesRequest:
+            required:
+                - prompt
+            type: object
+            properties:
+                provider:
+                    type: string
+                    description: 指定数据源名（空 = 自动路由到第一个配置了图像模型的启用数据源）
+                model:
+                    type: string
+                    description: 指定模型名（空 = 数据源 image_models 首个）
+                mode:
+                    type: string
+                    description: text2img（默认）| img2img
+                prompt:
+                    type: string
+                    description: 生成提示词；img2img 时表示「改成什么样」
+                images:
+                    type: array
+                    items:
+                        type: string
+                    description: img2img 参考图（https URL 或 data URI）
+                size:
+                    type: string
+                    description: 分辨率（如 1024x1024；空 = 厂商默认）
+                count:
+                    type: integer
+                    description: 生成张数（1-4，默认 1）
+                    format: int32
+                seed:
+                    type: string
+                    description: 随机种子（不传 = 不指定）
+            description: GenerateImagesRequest 图片生成请求
+        llm.v1.GetVideoReply:
+            type: object
+            properties:
+                record:
+                    $ref: '#/components/schemas/llm.v1.VideoGenRecord'
+        llm.v1.ImageGenRecord:
+            type: object
+            properties:
+                id:
+                    type: string
+                provider:
+                    type: string
+                model:
+                    type: string
+                mode:
+                    type: string
+                prompt:
+                    type: string
+                size:
+                    type: string
+                count:
+                    type: integer
+                    format: int32
+                inputs:
+                    type: array
+                    items:
+                        type: string
+                    description: img2img 参考图（data URI 已脱敏）
+                outputs:
+                    type: array
+                    items:
+                        type: string
+                    description: 生成产物（本地 /api/files/ 稳定地址）
+                ok:
+                    type: boolean
+                error:
+                    type: string
+                duration_ms:
+                    type: string
+                created_at:
+                    type: string
+            description: ImageGenRecord 一次图片生成的记录（含产物地址）
         llm.v1.LLMCall:
             type: object
             properties:
@@ -5734,6 +5921,21 @@ components:
                         $ref: '#/components/schemas/llm.v1.LLMCall'
                 total:
                     type: string
+        llm.v1.ListMediaRecordsReply:
+            type: object
+            properties:
+                images:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/llm.v1.ImageGenRecord'
+                    description: kind=image 时填充
+                videos:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/llm.v1.VideoGenRecord'
+                    description: kind=video 时填充
+                total:
+                    type: string
         llm.v1.ListProvidersReply:
             type: object
             properties:
@@ -5790,6 +5992,16 @@ components:
                     description: general | rag | graph | extract | memory，空表示通用
                 description:
                     type: string
+                image_models:
+                    type: array
+                    items:
+                        type: string
+                    description: 该数据源支持的图像生成模型（文生图 / 图生图；空 = 不参与图像生成路由）
+                video_models:
+                    type: array
+                    items:
+                        type: string
+                    description: 该数据源支持的视频生成模型（空 = 不参与视频生成路由）
                 created_at:
                     type: string
                 updated_at:
@@ -5813,6 +6025,33 @@ components:
                     items:
                         type: string
             description: ScenesReply 内置场景清单。
+        llm.v1.SubmitVideoReply:
+            type: object
+            properties:
+                record:
+                    $ref: '#/components/schemas/llm.v1.VideoGenRecord'
+        llm.v1.SubmitVideoRequest:
+            required:
+                - prompt
+            type: object
+            properties:
+                provider:
+                    type: string
+                model:
+                    type: string
+                prompt:
+                    type: string
+                image:
+                    type: string
+                    description: 首帧参考图（图生视频；空 = 纯文生视频）
+                size:
+                    type: string
+                duration_seconds:
+                    type: integer
+                    format: int32
+                seed:
+                    type: string
+            description: SubmitVideoRequest 视频生成提交（异步任务）
         llm.v1.TestResult:
             type: object
             properties:
@@ -5870,7 +6109,51 @@ components:
                         type: string
                 description:
                     type: string
+                image_models:
+                    type: array
+                    items:
+                        type: string
+                video_models:
+                    type: array
+                    items:
+                        type: string
             description: UpdateProviderRequest 指针语义：字段缺省表示不修改。
+        llm.v1.VideoGenRecord:
+            type: object
+            properties:
+                id:
+                    type: string
+                provider:
+                    type: string
+                model:
+                    type: string
+                prompt:
+                    type: string
+                size:
+                    type: string
+                duration_seconds:
+                    type: integer
+                    format: int32
+                inputs:
+                    type: array
+                    items:
+                        type: string
+                status:
+                    type: string
+                    description: queued | running | succeeded | failed
+                output:
+                    type: string
+                error:
+                    type: string
+                duration_ms:
+                    type: string
+                submitted_at:
+                    type: string
+                finished_at:
+                    type: string
+                created_at:
+                    type: string
+            description: VideoGenRecord 视频生成任务记录
         mcp.v1.CallMCPToolReply:
             type: object
             properties:
@@ -7326,7 +7609,7 @@ components:
                     type: string
                 mode:
                     type: string
-                    description: rag | graph
+                    description: rag（向量）| graph（图谱）| both（双索引）
                 status:
                     type: string
                     description: ready | failed
@@ -7474,10 +7757,12 @@ components:
                     type: string
                 mode:
                     type: string
-                    description: rag（默认）| graph
+                    description: rag（默认，向量）| graph（图谱）| both（双索引）
                 scope:
                     type: string
-                    description: "知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。\r\n tenant 需要 tenant:manage，system 需要 platform:config，否则 403。"
+                    description: |-
+                        知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
+                         tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
         rag.v1.IngestResult:
             type: object
             properties:
@@ -7510,7 +7795,9 @@ components:
                     description: 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
                 purged:
                     type: integer
-                    description: "本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时\r\n 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容"
+                    description: |-
+                        本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
+                         先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
                     format: int32
             description: IngestResult 入库结果（RAG 与 GraphRAG 共用）。
         rag.v1.ListDocsReply:

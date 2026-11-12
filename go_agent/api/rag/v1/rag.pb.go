@@ -546,7 +546,7 @@ type Document struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	DocId  string                 `protobuf:"bytes,1,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
 	Source string                 `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
-	// rag | graph
+	// rag（向量）| graph（图谱）| both（双索引）
 	Mode string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	// ready | failed
 	Status    string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
@@ -979,7 +979,7 @@ type IngestRequest struct {
 	// 留空取 doc_id
 	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
 	Text   string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	// rag（默认）| graph
+	// rag（默认，向量）| graph（图谱）| both（双索引）
 	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
 	// 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
 	// tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
@@ -1743,7 +1743,7 @@ type UploadAndIngestRequest struct {
 	File []byte `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
 	// 文件名，如 report.pdf（HTTP 下取客户端原名）
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	// rag（默认）| graph
+	// rag（默认，向量）| graph（图谱）| both（双索引）
 	Mode string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	// 留空取文件名（去扩展名）
 	DocId string `protobuf:"bytes,4,opt,name=doc_id,proto3" json:"doc_id,omitempty"`

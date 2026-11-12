@@ -22,12 +22,14 @@ import (
 	"go_agent/internal/data/db"
 	dbrepo "go_agent/internal/data/db/repo"
 	"go_agent/internal/data/harnessrunner"
+	"go_agent/internal/data/image_generations"
 	"go_agent/internal/data/milvusdb"
 	mvrepo "go_agent/internal/data/milvusdb/repo"
 	"go_agent/internal/data/redis"
 	aiplatformclient "go_agent/internal/data/third_service/aiplatform"
 	"go_agent/internal/data/third_service/mcpclient"
 	"go_agent/internal/data/third_service/skillhub"
+	"go_agent/internal/data/video_generations"
 
 	"github.com/google/wire"
 )
@@ -82,6 +84,15 @@ var ProviderSet = wire.NewSet(
 	wire.Bind(new(llm.CostSink), new(*dbrepo.CostSink)),
 	llm.NewManager,
 	wire.Bind(new(rag.Chatter), new(*llm.Manager)),
+	// 媒体生成（文生图 / 图生图 / 视频生成）：image_generations / video_generations
+	// 记录表 + 厂商协议适配，MediaManager 复用 Manager 的数据源路由
+	image_generations.NewImageRepo,
+	image_generations.NewImageClient,
+	wire.Bind(new(llm.ImageGenClient), new(*image_generations.ImageClient)),
+	video_generations.NewVideoRepo,
+	video_generations.NewVideoClient,
+	wire.Bind(new(llm.VideoGenClient), new(*video_generations.VideoClient)),
+	llm.NewMediaManager,
 	// 提示词工程（打分/生成/优化）同样复用 llm.Manager，可指定数据源
 	wire.Bind(new(prompt.LLM), new(*llm.Manager)),
 

@@ -13,6 +13,7 @@ import (
 	"go_agent/internal/biz/agentfactory"
 	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/harness"
+	"go_agent/internal/biz/llm"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/egress"
@@ -52,7 +53,7 @@ func init() {
 //
 // 另外在 AfterStart 里自注册平台内置 MCP 服务（/mcp/platform）并同步工具：
 // 必须等 HTTP 端口起来后再连接（自调用），所以放后台协程 + 有限重试。
-func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, harnessUC *harness.UseCase, platformMCP *service.PlatformMCPService) *kratos.App {
+func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, harnessUC *harness.UseCase, platformMCP *service.PlatformMCPService, mediaUC *llm.MediaManager) *kratos.App {
 	// 评测运行的存活参数：心跳间隔与失联阈值。阈值必须显著大于心跳间隔，
 	// 否则数据库抖动一次就把正常运行的评测判成失联。
 	if harnessUC != nil {
@@ -79,6 +80,8 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 			if harnessUC != nil {
 				harnessUC.StartRecovery()
 			}
+			// 视频任务轮询器：把异步视频生成推进到终态
+			mediaUC.StartPolling()
 			return nil
 		}),
 		kratos.AfterStart(func(ctx context.Context) error {
@@ -116,6 +119,8 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 			if harnessUC != nil {
 				harnessUC.StopRecovery()
 			}
+			// 视频轮询器随进程退出
+			mediaUC.StopPolling()
 			// 审计是异步批量写的，把缓冲区里最近 2s 的事件落库再退出
 			if uc := audit.Default(); uc != nil {
 				uc.Close()

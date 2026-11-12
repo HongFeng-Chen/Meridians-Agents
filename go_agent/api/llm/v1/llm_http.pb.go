@@ -22,13 +22,17 @@ const OperationLLMServiceCreateProvider = "/llm.v1.LLMService/CreateProvider"
 const OperationLLMServiceDeleteProvider = "/llm.v1.LLMService/DeleteProvider"
 const OperationLLMServiceDisableProvider = "/llm.v1.LLMService/DisableProvider"
 const OperationLLMServiceEnableProvider = "/llm.v1.LLMService/EnableProvider"
+const OperationLLMServiceGenerateImages = "/llm.v1.LLMService/GenerateImages"
 const OperationLLMServiceGetCurrent = "/llm.v1.LLMService/GetCurrent"
 const OperationLLMServiceGetLLMStats = "/llm.v1.LLMService/GetLLMStats"
 const OperationLLMServiceGetProvider = "/llm.v1.LLMService/GetProvider"
+const OperationLLMServiceGetVideo = "/llm.v1.LLMService/GetVideo"
+const OperationLLMServiceListMediaRecords = "/llm.v1.LLMService/ListMediaRecords"
 const OperationLLMServiceListProviders = "/llm.v1.LLMService/ListProviders"
 const OperationLLMServiceListRemoteModels = "/llm.v1.LLMService/ListRemoteModels"
 const OperationLLMServiceListScenes = "/llm.v1.LLMService/ListScenes"
 const OperationLLMServiceSetDefaultProvider = "/llm.v1.LLMService/SetDefaultProvider"
+const OperationLLMServiceSubmitVideo = "/llm.v1.LLMService/SubmitVideo"
 const OperationLLMServiceTestProvider = "/llm.v1.LLMService/TestProvider"
 const OperationLLMServiceUpdateProvider = "/llm.v1.LLMService/UpdateProvider"
 
@@ -43,12 +47,18 @@ type LLMServiceHTTPServer interface {
 	DisableProvider(context.Context, *ToggleProviderRequest) (*Provider, error)
 	// EnableProvider EnableProvider 启用数据源。
 	EnableProvider(context.Context, *ToggleProviderRequest) (*Provider, error)
+	// GenerateImages GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+	GenerateImages(context.Context, *GenerateImagesRequest) (*GenerateImagesReply, error)
 	// GetCurrent GetCurrent 当前生效的数据源与模型。
 	GetCurrent(context.Context, *GetCurrentRequest) (*CurrentLLM, error)
 	// GetLLMStats GetLLMStats 数据源规模。
 	GetLLMStats(context.Context, *GetLLMStatsRequest) (*LLMStats, error)
 	// GetProvider GetProvider 数据源详情。
 	GetProvider(context.Context, *GetProviderRequest) (*Provider, error)
+	// GetVideo GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+	GetVideo(context.Context, *GetVideoRequest) (*GetVideoReply, error)
+	// ListMediaRecords ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+	ListMediaRecords(context.Context, *ListMediaRecordsRequest) (*ListMediaRecordsReply, error)
 	// ListProviders ListProviders 数据源列表。
 	ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersReply, error)
 	// ListRemoteModels ListRemoteModels 拉取远端 /models（不落库，供前端勾选）。
@@ -57,6 +67,8 @@ type LLMServiceHTTPServer interface {
 	ListScenes(context.Context, *GetCurrentRequest) (*ScenesReply, error)
 	// SetDefaultProvider SetDefaultProvider 设为默认数据源。
 	SetDefaultProvider(context.Context, *ToggleProviderRequest) (*Provider, error)
+	// SubmitVideo SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+	SubmitVideo(context.Context, *SubmitVideoRequest) (*SubmitVideoReply, error)
 	// TestProvider TestProvider 连通性测试（会真实发起一次对话）。
 	TestProvider(context.Context, *ToggleProviderRequest) (*TestResult, error)
 	// UpdateProvider UpdateProvider 修改数据源。
@@ -79,6 +91,10 @@ func RegisterLLMServiceHTTPServer(s *http.Server, srv LLMServiceHTTPServer) {
 	r.Handle("GET", "/api/llm/current", _LLMService_GetCurrent0_HTTP_Handler(srv))
 	r.Handle("GET", "/api/llm/scenes", _LLMService_ListScenes0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/llm/chat", _LLMService_Chat0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/llm/media/images", _LLMService_GenerateImages0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/llm/media/videos", _LLMService_SubmitVideo0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/llm/media/videos/{id}", _LLMService_GetVideo0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/llm/media/records", _LLMService_ListMediaRecords0_HTTP_Handler(srv))
 }
 
 func _LLMService_ListProviders0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Context) error {
@@ -371,6 +387,85 @@ func _LLMService_Chat0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Cont
 	}
 }
 
+func _LLMService_GenerateImages0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in GenerateImagesRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationLLMServiceGenerateImages)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.GenerateImages(ctx, req.(*GenerateImagesRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*GenerateImagesReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _LLMService_SubmitVideo0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in SubmitVideoRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationLLMServiceSubmitVideo)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.SubmitVideo(ctx, req.(*SubmitVideoRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*SubmitVideoReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _LLMService_GetVideo0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in GetVideoRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationLLMServiceGetVideo)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.GetVideo(ctx, req.(*GetVideoRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*GetVideoReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _LLMService_ListMediaRecords0_HTTP_Handler(srv LLMServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ListMediaRecordsRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationLLMServiceListMediaRecords)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ListMediaRecords(ctx, req.(*ListMediaRecordsRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*ListMediaRecordsReply)
+		return ctx.Result(200, reply)
+	}
+}
+
 type LLMServiceHTTPClient interface {
 	// Chat Chat 调试对话（管理端手动调用）。
 	Chat(ctx context.Context, req *ChatRequest, opts ...http.CallOption) (rsp *ChatReply, err error)
@@ -382,12 +477,18 @@ type LLMServiceHTTPClient interface {
 	DisableProvider(ctx context.Context, req *ToggleProviderRequest, opts ...http.CallOption) (rsp *Provider, err error)
 	// EnableProvider EnableProvider 启用数据源。
 	EnableProvider(ctx context.Context, req *ToggleProviderRequest, opts ...http.CallOption) (rsp *Provider, err error)
+	// GenerateImages GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+	GenerateImages(ctx context.Context, req *GenerateImagesRequest, opts ...http.CallOption) (rsp *GenerateImagesReply, err error)
 	// GetCurrent GetCurrent 当前生效的数据源与模型。
 	GetCurrent(ctx context.Context, req *GetCurrentRequest, opts ...http.CallOption) (rsp *CurrentLLM, err error)
 	// GetLLMStats GetLLMStats 数据源规模。
 	GetLLMStats(ctx context.Context, req *GetLLMStatsRequest, opts ...http.CallOption) (rsp *LLMStats, err error)
 	// GetProvider GetProvider 数据源详情。
 	GetProvider(ctx context.Context, req *GetProviderRequest, opts ...http.CallOption) (rsp *Provider, err error)
+	// GetVideo GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+	GetVideo(ctx context.Context, req *GetVideoRequest, opts ...http.CallOption) (rsp *GetVideoReply, err error)
+	// ListMediaRecords ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+	ListMediaRecords(ctx context.Context, req *ListMediaRecordsRequest, opts ...http.CallOption) (rsp *ListMediaRecordsReply, err error)
 	// ListProviders ListProviders 数据源列表。
 	ListProviders(ctx context.Context, req *ListProvidersRequest, opts ...http.CallOption) (rsp *ListProvidersReply, err error)
 	// ListRemoteModels ListRemoteModels 拉取远端 /models（不落库，供前端勾选）。
@@ -396,6 +497,8 @@ type LLMServiceHTTPClient interface {
 	ListScenes(ctx context.Context, req *GetCurrentRequest, opts ...http.CallOption) (rsp *ScenesReply, err error)
 	// SetDefaultProvider SetDefaultProvider 设为默认数据源。
 	SetDefaultProvider(ctx context.Context, req *ToggleProviderRequest, opts ...http.CallOption) (rsp *Provider, err error)
+	// SubmitVideo SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+	SubmitVideo(ctx context.Context, req *SubmitVideoRequest, opts ...http.CallOption) (rsp *SubmitVideoReply, err error)
 	// TestProvider TestProvider 连通性测试（会真实发起一次对话）。
 	TestProvider(ctx context.Context, req *ToggleProviderRequest, opts ...http.CallOption) (rsp *TestResult, err error)
 	// UpdateProvider UpdateProvider 修改数据源。
@@ -497,6 +600,24 @@ func (c *LLMServiceHTTPClientImpl) EnableProvider(ctx context.Context, in *Toggl
 	return &out, nil
 }
 
+// GenerateImages GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+func (c *LLMServiceHTTPClientImpl) GenerateImages(ctx context.Context, in *GenerateImagesRequest, opts ...http.CallOption) (*GenerateImagesReply, error) {
+	var out GenerateImagesReply
+	pattern := "/api/llm/media/images"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationLLMServiceGenerateImages),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetCurrent GetCurrent 当前生效的数据源与模型。
 func (c *LLMServiceHTTPClientImpl) GetCurrent(ctx context.Context, in *GetCurrentRequest, opts ...http.CallOption) (*CurrentLLM, error) {
 	var out CurrentLLM
@@ -539,6 +660,40 @@ func (c *LLMServiceHTTPClientImpl) GetProvider(ctx context.Context, in *GetProvi
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.Operation(OperationLLMServiceGetProvider),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetVideo GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+func (c *LLMServiceHTTPClientImpl) GetVideo(ctx context.Context, in *GetVideoRequest, opts ...http.CallOption) (*GetVideoReply, error) {
+	var out GetVideoReply
+	pattern := "/api/llm/media/videos/{id}"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationLLMServiceGetVideo),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListMediaRecords ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+func (c *LLMServiceHTTPClientImpl) ListMediaRecords(ctx context.Context, in *ListMediaRecordsRequest, opts ...http.CallOption) (*ListMediaRecordsReply, error) {
+	var out ListMediaRecordsReply
+	pattern := "/api/llm/media/records"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationLLMServiceListMediaRecords),
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
@@ -610,6 +765,24 @@ func (c *LLMServiceHTTPClientImpl) SetDefaultProvider(ctx context.Context, in *T
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "POST", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SubmitVideo SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+func (c *LLMServiceHTTPClientImpl) SubmitVideo(ctx context.Context, in *SubmitVideoRequest, opts ...http.CallOption) (*SubmitVideoReply, error) {
+	var out SubmitVideoReply
+	pattern := "/api/llm/media/videos"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationLLMServiceSubmitVideo),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
