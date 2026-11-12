@@ -2325,3 +2325,95 @@ pre.block {
   .kb-bar { padding: 6px 8px; }
   .doc-cell { max-width: 220px; }
 }
+
+/* —— 媒体生成（文生图 / 图生图 / 视频生成） —— */
+/* 参考图上传格 */
+.ref-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.ref-item {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #f6f7fa;
+}
+.ref-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ref-item .icon-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 7px;
+  background: rgba(20, 22, 35, 0.55);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ref-item .icon-btn:hover { background: rgba(20, 22, 35, 0.8); }
+
+.ref-add {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: #fcfcfe;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.ref-add:hover { border-color: #c9ccf5; color: var(--accent); background: var(--accent-soft); }
+
+/* 生成结果画廊 */
+.gen-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.gen-item {
+  position: relative;
+  display: block;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #f6f7fa;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.gen-item:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+.gen-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.gen-caption {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 14px 9px 7px;
+  background: linear-gradient(transparent, rgba(12, 14, 24, 0.72));
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 视频播放器 */
+.gen-video {
+  width: 100%;
+  max-width: 640px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #10121c;
+  display: block;
+}

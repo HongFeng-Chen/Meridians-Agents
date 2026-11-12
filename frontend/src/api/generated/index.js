@@ -858,6 +858,46 @@ export const getCurrent = (input = {}, options) =>
   call('LLMService_GetCurrent', input, options);
 
 /**
+ * GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。
+ *
+ * POST /api/llm/media/images
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<GenerateImagesReply>}
+ */
+export const generateImages = (input = {}, options) =>
+  call('LLMService_GenerateImages', input, options);
+
+/**
+ * ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。
+ *
+ * GET /api/llm/media/records
+ *   query 参数：kind, provider, model, result, limit, offset
+ * @returns {Promise<ListMediaRecordsReply>}
+ */
+export const listMediaRecords = (input = {}, options) =>
+  call('LLMService_ListMediaRecords', input, options);
+
+/**
+ * SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。
+ *
+ * POST /api/llm/media/videos
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<SubmitVideoReply>}
+ */
+export const submitVideo = (input = {}, options) =>
+  call('LLMService_SubmitVideo', input, options);
+
+/**
+ * GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。
+ *
+ * GET /api/llm/media/videos/{id}
+ * @param {Object} input 路径参数：id
+ * @returns {Promise<GetVideoReply>}
+ */
+export const getVideo = (input = {}, options) =>
+  call('LLMService_GetVideo', input, options);
+
+/**
  * ListProviders 数据源列表。
  *
  * GET /api/llm/providers
@@ -1887,6 +1927,10 @@ export const llm = {
   getLLMCallStats,
   llmChat,
   getCurrent,
+  generateImages,
+  listMediaRecords,
+  submitVideo,
+  getVideo,
   listProviders,
   createProvider,
   getProvider,

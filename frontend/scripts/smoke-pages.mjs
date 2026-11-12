@@ -25,6 +25,7 @@ const PAGES = [
   ['prompts', '提示词工程'],
   ['memory', '记忆系统'],
   ['llm', '大模型数据源'],
+  ['mediagen', '媒体生成'],
   ['skills', '技能管理'],
   ['agents', 'Agent 工厂'],
   ['tasks', '任务中心'],

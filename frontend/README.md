@@ -68,7 +68,8 @@ npm run preview    # 本地预览产物
 
 ```text
 src/
-├── pages/            15 个页面（Dashboard / Knowledge（实时库：资产·接入·检索三合一）/
+├── pages/            16 个页面（Dashboard / Knowledge（实时库） / MediaGen（媒体生成：
+│                     文生图 / 图生图 / 视频生成，模型来自数据源 image_models / video_models）/
 │                     Prompts / Memory / LLM / Skills / Mcp / AIPlatforms / Eval / Agents /
 │                     Tasks / Chats / Tenants / Users / Admin）+ Login 登录页
 ├── components/       Sidebar、UI、Markdown、MermaidBlock、Subgraph、AgentFlow、

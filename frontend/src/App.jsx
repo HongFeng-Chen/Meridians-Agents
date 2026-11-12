@@ -6,6 +6,7 @@ import Admin from './pages/Admin.jsx';
 import Prompts from './pages/Prompts.jsx';
 import Memory from './pages/Memory.jsx';
 import LLM from './pages/LLM.jsx';
+import MediaGen from './pages/MediaGen.jsx';
 import Skills from './pages/Skills.jsx';
 import Mcp from './pages/Mcp.jsx';
 import AIPlatforms from './pages/AIPlatforms.jsx';
@@ -44,6 +45,11 @@ const PAGES = {
     title: '大模型数据源',
     desc: '多数据源并存、按场景路由、失败自动切换；配置落在 MySQL',
     component: LLM,
+  },
+  mediagen: {
+    title: '媒体生成',
+    desc: '文生图 / 图生图 / 视频生成：模型来自数据源配置，产物落本地可回看',
+    component: MediaGen,
   },
   skills: {
     title: '技能管理',

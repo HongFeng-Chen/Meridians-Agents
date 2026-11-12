@@ -54,6 +54,8 @@
  * @property {number} [priority]
  * @property {string[]} [scenes]
  * @property {string} [description]
+ * @property {string[]} [image_models]
+ * @property {string[]} [video_models]
  */
 
 /**
@@ -69,6 +71,49 @@
  * DeleteProviderReply
  * @typedef {Object} DeleteProviderReply
  * @property {boolean} [deleted]
+ */
+
+/**
+ * GenerateImagesReply
+ * @typedef {Object} GenerateImagesReply
+ * @property {ImageGenRecord} [record]
+ */
+
+/**
+ * GenerateImagesRequest 图片生成请求
+ * @typedef {Object} GenerateImagesRequest
+ * @property {string} [provider] - 指定数据源名（空 = 自动路由到第一个配置了图像模型的启用数据源）
+ * @property {string} [model] - 指定模型名（空 = 数据源 image_models 首个）
+ * @property {string} [mode] - text2img（默认）| img2img
+ * @property {string} prompt - 生成提示词；img2img 时表示「改成什么样」
+ * @property {string[]} [images] - img2img 参考图（https URL 或 data URI）
+ * @property {string} [size] - 分辨率（如 1024x1024；空 = 厂商默认）
+ * @property {number} [count] - 生成张数（1-4，默认 1）
+ * @property {string} [seed] - 随机种子（不传 = 不指定）
+ */
+
+/**
+ * GetVideoReply
+ * @typedef {Object} GetVideoReply
+ * @property {VideoGenRecord} [record]
+ */
+
+/**
+ * ImageGenRecord 一次图片生成的记录（含产物地址）
+ * @typedef {Object} ImageGenRecord
+ * @property {string} [id]
+ * @property {string} [provider]
+ * @property {string} [model]
+ * @property {string} [mode]
+ * @property {string} [prompt]
+ * @property {string} [size]
+ * @property {number} [count]
+ * @property {string[]} [inputs] - img2img 参考图（data URI 已脱敏）
+ * @property {string[]} [outputs] - 生成产物（本地 /api/files/ 稳定地址）
+ * @property {boolean} [ok]
+ * @property {string} [error]
+ * @property {string} [duration_ms]
+ * @property {string} [created_at]
  */
 
 /**
@@ -131,6 +176,14 @@
  */
 
 /**
+ * ListMediaRecordsReply
+ * @typedef {Object} ListMediaRecordsReply
+ * @property {ImageGenRecord[]} [images] - kind=image 时填充
+ * @property {VideoGenRecord[]} [videos] - kind=video 时填充
+ * @property {string} [total]
+ */
+
+/**
  * ListProvidersReply
  * @typedef {Object} ListProvidersReply
  * @property {Provider[]} [providers]
@@ -155,6 +208,8 @@
  * @property {number} [priority] - 数值越大优先级越高
  * @property {string[]} [scenes] - general | rag | graph | extract | memory，空表示通用
  * @property {string} [description]
+ * @property {string[]} [image_models] - 该数据源支持的图像生成模型（文生图 / 图生图；空 = 不参与图像生成路由）
+ * @property {string[]} [video_models] - 该数据源支持的视频生成模型（空 = 不参与视频生成路由）
  * @property {string} [created_at]
  * @property {string} [updated_at]
  */
@@ -170,6 +225,24 @@
  * ScenesReply 内置场景清单。
  * @typedef {Object} ScenesReply
  * @property {string[]} [scenes]
+ */
+
+/**
+ * SubmitVideoReply
+ * @typedef {Object} SubmitVideoReply
+ * @property {VideoGenRecord} [record]
+ */
+
+/**
+ * SubmitVideoRequest 视频生成提交（异步任务）
+ * @typedef {Object} SubmitVideoRequest
+ * @property {string} [provider]
+ * @property {string} [model]
+ * @property {string} prompt
+ * @property {string} [image] - 首帧参考图（图生视频；空 = 纯文生视频）
+ * @property {string} [size]
+ * @property {number} [duration_seconds]
+ * @property {string} [seed]
  */
 
 /**
@@ -200,6 +273,27 @@
  * @property {number} [priority]
  * @property {string[]} [scenes]
  * @property {string} [description]
+ * @property {string[]} [image_models]
+ * @property {string[]} [video_models]
+ */
+
+/**
+ * VideoGenRecord 视频生成任务记录
+ * @typedef {Object} VideoGenRecord
+ * @property {string} [id]
+ * @property {string} [provider]
+ * @property {string} [model]
+ * @property {string} [prompt]
+ * @property {string} [size]
+ * @property {number} [duration_seconds]
+ * @property {string[]} [inputs]
+ * @property {string} [status] - queued | running | succeeded | failed
+ * @property {string} [output]
+ * @property {string} [error]
+ * @property {string} [duration_ms]
+ * @property {string} [submitted_at]
+ * @property {string} [finished_at]
+ * @property {string} [created_at]
  */
 
 /* ---------- MCP 服务与工具（MCPService） ---------- */
@@ -1043,7 +1137,7 @@
  * @typedef {Object} Document
  * @property {string} [doc_id]
  * @property {string} [source]
- * @property {string} [mode] - rag | graph
+ * @property {string} [mode] - rag（向量）| graph（图谱）| both（双索引）
  * @property {string} [status] - ready | failed
  * @property {number} [chars]
  * @property {number} [chunks]
@@ -1125,7 +1219,7 @@
  * @property {string} [doc_id] - 留空自动生成 doc-{yyyymmddHHMMSS}
  * @property {string} [source] - 留空取 doc_id
  * @property {string} text
- * @property {string} [mode] - rag（默认）| graph
+ * @property {string} [mode] - rag（默认，向量）| graph（图谱）| both（双索引）
  * @property {string} [scope] - 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。 tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
  */
 

@@ -23,6 +23,8 @@ const EMPTY = {
   api_key: '',
   default_model: '',
   models: '',
+  image_models: '',
+  video_models: '',
   scenes: [],
   priority: 0,
   is_default: false,
@@ -92,6 +94,9 @@ export default function LLM() {
     ...(form.api_key ? { api_key: form.api_key } : {}),
     default_model: form.default_model,
     models: form.models ? form.models.split(/[,，\s]+/).filter(Boolean) : [],
+    // 媒体生成模型：与对话模型独立；留空 = 该数据源不参与媒体生成路由
+    image_models: form.image_models ? form.image_models.split(/[,，\s]+/).filter(Boolean) : [],
+    video_models: form.video_models ? form.video_models.split(/[,，\s]+/).filter(Boolean) : [],
     scenes: form.scenes,
     priority: Number(form.priority) || 0,
     is_default: form.is_default,
@@ -138,6 +143,8 @@ export default function LLM() {
       api_key: '',
       default_model: p.default_model || '',
       models: (p.models || []).join(', '),
+      image_models: (p.image_models || []).join(', '),
+      video_models: (p.video_models || []).join(', '),
       scenes: p.scenes || [],
       priority: p.priority ?? 0,
       is_default: !!p.is_default,
@@ -387,6 +394,28 @@ export default function LLM() {
                   value={form.models}
                   onChange={(e) => setForm({ ...form, models: e.target.value })}
                 />
+              </label>
+            </div>
+            <div className="query-row">
+              <label className="field inline">
+                <span className="field-label">图像生成模型（逗号分隔，选填）</span>
+                <input
+                  className="input mono"
+                  placeholder="Kwai-Kolors/Kolors, black-forest-labs/FLUX.1-schnell"
+                  value={form.image_models}
+                  onChange={(e) => setForm({ ...form, image_models: e.target.value })}
+                />
+                <span className="cell-sub">配置后该数据源参与「媒体生成」的图片路由（走 /images/generations）</span>
+              </label>
+              <label className="field inline">
+                <span className="field-label">视频生成模型（逗号分隔，选填）</span>
+                <input
+                  className="input mono"
+                  placeholder="Wan-AI/Wan2.1-T2V-14B"
+                  value={form.video_models}
+                  onChange={(e) => setForm({ ...form, video_models: e.target.value })}
+                />
+                <span className="cell-sub">配置后该数据源参与「媒体生成」的视频路由（异步任务）</span>
               </label>
             </div>
             <div className="field">

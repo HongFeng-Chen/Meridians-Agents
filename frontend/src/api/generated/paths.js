@@ -962,6 +962,54 @@ export const OPERATIONS = {
     multipart: false,
     bodyProps: [],
   },
+  LLMService_GenerateImages: {
+    service: 'LLMService',
+    group: 'llm',
+    method: 'POST',
+    path: '/api/llm/media/images',
+    summary: "GenerateImages 生成图片（文生图 / 图生图，同步返回产物）。",
+    pathParams: [],
+    queryParams: [],
+    hasBody: true,
+    multipart: false,
+    bodyProps: ["provider","model","mode","prompt","images","size","count","seed"],
+  },
+  LLMService_ListMediaRecords: {
+    service: 'LLMService',
+    group: 'llm',
+    method: 'GET',
+    path: '/api/llm/media/records',
+    summary: "ListMediaRecords 媒体生成历史（kind=image 查图片，kind=video 查视频）。",
+    pathParams: [],
+    queryParams: ["kind","provider","model","result","limit","offset"],
+    hasBody: false,
+    multipart: false,
+    bodyProps: [],
+  },
+  LLMService_SubmitVideo: {
+    service: 'LLMService',
+    group: 'llm',
+    method: 'POST',
+    path: '/api/llm/media/videos',
+    summary: "SubmitVideo 提交视频生成任务（异步，返回任务记录后轮询查询）。",
+    pathParams: [],
+    queryParams: [],
+    hasBody: true,
+    multipart: false,
+    bodyProps: ["provider","model","prompt","image","size","duration_seconds","seed"],
+  },
+  LLMService_GetVideo: {
+    service: 'LLMService',
+    group: 'llm',
+    method: 'GET',
+    path: '/api/llm/media/videos/{id}',
+    summary: "GetVideo 查询视频任务状态（进行中的任务顺带向厂商轮询一次）。",
+    pathParams: ["id"],
+    queryParams: [],
+    hasBody: false,
+    multipart: false,
+    bodyProps: [],
+  },
   LLMService_ListProviders: {
     service: 'LLMService',
     group: 'llm',
@@ -984,7 +1032,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["name","kind","base_url","api_key","models","default_model","temperature","max_tokens","timeout_seconds","enabled","is_default","priority","scenes","description"],
+    bodyProps: ["name","kind","base_url","api_key","models","default_model","temperature","max_tokens","timeout_seconds","enabled","is_default","priority","scenes","description","image_models","video_models"],
   },
   LLMService_GetProvider: {
     service: 'LLMService',
@@ -1008,7 +1056,7 @@ export const OPERATIONS = {
     queryParams: [],
     hasBody: true,
     multipart: false,
-    bodyProps: ["kind","base_url","api_key","models","default_model","temperature","max_tokens","timeout_seconds","enabled","is_default","priority","scenes","description"],
+    bodyProps: ["kind","base_url","api_key","models","default_model","temperature","max_tokens","timeout_seconds","enabled","is_default","priority","scenes","description","image_models","video_models"],
   },
   LLMService_DeleteProvider: {
     service: 'LLMService',
@@ -2080,4 +2128,4 @@ export const OPERATIONS = {
   },
 };
 
-export const OPERATION_COUNT = 173;
+export const OPERATION_COUNT = 177;

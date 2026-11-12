@@ -103,6 +103,23 @@ export const IconSpark = (p) => (
   </Svg>
 );
 
+// 图片：圆角相框 + 山与太阳
+export const IconImage = (p) => (
+  <Svg {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+    <circle cx="9" cy="9.5" r="1.6" />
+    <path d="m4.5 17 4.8-4.5 4 3.6 2.4-2.2 3.8 3.4" />
+  </Svg>
+);
+
+// 视频：胶片框 + 播放三角
+export const IconVideo = (p) => (
+  <Svg {...p}>
+    <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+    <path d="M10.2 9.6v5l4.2-2.5z" />
+  </Svg>
+);
+
 export const IconArrowRight = (p) => (
   <Svg {...p}>
     <path d="M5 12h13M13 6.5 18.5 12 13 17.5" />
