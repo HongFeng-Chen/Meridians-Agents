@@ -215,13 +215,14 @@ function graphMembers(graph) {
   return (graph?.nodes || []).filter((n) => n.kind === 'agent' && n.agent_key).map((n) => n.agent_key);
 }
 
-const CAP_TONES = { factory: 'violet', agent: 'teal', mcp: 'indigo', skill: 'warn' };
+const CAP_TONES = { factory: 'violet', agent: 'teal', mcp: 'indigo', skill: 'warn', media: 'green' };
 
 // 能力白名单 Tab：按类型分页浏览 + 检索；「已选」跨分类汇总，方便翻页后取消勾选
 const CAP_TABS = [
   { key: 'mcp', label: 'MCP 工具' },
   { key: 'agent', label: 'Agent 委派' },
   { key: 'skill', label: '技能' },
+  { key: 'media', label: '媒体生成' },
   { key: 'factory', label: '工厂' },
   { key: 'selected', label: '已选' },
 ];

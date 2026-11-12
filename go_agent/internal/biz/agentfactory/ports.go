@@ -165,6 +165,17 @@ type ToolPort interface {
 	CallTool(ctx context.Context, toolID uint64, uniqueName string, args map[string]any) (*mcp.CallResult, error)
 }
 
+// MediaPort 媒体生成供给（绑定 llm.MediaManager）：
+// llm:image / llm:video / llm:video_status 三个能力的实现后端。
+// 为 nil 时（最小部署未装配媒体生成）目录仍列出能力，调用时给出明确报错。
+type MediaPort interface {
+	GenerateImage(ctx context.Context, in *llm.ImageGenInput) (*llm.ImageGenRecord, error)
+	SubmitVideo(ctx context.Context, in *llm.VideoGenInput) (*llm.VideoGenRecord, error)
+	GetVideo(ctx context.Context, id uint64) (*llm.VideoGenRecord, error)
+	// MediaCatalog 可用的图像 / 视频数据源与模型（能力描述用，best effort）
+	MediaCatalog(ctx context.Context) (image, video []llm.MediaModelInfo, err error)
+}
+
 // PromptSaver 提示词工程端口：LLM 创建 Agent 成功后，把角色提示词沉淀为
 // 提示词工程模板（实现：prompt.UseCase.SaveAgentPrompt）。
 type PromptSaver interface {

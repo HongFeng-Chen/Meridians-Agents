@@ -109,7 +109,9 @@ type UseCase struct {
 	chat    Chatter
 	emb     Embedder
 	tools   ToolPort
-	prompts PromptSaver // 可为 nil：LLM 创建 Agent 时沉淀角色提示词到提示词工程
+	// media 媒体生成端口（可为 nil：最小部署未装配，llm:image/llm:video 调用报明确错误）
+	media    MediaPort
+	prompts  PromptSaver // 可为 nil：LLM 创建 Agent 时沉淀角色提示词到提示词工程
 	// authz 运行时二次授权（可为 nil：单测 / 未接线的部署不做资源级判权）
 	authz   ResourceAuthorizer
 	catalog *Catalog
@@ -145,15 +147,16 @@ type UseCase struct {
 	vecInit bool
 }
 
-// New 构造用例（不含执行体注册表：单机 / 测试态）
+// New 构造用例（不含执行体注册表：单机 / 测试态；媒体生成未装配）
 func New(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat Chatter, emb Embedder, tools ToolPort, skills SkillPort, prompts PromptSaver, opt Options) (*UseCase, error) {
-	return NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, nil, opt)
+	return NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, nil, nil, opt)
 }
 
 // NewWithWorkers 构造用例并注入执行体注册表（生产装配）。
 // workers 为 nil 时退化为无注册表模式：任务租约照常写库、失联任务照常能被清扫，
 // 只是实例心跳不可见（本进程回收自己遗留的 running 依然生效）。
-func NewWithWorkers(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat Chatter, emb Embedder, tools ToolPort, skills SkillPort, prompts PromptSaver, workers WorkerRepo, opt Options) (*UseCase, error) {
+// media 为 nil 时（最小部署未装配媒体生成）媒体能力仍可见，调用时报明确错误。
+func NewWithWorkers(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat Chatter, emb Embedder, tools ToolPort, skills SkillPort, prompts PromptSaver, media MediaPort, workers WorkerRepo, opt Options) (*UseCase, error) {
 	if repo == nil || vec == nil || cache == nil || emb == nil {
 		return nil, fmt.Errorf("AgentFactory 用例初始化失败: 依赖缺失")
 	}
@@ -170,6 +173,7 @@ func NewWithWorkers(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat
 		chat:          chat,
 		emb:           emb,
 		tools:         tools,
+		media:         media,
 		prompts:       prompts,
 		opt:           opt,
 		workers:       workers,
@@ -181,7 +185,7 @@ func NewWithWorkers(repo Repo, vec VectorStore, cache Cache, lock TaskLock, chat
 	}
 	u.catalog = NewCatalog(tools, func(ctx context.Context) ([]AgentDef, error) {
 		return repo.ListDefs(ctx, DefFilter{Enabled: boolPtr(true), Limit: 500})
-	}, skills)
+	}, skills, media)
 	return u, nil
 }
 
@@ -1200,6 +1204,12 @@ func (u *UseCase) executeTaskNow(ctx context.Context, t *Task, def *AgentDef) (s
 
 	// 注册取消句柄
 	runCtx, cancel := context.WithCancel(parent)
+	// 身份下传：任务执行（worker / 委派）的 ctx 来自后台 worker，没有请求身份；
+	// 注入任务归属身份后，任务内的媒体生成 / LLM 调用记录才能落到归属用户名下
+	// （媒体历史、成本账单按用户可查）。
+	if identity.UserID(runCtx) == "" && t.UserID != "" && t.UserID != identity.DefaultUser {
+		runCtx = identity.With(runCtx, identity.Info{UserID: t.UserID, TenantID: t.TenantID, Auth: "task"})
+	}
 	u.runMu.Lock()
 	u.cancels[t.ID] = cancel
 	u.runMu.Unlock()

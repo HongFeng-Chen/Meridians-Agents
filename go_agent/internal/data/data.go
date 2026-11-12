@@ -93,6 +93,7 @@ var ProviderSet = wire.NewSet(
 	video_generations.NewVideoClient,
 	wire.Bind(new(llm.VideoGenClient), new(*video_generations.VideoClient)),
 	llm.NewMediaManager,
+	wire.Bind(new(agentfactory.MediaPort), new(*llm.MediaManager)),
 	// 提示词工程（打分/生成/优化）同样复用 llm.Manager，可指定数据源
 	wire.Bind(new(prompt.LLM), new(*llm.Manager)),
 
@@ -194,8 +195,8 @@ func NewAgentFactoryOptions(c *conf.Data, sec *conf.Security) agentfactory.Optio
 // NewAgentFactoryUseCase 生产装配：在基础依赖之外注入执行体注册表。
 // 单独包一层是为了让 agentfactory.New 保持 10 参数签名——单测大量直接构造用例，
 // 不想为了一个可选端口把所有测试的构造调用都改一遍。
-func NewAgentFactoryUseCase(repo agentfactory.Repo, vec agentfactory.VectorStore, cache agentfactory.Cache, lock agentfactory.TaskLock, chat agentfactory.Chatter, emb agentfactory.Embedder, tools agentfactory.ToolPort, skills agentfactory.SkillPort, prompts agentfactory.PromptSaver, workers agentfactory.WorkerRepo, res *resource.UseCase, opt agentfactory.Options) (*agentfactory.UseCase, error) {
-	uc, err := agentfactory.NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, workers, opt)
+func NewAgentFactoryUseCase(repo agentfactory.Repo, vec agentfactory.VectorStore, cache agentfactory.Cache, lock agentfactory.TaskLock, chat agentfactory.Chatter, emb agentfactory.Embedder, tools agentfactory.ToolPort, skills agentfactory.SkillPort, prompts agentfactory.PromptSaver, media agentfactory.MediaPort, workers agentfactory.WorkerRepo, res *resource.UseCase, opt agentfactory.Options) (*agentfactory.UseCase, error) {
+	uc, err := agentfactory.NewWithWorkers(repo, vec, cache, lock, chat, emb, tools, skills, prompts, media, workers, opt)
 	if err != nil {
 		return nil, err
 	}

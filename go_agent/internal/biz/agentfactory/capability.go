@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"go_agent/internal/biz/audit"
+	"go_agent/internal/biz/llm"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/skill"
 	"go_agent/internal/pkg/trace"
@@ -28,10 +29,11 @@ type Catalog struct {
 	tools  ToolPort
 	agents func(ctx context.Context) ([]AgentDef, error) // 已启用 Agent 定义（除自身外都可委派）
 	skills SkillPort                                     // 启用技能（调用 = 加载 SKILL.md 到上下文）
+	media  MediaPort                                     // 媒体生成（可为 nil：最小部署未装配）
 }
 
-func NewCatalog(tools ToolPort, agents func(context.Context) ([]AgentDef, error), skills SkillPort) *Catalog {
-	return &Catalog{tools: tools, agents: agents, skills: skills}
+func NewCatalog(tools ToolPort, agents func(context.Context) ([]AgentDef, error), skills SkillPort, media MediaPort) *Catalog {
+	return &Catalog{tools: tools, agents: agents, skills: skills, media: media}
 }
 
 // Schemas 列出当前全部可用能力（LLM 提示词与前端展示共用）
@@ -98,8 +100,67 @@ func (c *Catalog) Schemas(ctx context.Context) ([]CapabilitySchema, error) {
 		}
 	}
 
+	// 媒体生成能力：图像同步生成；视频异步提交后用 llm:video_status 轮询。
+	// 模型清单进描述是 best effort：目录接口失败只降级为通用描述，不阻断能力选择。
+	schemas = append(schemas, c.mediaSchemas(ctx)...)
+
 	sort.Slice(schemas, func(i, j int) bool { return schemas[i].Name < schemas[j].Name })
 	return schemas, nil
+}
+
+// mediaSchemas 组装媒体生成能力描述（llm:image / llm:video / llm:video_status）
+func (c *Catalog) mediaSchemas(ctx context.Context) []CapabilitySchema {
+	imgHint, vidHint := "", ""
+	if c.media != nil {
+		if imgs, vids, err := c.media.MediaCatalog(ctx); err == nil {
+			if len(imgs) > 0 {
+				imgHint = "可用图像模型：" + mediaCatalogText(imgs)
+			} else {
+				imgHint = "平台尚未配置图像生成数据源（需在数据源里填写 image models 后使用）"
+			}
+			if len(vids) > 0 {
+				vidHint = "可用视频模型：" + mediaCatalogText(vids)
+			} else {
+				vidHint = "平台尚未配置视频生成数据源（需在数据源里填写 video models 后使用）"
+			}
+		}
+	}
+	return []CapabilitySchema{
+		{
+			Name: CapImage,
+			Type: "media",
+			Description: "生成图片（文生图 / 图生图）：把图片画出来，返回本地文件地址（/api/files/）。" +
+				"需要画图、海报、示意图、配图等场景使用。同步等待，通常 10~60 秒。" + imgHint,
+			ArgsExample: `{"prompt":"水墨风格的城市黄昏插画，暖色调","size":"1024x1024","count":1}`,
+		},
+		{
+			Name: CapVideo,
+			Type: "media",
+			Description: "提交视频生成任务（文生视频 / 图生视频）：异步执行，返回记录 ID，" +
+				"用 " + CapVideoStatus + " 轮询进度，成功后拿到本地文件地址。通常 1~10 分钟。" + vidHint,
+			ArgsExample: `{"prompt":"一只柯基在草地上奔跑，镜头缓慢推进","size":"1280x720","duration_seconds":5}`,
+		},
+		{
+			Name: CapVideoStatus,
+			Type: "media",
+			Description: "查询视频生成任务状态：传入提交时返回的记录 ID。" +
+				"返回 queued（排队）/ running（生成中）/ succeeded（含视频地址）/ failed（含原因）。",
+			ArgsExample: `{"id":123}`,
+		},
+	}
+}
+
+// mediaCatalogText 压缩模型目录为一行文本（provider(模型1/模型2)，多项分号分隔）
+func mediaCatalogText(list []llm.MediaModelInfo) string {
+	parts := make([]string, 0, len(list))
+	for _, m := range list {
+		models := m.Models
+		if len(models) > 4 {
+			models = append(models[:4], fmt.Sprintf("等 %d 个", len(m.Models)))
+		}
+		parts = append(parts, m.Provider+"（"+strings.Join(models, "/")+"）")
+	}
+	return truncateRunes(strings.Join(parts, "；"), 240)
 }
 
 // Known 判断能力名是否在当前目录内
@@ -147,6 +208,12 @@ func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[stri
 		return u.toolCapability(ctx, strings.TrimPrefix(name, CapToolPrefix), args, rec)
 	case strings.HasPrefix(name, CapSkillPrefix):
 		return u.skillCapability(ctx, strings.TrimPrefix(name, CapSkillPrefix), args)
+	case name == CapImage:
+		return u.imageCapability(ctx, args)
+	case name == CapVideo:
+		return u.videoCapability(ctx, args)
+	case name == CapVideoStatus:
+		return u.videoStatusCapability(ctx, args)
 	default:
 		return "", fmt.Errorf("%w: %s", ErrCapabilityUnset, name)
 	}

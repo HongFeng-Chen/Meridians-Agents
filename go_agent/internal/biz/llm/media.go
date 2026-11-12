@@ -195,6 +195,40 @@ func containsStr(list []string, s string) bool {
 	return false
 }
 
+// —— 媒体能力目录（Agent 工厂能力描述 / LLM 提示词共用）——
+
+// MediaModelInfo 一个数据源上可用的生成模型集合
+type MediaModelInfo struct {
+	Provider string   `json:"provider"` // 数据源名（GenerateImage/SubmitVideo 的 provider 参数值）
+	Kind     string   `json:"kind"`     // 数据源 kind（协议族）
+	Models   []string `json:"models"`   // 可用模型名
+}
+
+// MediaCatalog 列出启用了图像 / 视频模型的数据源。video 为 nil 表示平台没有
+// 可用的视频生成数据源——能力描述据此如实告知 LLM，避免模型幻选模型名。
+func (mm *MediaManager) MediaCatalog(ctx context.Context) (image, video []MediaModelInfo, err error) {
+	if mm == nil || mm.mgr == nil {
+		return nil, nil, fmt.Errorf("媒体生成能力未装配")
+	}
+	providers, err := mm.mgr.ListProviders(ctx, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range providers {
+		p := &providers[i]
+		if !p.Enabled {
+			continue
+		}
+		if len(p.ImageModels) > 0 {
+			image = append(image, MediaModelInfo{Provider: p.Name, Kind: p.Kind, Models: p.ImageModels})
+		}
+		if len(p.VideoModels) > 0 {
+			video = append(video, MediaModelInfo{Provider: p.Name, Kind: p.Kind, Models: p.VideoModels})
+		}
+	}
+	return image, video, nil
+}
+
 // —— 图片生成 ——
 
 // GenerateImage 同步生成图片：记录先落库（可追溯失败），厂商返回即终态。

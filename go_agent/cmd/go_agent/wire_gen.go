@@ -237,7 +237,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	}
 	resourceUseCase := resource.NewUseCase(resourceRepo, spaceUseCase)
 	options := data.NewAgentFactoryOptions(confData, security)
-	agentfactoryUseCase, err := data.NewAgentFactoryUseCase(agentfactoryRepo, agentfactoryVectorStore, agentFactoryCache, taskLock, manager, embeddingClient, mcpUseCase, skillUseCase, useCase, workerRepo, resourceUseCase, options)
+	agentfactoryUseCase, err := data.NewAgentFactoryUseCase(agentfactoryRepo, agentfactoryVectorStore, agentFactoryCache, taskLock, manager, embeddingClient, mcpUseCase, skillUseCase, useCase, mediaManager, workerRepo, resourceUseCase, options)
 	if err != nil {
 		cleanup3()
 		cleanup2()

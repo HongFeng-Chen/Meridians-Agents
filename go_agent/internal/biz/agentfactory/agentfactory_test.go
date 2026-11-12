@@ -1543,7 +1543,7 @@ func TestSkillCapability(t *testing.T) {
 		&fakeSkills{skills: []skill.Skill{
 			{Name: "document-pro", Version: "1.0.0", Title: "文档处理", Description: "pdf 解析工作流", Enabled: true, Content: "# 工作流：用 pdfplumber 提取文本"},
 			{Name: "disabled-one", Version: "0.9.0", Title: "停用技能", Enabled: false, Content: "x"},
-		}})
+		}}, nil)
 
 	ctx := context.Background()
 	// 目录：只含启用技能

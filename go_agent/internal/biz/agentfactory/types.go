@@ -65,6 +65,13 @@ const (
 	// CapSkillPrefix 技能能力前缀，全名 skill:<name>（调用 = 加载技能说明到上下文）
 	CapSkillPrefix = "skill:"
 
+	// CapImage 图片生成能力（文生图 / 图生图，同步返回本地文件地址）
+	CapImage = "llm:image"
+	// CapVideo 视频生成任务提交（异步：返回记录 ID，用 llm:video_status 轮询）
+	CapVideo = "llm:video"
+	// CapVideoStatus 视频任务状态查询（按提交返回的记录 ID 查询）
+	CapVideoStatus = "llm:video_status"
+
 	// MiddlewareAudit 审计中间件：能力调用全量落 trace（当前唯一实现，恒开启）
 	MiddlewareAudit = "audit"
 

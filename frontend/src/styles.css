@@ -525,6 +525,7 @@ h1, h2, h3, p { margin: 0; }
 .badge.indigo { background: var(--accent-soft); border-color: #dcdefc; color: var(--accent); }
 .badge.teal { background: #effcf9; border-color: #b8e8df; color: #0f766e; }
 .badge.violet { background: #f5f1ff; border-color: #e0d5fb; color: #6d28d9; }
+.badge.green { background: #ecfdf5; border-color: #bbf7d0; color: #15803d; }
 
 .badges-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .badges-row.inline { margin-top: 0; }
