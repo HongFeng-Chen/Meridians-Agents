@@ -64,18 +64,19 @@ async function open(route, width = 1440, height = 900) {
   return page;
 }
 
-// 点某一行里的「链路」按钮：rowMatch 用于定位行（任务编号 / 会话标题）
-async function clickTrace(page, rowMatch) {
-  const ok = await page.evaluate((needle) => {
+// 点某一行里的「链路」按钮：优先选文本命中 needles 的行，找不到就退回第一行带链路按钮的行
+async function clickTrace(page, needles) {
+  const ok = await page.evaluate((list) => {
     const rows = [...document.querySelectorAll('tr')];
-    const row = rows.find((tr) => tr.innerText.includes(needle));
-    if (!row) return false;
+    const withBtn = rows.filter((tr) =>
+      [...tr.querySelectorAll('button')].some((b) => b.innerText.trim() === '链路'));
+    if (!withBtn.length) return false;
+    const row = withBtn.find((tr) => list.some((n) => tr.innerText.includes(n))) || withBtn[0];
     const btn = [...row.querySelectorAll('button')].find((b) => b.innerText.trim() === '链路');
-    if (!btn) return false;
     btn.click();
     return true;
-  }, rowMatch);
-  if (!ok) throw new Error(`未找到行「${rowMatch}」的链路按钮`);
+  }, needles);
+  if (!ok) throw new Error('任务列表里没有任何「链路」按钮');
   await sleep(2200);
 }
 
@@ -145,6 +146,15 @@ async function openConversation(page, title) {
   await sleep(2500);
 }
 
+// 点击分段选择器（.seg-item）里的某个模式
+async function pickSeg(page, label) {
+  await page.evaluate((t) => {
+    const el = [...document.querySelectorAll('.seg-item')].find((n) => n.innerText.trim() === t);
+    if (el) el.click();
+  }, label);
+  await sleep(1000);
+}
+
 // 点击页签
 async function clickTab(page, label) {
   await page.evaluate((t) => {
@@ -190,11 +200,12 @@ try {
     await page.close();
   }
 
-  // 图谱问答：真实跑一次实体召回 + 多跳扩展
+  // 图谱问答：真实跑一次实体召回 + 多跳扩展（先切「图谱检索」模式再提问）
   {
     const page = await open('graph-query', 1440, 1000);
+    await pickSeg(page, '图谱检索');
     await fillTextarea(page, 'Milvus、Zilliz 与 Zilliz Cloud 之间是什么关系？');
-    await runAction(page, '图谱问答');
+    await runAction(page, '提问');
     const file = path.join(OUT, 'console-graph-query.png');
     await page.screenshot({ path: file });
     report.push(['console-graph-query', '图谱问答（含子图与证据）', fs.statSync(file).size]);
@@ -202,10 +213,10 @@ try {
     await page.close();
   }
 
-  // 任务链路抽屉：取事件最丰富的任务
+  // 任务链路抽屉：优先取 LLM 任务（span 说明），不在列表里就取第一行带链路的任务
   {
     const page = await open('tasks', 1440, 1000);
-    await clickTrace(page, '统计最近 3 个任务的耗时分布');
+    await clickTrace(page, ['什么是链路追踪的 span', '链路追踪', 'trace']);
     const file = path.join(OUT, 'console-task-trace.png');
     await page.screenshot({ path: file });
     report.push(['console-task-trace', '任务链路详情', fs.statSync(file).size]);
@@ -220,10 +231,20 @@ try {
     await page.close();
   }
 
-  // 会话链路抽屉：取消息最多的会话
+  // 会话链路抽屉：会话页打开目标会话，点消息区的「查看任务链路」
   {
-    const page = await open('tasks', 1440, 1000);
-    await clickTrace(page, '你是那个模型，能做什么');
+    const page = await open('chats', 1440, 1000);
+    await openConversation(page, '你是那个模型，能做什么');
+    const clicked = await page.evaluate(() => {
+      // 头部「查看任务链路」是跳转按钮；真正的抽屉入口是消息内嵌的 .chat-task-toggle
+      const btn = document.querySelector('.chat-task-toggle') ||
+        [...document.querySelectorAll('button')].find((b) => b.innerText.includes('任务链路（会话编排'));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    });
+    if (!clicked) throw new Error('会话里没有内嵌任务链路入口（.chat-task-toggle）');
+    await sleep(2200);
     const file = path.join(OUT, 'console-conv-trace.png');
     await page.screenshot({ path: file });
     report.push(['console-conv-trace', '会话链路详情', fs.statSync(file).size]);
