@@ -9,7 +9,7 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
         ├─→ *_pb.go               ← 消息类型（Go 服务端 / 其他 Go 服务可直接引用）
         ├─→ *_grpc.pb.go          ← gRPC 桩（服务端接口 + 客户端）
         ├─→ *_http.pb.go          ← Kratos v3 HTTP 路由表 + 客户端
-        └─→ api/openapi.yaml      ← OpenAPI 3（11 个已接线 service 合并，上传接口由脚本补成 multipart）
+        └─→ api/openapi.yaml      ← OpenAPI 3（13 个已接线 service 合并，上传接口由脚本补成 multipart）
                  │  node scripts/gen-sdk.mjs（make sdk）
                  └─→ frontend/src/api/generated/   ← 前端 SDK（function + JSDoc 类型）
 ```
@@ -22,8 +22,8 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
   （`internal/service/contract_test.go` 把「生成代码注册的路由」与
   `api/openapi.yaml` 逐条比对）。
 - 前端不再手写 URL：`frontend/src/api.js` 只做旧签名兼容，页面统一调用
-  `rag / prompt / memory / llm / skill / mcp / agentfactory / conversation / history / aiplatform / harness`
-  十个命名空间。
+  `rag / prompt / memory / llm / skill / mcp / agentfactory / conversation / history / aiplatform / harness / admin / auth`
+  十三个命名空间。
 
 > 例外：`/mcp/platform` 是平台内置的 **MCP 协议端点**（JSON-RPC 2.0，Streamable HTTP），不是 REST，
 > 因此**不在 proto / openapi.yaml 里**。它的工具定义在 `internal/biz/platformmcp`，协议层在
@@ -36,7 +36,7 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `rag.v1` | RAG + GraphRAG + 文档管理 | `internal/biz/rag`、`biz/rag/graphrag` | 11 |
 | `prompt.v1` | 提示词模板与版本 + 提示词工程 + 版本评测得分 | `internal/biz/prompt` | 18 |
 | `memory.v1` | 短期/长期记忆、召回问答 | `internal/biz/memory` | 18 |
-| `llm.v1`（`LLMService`） | 大模型数据源管理 | `internal/biz/llm` | 14 |
+| `llm.v1`（`LLMService`） | 大模型数据源管理、连通性测试、媒体生成（图 / 视频） | `internal/biz/llm` | 18 |
 | `llm.v1`（`LLMCallQueryService`） | 调用历史、token 用量与下钻排行 | `internal/biz/llm` | 3 |
 | `skill.v1` | 技能与技能市场 | `internal/biz/skill` | 21 |
 | `harness.v1` | 评测 Harness（用例集 / 用例 / 运行 / 报告） | `internal/biz/harness` | 11 |
@@ -45,10 +45,11 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `conversation.v1` | 会话目录 + 消息 + 辩论 | `internal/biz/conversation` | 16 |
 | `history.v1` | 统一操作历史 | `internal/biz/history` | 2 |
 | `aiplatform.v1` | 外部 AI 平台（千问 / 百炼 MCP 广场） | `internal/biz/aiplatform` | 8 |
-| `admin.v1` | 系统管理：多租户 + 成员名册 | `internal/biz/org` | 8 |
+| `auth.v1` | 登录、当前身份（内置角色矩阵 + 资源级授权） | `internal/biz/authn` | 2 |
+| `admin.v1` | 系统管理：多租户 + 成员名册 + 文档 / 规模统计 | `internal/biz/org` | 11 |
 | `todo.v1` | Kratos 脚手架样例（**未接线**，不参与契约校验） | — | 7 |
 
-合计 **171** 个对外操作（不含 `todo.v1`），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
+合计 **177** 个对外操作（不含 `todo.v1` 的 7 个样例操作），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
 
 ## 约定
 

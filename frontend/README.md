@@ -10,7 +10,7 @@
 （卡片浮起、按钮位移、图标容器缩放）。统一细节：细滚动条、`:focus-visible` 焦点环、
 页面切换淡入动画（`page-in`）。新增组件请优先用 `--radius` / `--shadow-hover` 等令牌，不要硬编码颜色。
 
-## 页面（18 个 + 登录页）
+## 页面（16 个 + 登录页）
 
 | 分组 | 导航 | 说明 |
 |------|------|------|
@@ -19,6 +19,7 @@
 | 平台能力 | 提示词工程 | 模板版本列表、发布、激活 / 回滚、渲染预览 |
 | | 记忆系统 | 短期会话、长期记忆、向量 / 图谱召回、记忆问答 |
 | | 模型数据源 | 多数据源 CRUD、默认切换、连通性测试、调用历史 |
+| | 媒体生成 | 文生图 / 图生图 / 视频生成，模型来自数据源 image_models / video_models，厂商产物转存本地 |
 | | 技能管理 | 安装 / 启停 / 卸载、文件浏览、技能市场搜索下载、从 URL 安装技能包（zip / SKILL.md / JSON） |
 | | MCP 工具 | 服务配置、探活、工具同步、语义召回、工具调用；平台内置 `platform` 服务与 7 个只读工具在此可见 |
 | | AI 平台 | 千问 / 百炼 MCP 广场：平台 CRUD（千问预设填好官方路径模板）、连通性测试、目录搜索 → 一键接入成本地 MCP 服务、按 mcpCode 直接接入 |
@@ -83,8 +84,8 @@ src/
 
 ## 约定
 
-- **接口只走 SDK**：页面 import `{ rag, prompt, memory, llm, skill, mcp, agentfactory, conversation, history, aiplatform, harness, admin }`
-  十二个命名空间；`/api/v2`（身份/空间/资源/成本/任务运维/链路）还没进 OpenAPI，统一走 `src/api.js` 里的 `v2` 命名空间，
+- **接口只走 SDK**：页面 import `{ rag, prompt, memory, llm, skill, mcp, agentfactory, conversation, history, aiplatform, harness, admin, auth }`
+  十三个命名空间；`/api/v2`（身份/空间/资源/成本/任务运维/链路）还没进 OpenAPI，统一走 `src/api.js` 里的 `v2` 命名空间，
   不要在页面里拼 URL。
 - 改了 `api/*.proto` 后先 `make api && make sdk`，再改页面；不要在前端手写 URL（`/api/v2` 除外，见上一条）。
 - 后端错误已统一映射（`ApiError`），页面只处理提示文案，不做状态码分支。
