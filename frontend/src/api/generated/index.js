@@ -15,7 +15,7 @@ import { call } from '../http.js';
  * ListDocs 文档列表。
  *
  * GET /api/admin/docs
- *   query 参数：limit, scope
+ *   query 参数：limit, scope, space_id
  * @returns {Promise<ListDocsReply>}
  */
 export const listDocs = (input = {}, options) =>
@@ -39,6 +39,17 @@ export const deleteDoc = (input = {}, options) =>
  */
 export const getStats = (input = {}, options) =>
   call('RagService_GetStats', input, options);
+
+/**
+ * DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+ *
+ * GET /api/docs/{doc_id}/content
+ * @param {Object} input 路径参数：doc_id
+ *   query 参数：limit
+ * @returns {Promise<DocContentReply>}
+ */
+export const docContent = (input = {}, options) =>
+  call('RagService_DocContent', input, options);
 
 /**
  * ExtractText 解析文件为纯文本，不入库（前端预览/编辑用）。
@@ -100,6 +111,16 @@ export const ingest = (input = {}, options) =>
   call('RagService_Ingest', input, options);
 
 /**
+ * IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+ *
+ * POST /api/ingest-url
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<IngestResult>}
+ */
+export const ingestUrl = (input = {}, options) =>
+  call('RagService_IngestUrl', input, options);
+
+/**
  * Query 混合检索问答（Dense + BM25，RRF 融合）。
  *
  * POST /api/query
@@ -113,7 +134,7 @@ export const query = (input = {}, options) =>
  * UploadAndIngest 上传文件并直接入库。
  *
  * POST /api/upload
- *   query 参数：name, mode, doc_id, source, scope
+ *   query 参数：name, mode, doc_id, source, scope, space_id
  *   multipart：file 走表单，其余字段走 query
  * @returns {Promise<UploadAndIngestReply>}
  */
@@ -1649,6 +1670,36 @@ export const installSkill = (input = {}, options) =>
   call('SkillService_InstallSkill', input, options);
 
 /**
+ * ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+ *
+ * GET /api/skills/executions
+ *   query 参数：skill, status, task_id, limit
+ * @returns {Promise<ListSkillExecutionsReply>}
+ */
+export const listSkillExecutions = (input = {}, options) =>
+  call('SkillService_ListSkillExecutions', input, options);
+
+/**
+ * GetSkillExecution 单条执行记录（异步结果轮询）。
+ *
+ * GET /api/skills/executions/{id}
+ * @param {Object} input 路径参数：id
+ * @returns {Promise<SkillExecution>}
+ */
+export const getSkillExecution = (input = {}, options) =>
+  call('SkillService_GetSkillExecution', input, options);
+
+/**
+ * CancelSkillExecution 取消排队中的执行。
+ *
+ * POST /api/skills/executions/{id}/cancel
+ * @param {Object} input 路径参数：id
+ * @returns {Promise<SkillExecution>}
+ */
+export const cancelSkillExecution = (input = {}, options) =>
+  call('SkillService_CancelSkillExecution', input, options);
+
+/**
  * SearchHubSkills 搜索技能市场。
  *
  * GET /api/skills/from-hub
@@ -1787,6 +1838,28 @@ export const enableSkill = (input = {}, options) =>
   call('SkillService_EnableSkill', input, options);
 
 /**
+ * ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+ *
+ * POST /api/skills/{name}/execute
+ * @param {ExecuteSkillRequest} input 路径参数：name
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<ExecuteSkillReply>}
+ */
+export const executeSkill = (input = {}, options) =>
+  call('SkillService_ExecuteSkill', input, options);
+
+/**
+ * SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+ *
+ * PUT /api/skills/{name}/execution
+ * @param {SetSkillExecutionRequest} input 路径参数：name
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<Skill>}
+ */
+export const setSkillExecution = (input = {}, options) =>
+  call('SkillService_SetSkillExecution', input, options);
+
+/**
  * ReadSkillFile 读取单个文件正文。
  *
  * GET /api/skills/{name}/file
@@ -1808,6 +1881,48 @@ export const listSkillFiles = (input = {}, options) =>
   call('SkillService_ListSkillFiles', input, options);
 
 /**
+ * ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+ *
+ * GET /api/skills/{name}/instances
+ * @param {Object} input 路径参数：name
+ * @returns {Promise<ListSkillInstancesReply>}
+ */
+export const listSkillInstances = (input = {}, options) =>
+  call('SkillService_ListSkillInstances', input, options);
+
+/**
+ * RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+ *
+ * POST /api/skills/{name}/instances
+ * @param {RegisterSkillInstanceRequest} input 路径参数：name
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<SkillInstance>}
+ */
+export const registerSkillInstance = (input = {}, options) =>
+  call('SkillService_RegisterSkillInstance', input, options);
+
+/**
+ * DeleteSkillInstance 摘除实例（Worker 下线）。
+ *
+ * DELETE /api/skills/{name}/instances/{id}
+ * @param {Object} input 路径参数：name, id
+ * @returns {Promise<DeleteSkillInstanceReply>}
+ */
+export const deleteSkillInstance = (input = {}, options) =>
+  call('SkillService_DeleteSkillInstance', input, options);
+
+/**
+ * HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+ *
+ * POST /api/skills/{name}/instances/{id}/heartbeat
+ * @param {HeartbeatSkillInstanceRequest} input 路径参数：name, id
+ *   其余字段作为 JSON body 提交
+ * @returns {Promise<HeartbeatSkillInstanceReply>}
+ */
+export const heartbeatSkillInstance = (input = {}, options) =>
+  call('SkillService_HeartbeatSkillInstance', input, options);
+
+/**
  * UseSkill 使用技能：返回技能内容，同时落一条技能使用历史（task 内调用自动关联任务）。
  *
  * POST /api/skills/{name}/use
@@ -1824,12 +1939,14 @@ export const rag = {
   listDocs,
   deleteDoc,
   getStats,
+  docContent,
   extractText,
   listFormats,
   graphIngest,
   graphQuery,
   health,
   ingest,
+  ingestUrl,
   query,
   uploadAndIngest,
 };
@@ -2017,6 +2134,9 @@ export const skill = {
   searchSkillhub,
   listSkills,
   installSkill,
+  listSkillExecutions,
+  getSkillExecution,
+  cancelSkillExecution,
   searchHubSkills,
   installFromHub,
   listHubs,
@@ -2031,8 +2151,14 @@ export const skill = {
   uninstallSkill,
   disableSkill,
   enableSkill,
+  executeSkill,
+  setSkillExecution,
   readSkillFile,
   listSkillFiles,
+  listSkillInstances,
+  registerSkillInstance,
+  deleteSkillInstance,
+  heartbeatSkillInstance,
   useSkill,
 };
 

@@ -79,6 +79,17 @@ func (r *fakeRepo) SetEnabled(ctx context.Context, name string, enabled bool) er
 	return nil
 }
 
+func (r *fakeRepo) SetExecutionSpec(ctx context.Context, name string, spec ExecutionSpec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.items[name]
+	if !ok {
+		return ErrSkillNotFound
+	}
+	s.Execution = spec
+	return nil
+}
+
 func (r *fakeRepo) Stats(ctx context.Context) (Stats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

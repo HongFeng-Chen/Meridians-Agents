@@ -105,6 +105,7 @@ func (s *MemoryService) Remember(ctx context.Context, req *v1.RememberRequest) (
 		Importance: int(req.GetImportance()),
 		Tags:       req.GetTags(),
 		Source:     req.GetSource(),
+		SessionID:  req.GetSessionId(),
 		Graph:      req.Graph,
 	}
 	// 过期时间：显式 expire_at 优先，其次 ttl_days
@@ -264,6 +265,7 @@ func toLongTerm(m *memory.LongTermMemory) *v1.LongTermMemory {
 		Tags:        m.Tags,
 		Source:      m.Source,
 		RuleName:    m.RuleName,
+		SessionId:   m.SessionID,
 		Entities:    int32(m.Entities),
 		Relations:   int32(m.Relations),
 		RecallCount: int32(m.RecallCount),
@@ -294,6 +296,7 @@ func toRecalled(r memory.RecalledMemory) *v1.RecalledMemory {
 		Tags:           base.GetTags(),
 		Source:         base.GetSource(),
 		RuleName:       base.GetRuleName(),
+		SessionId:      base.GetSessionId(),
 		Entities:       base.GetEntities(),
 		Relations:      base.GetRelations(),
 		RecallCount:    base.GetRecallCount(),

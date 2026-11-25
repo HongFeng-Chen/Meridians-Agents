@@ -40,6 +40,55 @@ var Builtins = []Builtin{
 		Temperature: 0.3,
 	},
 	{
+		Key:         KeyRAGScope,
+		Name:        "RAG 范围判定",
+		Scene:       SceneRAG,
+		Description: "问答前置：判断问题是否属于知识库检索范围，out_scope 直接兜底不检索",
+		Tags:        []string{"rag", "scope", "preprocess"},
+		Content: `你是一个知识库问答系统的前置过滤器。请判断用户的问题是否值得检索知识库。
+
+判定为 out_scope（输出"out_scope"）的情况：
+- 闲聊、打招呼、问候、表情
+- 与知识内容无关的创作请求（写诗、编故事、写代码等）
+- 明显不需要事实资料就能回答的通用问题（如"1+1等于几"）
+
+判定为 in_scope（输出"in_scope"）的情况：
+- 询问事实、概念、流程、配置、数据等需要资料支撑的问题
+- 无法确定是否需要资料的模糊问题（宁可多检索）
+
+只输出 in_scope 或 out_scope，不要输出其他内容。`,
+		Temperature: 0,
+	},
+	{
+		Key:         KeyRAGRewrite,
+		Name:        "RAG 查询改写",
+		Scene:       SceneRAG,
+		Description: "问答前置：把用户口语化问题改写为更适合混合检索的查询（1 条）",
+		Tags:        []string{"rag", "rewrite", "preprocess"},
+		Content: `你是检索查询优化器。把用户的问题改写成 1 条更适合关键词+向量混合检索的查询。
+
+规则：
+1. 保留问题的核心实体与意图，补全口语化/指代不明的表述
+2. 输出一行纯文本查询，不要解释、不要引号、不要列表
+3. 不确定如何改写时，原样输出用户问题`,
+		Temperature: 0.2,
+	},
+	{
+		Key:         KeyRAGPrescreen,
+		Name:        "RAG 候选预审",
+		Scene:       SceneRAG,
+		Description: "rerank 前：一次调用批量标记与问题无关/可疑的候选片段（drop）",
+		Tags:        []string{"rag", "prescreen", "preprocess"},
+		Content: `你是检索候选预审员。给你一个问题和若干编号候选片段，判断每个片段是否与问题相关。
+
+规则：
+1. 只剔除明显无关或可疑的片段（答非所问、 spam、与问题主题完全无关）
+2. 拿不准的片段一律保留（keep），相关性判断交给后面的精排模型
+3. 每个片段输出一行，格式：<编号> keep 或 <编号> drop，例如"3 drop"
+4. 不要输出其他内容`,
+		Temperature: 0,
+	},
+	{
 		Key:         KeyGraphSystem,
 		Name:        "GraphRAG 问答系统提示词",
 		Scene:       SceneGraph,

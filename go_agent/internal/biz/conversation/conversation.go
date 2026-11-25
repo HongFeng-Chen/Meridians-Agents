@@ -14,8 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go_agent/internal/biz/memory"
 	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/mediaauth"
+
+	"github.com/go-kratos/kratos/v3/log"
 )
 
 // Err 会话域错误
@@ -43,6 +46,11 @@ type Repo interface {
 	// ListMessagesPaged 会话消息分页（微信式向上翻页）：id 正序一页 + 是否还有更早消息
 	ListMessagesPaged(ctx context.Context, conversationID string, limit int, beforeID int64) ([]Message, bool, error)
 
+	// ListUnsynced 归属用户最近未归档进记忆系统的会话（updated_at 倒序，消息数 ≥ 2）
+	ListUnsynced(ctx context.Context, userID, excludeID string, limit int) ([]Conversation, error)
+	// MarkMemorySynced 标记会话已归档进记忆系统（成功写入后调用，避免重复总结）
+	MarkMemorySynced(ctx context.Context, id string, at time.Time) error
+
 	// CreateDebate 新建辩论
 	CreateDebate(ctx context.Context, d *Debate) error
 	// GetDebate 按 ID 取辩论
@@ -58,16 +66,37 @@ type Repo interface {
 	StopOrphanDebates(ctx context.Context) (int64, error)
 }
 
+// MemoryArchiver 会话归档端口：把一次会话总结成长期记忆。
+// 由 memory.UseCase 实现；会话域只依赖这个窄接口，不反向依赖记忆实现细节。
+type MemoryArchiver interface {
+	SummarizeConversation(ctx context.Context, sessionID, userID, title string) (*memory.SummarizeResult, error)
+}
+
+// MemoryBootstrapper 新会话启动召回端口：只读长期记忆，不读会话消息。
+// 由 memory.UseCase 实现（Recall 语义召回 / Recent 最近沉淀兜底）。
+type MemoryBootstrapper interface {
+	Recall(ctx context.Context, query, userID string, topK int, withGraph bool, source string) (*memory.RecallResult, error)
+	Recent(ctx context.Context, userID string, limit int) ([]*memory.LongTermMemory, error)
+}
+
 // UseCase 会话用例
 type UseCase struct {
 	repo    Repo
 	deps    *ChatDeps // 聊天编排依赖（见 chat.go）
 	debates *debateManager
+	// archiver 会话归档器（可为 nil：记忆系统未装配时不归档）
+	archiver MemoryArchiver
+	// boot 新会话启动召回（可为 nil：记忆系统未装配时返回 skipped）
+	boot MemoryBootstrapper
 }
 
 // NewUseCase 创建会话用例
 func NewUseCase(r Repo, d *ChatDeps) *UseCase {
 	u := &UseCase{repo: r, deps: d, debates: newDebateManager()}
+	if d != nil && d.Memory != nil {
+		u.archiver = d.Memory
+		u.boot = d.Memory
+	}
 	// 启动恢复：进程重启后辩论 goroutine 不会复活，把孤儿辩论收尾为已叫停，
 	// 否则会话被永久占用、无法开新辩论。
 	if n, err := r.StopOrphanDebates(context.Background()); err == nil && n > 0 {
@@ -95,14 +124,21 @@ func genID() string {
 }
 
 // Create 新建会话。id 可传任务 ID（会话 id = task id）；空则自动生成。
-func (u *UseCase) Create(ctx context.Context, id, title, agentKey string) (*Conversation, error) {
+//
+// 新会话 = 上一轮工作的边界，这里按固定顺序做两件事：
+//  1. 先召回长期记忆（bootstrap，同步、有超时、best-effort）：
+//     只查长期记忆，**不召回任何历史会话消息**，避免旧话题细节污染新话题。
+//  2. 再把上次还没归档的会话总结成一条长期记忆（异步，写记忆时带上次会话 ID）。
+//
+// 顺序不能反：先召回到的是「上次会话已沉淀的总结」，而不是把旧会话正文塞进新会话。
+func (u *UseCase) Create(ctx context.Context, id, title, agentKey string) (*Conversation, *SessionBootstrap, error) {
 	title, agentKey, err := normalizeInput(title, agentKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	id = strings.TrimSpace(id)
 	if id != "" && utf8.RuneCountInString(id) > 64 {
-		return nil, fmt.Errorf("%w: 会话 ID 过长", ErrInvalidConv)
+		return nil, nil, fmt.Errorf("%w: 会话 ID 过长", ErrInvalidConv)
 	}
 	if id == "" {
 		id = genID()
@@ -119,9 +155,110 @@ func (u *UseCase) Create(ctx context.Context, id, title, agentKey string) (*Conv
 		UpdatedAt: now,
 	}
 	if err := u.repo.Create(ctx, c); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c, nil
+	// 1) 先召回长期记忆（只有记忆，没有历史会话消息）
+	bootstrap := u.bootstrapMemory(ctx, c.UserID, c.Title)
+	// 2) 再把上一次结束的会话归纳进长期记忆（写入时带该会话 ID）。
+	// 失败只记日志、不标记，下次开新会话时会重试。
+	if u.archiver != nil {
+		go u.archivePreviousConversations(ctx, c.UserID, c.ID)
+	}
+	return c, bootstrap, nil
+}
+
+const (
+	bootstrapTopK   = 5                       // 启动召回条数
+	bootstrapMinSc  = 0.15                    // 与聊天召回同一条绝对分数线
+	bootstrapBudget = 1500 * time.Millisecond // 建会话不能被召回拖住
+)
+
+// bootstrapMemory 新会话启动召回：只查长期记忆，绝不读历史会话消息。
+//
+// 标题作为语义 query；标题为空（用户直接点「新对话」）没有可用 query，
+// 退化为「最近沉淀的 N 条记忆」，避免空查询报错、也保证新会话不是全盲起步。
+func (u *UseCase) bootstrapMemory(parent context.Context, userID, title string) *SessionBootstrap {
+	bs := &SessionBootstrap{Source: BootstrapSourceMemory}
+	if u.boot == nil {
+		bs.Skipped = true
+		bs.Err = "记忆系统未装配"
+		return bs
+	}
+	ctx, cancel := context.WithTimeout(parent, bootstrapBudget)
+	defer cancel()
+
+	var mems []memory.RecalledMemory
+	if q := strings.TrimSpace(title); q != "" {
+		res, err := u.boot.Recall(ctx, q, userID, bootstrapTopK, false, memory.RecallSourceSessionStart)
+		if err != nil {
+			bs.Skipped = true
+			bs.Err = err.Error()
+			return bs
+		}
+		for _, m := range res.Memories {
+			if float64(m.Score) >= bootstrapMinSc {
+				mems = append(mems, m)
+			}
+		}
+	} else {
+		recent, err := u.boot.Recent(ctx, userID, bootstrapTopK)
+		if err != nil {
+			bs.Skipped = true
+			bs.Err = err.Error()
+			return bs
+		}
+		for _, m := range recent {
+			mems = append(mems, memory.RecalledMemory{LongTermMemory: m})
+		}
+	}
+	bs.Memories = mems
+	if len(mems) > 0 {
+		lines := make([]string, 0, len(mems))
+		for _, m := range mems {
+			if m.LongTermMemory == nil {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- [%s] %s", m.Kind, clipRunes(m.Content, 300)))
+		}
+		if len(lines) > 0 {
+			bs.Block = "### 长期记忆（新会话启动召回）\n" + strings.Join(lines, "\n")
+		}
+	}
+	log.Info("conversation: 新会话启动召回完成", "conv", title, "memories", len(mems))
+	return bs
+}
+
+// archivePreviousConversations 把归属用户最近未归档的会话总结进长期记忆（best-effort）。
+//
+// 选「上次」而不是全量：优先最新的未归档会话，最多顺带补 3 条历史欠账，
+// 避免一次开新会话触发大量 LLM 调用。上下文与请求解耦（WithoutCancel），
+// 请求返回后仍能跑完；失败不标记 MemorySyncedAt，留待下次重试。
+func (u *UseCase) archivePreviousConversations(parent context.Context, userID, excludeID string) {
+	if u.archiver == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Minute)
+	defer cancel()
+
+	convs, err := u.repo.ListUnsynced(ctx, userID, excludeID, 3)
+	if err != nil {
+		log.Warn("conversation: 查询未归档会话失败", "err", err)
+		return
+	}
+	for _, c := range convs {
+		res, err := u.archiver.SummarizeConversation(ctx, c.ID, userID, c.Title)
+		if err != nil {
+			log.Warn("conversation: 会话归档失败（下次开新会话时重试）", "conv", c.ID, "err", err)
+			continue
+		}
+		// 消息不足 / 总结为空也算处理完，标记避免反复调用 LLM
+		if err := u.repo.MarkMemorySynced(ctx, c.ID, time.Now()); err != nil {
+			log.Warn("conversation: 标记会话已归档失败", "conv", c.ID, "err", err)
+			continue
+		}
+		log.Info("conversation: 会话已归档进记忆系统", "conv", c.ID,
+			"messages", res.Messages, "skipped", res.Skipped, "memory", res.MemoryID)
+	}
 }
 
 // List 会话目录

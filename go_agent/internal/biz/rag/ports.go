@@ -21,6 +21,12 @@ type Answer struct {
 	Answer    string `json:"answer"`
 	Citations []Hit  `json:"citations"`
 	Cached    bool   `json:"cached"`
+	// FilteredOut 被分数线滤掉的命中数（RRF 绝对线 + 预审 + rerank 下限累计）：
+	// 让前端能解释「为什么引用变少了」——低分片段不进 prompt 也不进引用。
+	FilteredOut int `json:"filtered_out"`
+	// NoContext 候选全被过滤或判定范围外：Answer 固定为「知识库暂无相关资料」，
+	// 前端据此展示空态而不是把兜底话术当成正常回答。
+	NoContext bool `json:"no_context"`
 }
 
 // Document 文档元数据（MySQL 落库，作为文档管理的权威数据源）
@@ -93,6 +99,17 @@ type ChunkStore interface {
 	DeleteByIDs(ctx context.Context, ids []int64) (int64, error)
 }
 
+// DocumentTextStore 可选能力：文档原文持久化（MySQL 实现）。
+//
+// 以窄接口挂在 DocumentRepo 实现对象上（类型断言使用），不进 DocumentRepo
+// 主接口——避免 fake / 内存实现被迫跟着实现原文存取。
+// 用途：仅图谱文档「同步索引」补建向量时需要一份原文重放分块；
+// 向量文档可从 Milvus 分块重建文本，不依赖这里。
+type DocumentTextStore interface {
+	SaveText(ctx context.Context, docID, text string) error
+	GetText(ctx context.Context, docID string) (string, error)
+}
+
 // DocumentRepo 文档元数据仓库（MySQL 实现）
 type DocumentRepo interface {
 	Upsert(ctx context.Context, doc *Document) error
@@ -106,6 +123,11 @@ type DocumentRepo interface {
 	// ListDocIDsBySpaces V2 空间授权白名单：space_id 命中允许空间，
 	// 或历史数据（space_id 为空）回落到三层作用域。
 	ListDocIDsBySpaces(ctx context.Context, tenantID, userID string, spaceIDs []string) ([]string, error)
+	// ListBySpace 按空间列出文档（知识空间树里按节点查看文档清单）。
+	// 只做精确匹配：子空间文档在树上逐节点查看，调用方需要子树时自己拼 ID 集合。
+	ListBySpace(ctx context.Context, spaceID string, limit int) ([]Document, error)
+	// UpdateSpaceID 移动文档到目标空间（知识空间整理用）。
+	UpdateSpaceID(ctx context.Context, docID, spaceID string) error
 	Delete(ctx context.Context, docID string) error
 	Count(ctx context.Context) (int64, error)
 }

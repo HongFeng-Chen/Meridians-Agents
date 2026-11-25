@@ -10,7 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go_agent/internal/biz/history"
@@ -29,7 +31,7 @@ const defaultMaxFile = 8 << 20
 // manifestName 落盘时额外写一份元信息，便于运行时/排查
 const manifestName = "manifest.json"
 
-// UseCase 技能用例：安装、启停、卸载、市场搜索下载、落盘同步。
+// UseCase 技能用例：安装、启停、卸载、市场搜索下载、落盘同步，以及 V2 运行时执行。
 type UseCase struct {
 	repo     Repo
 	hub      HubClient
@@ -39,6 +41,17 @@ type UseCase struct {
 	hubLimit int
 	// hist 统一操作历史（技能使用记录，可为 nil：不记录）
 	hist history.Recorder
+
+	// —— V2 运行时（可从零装配：未接线时只有 local 模式可用） ——
+	rt       RuntimeStore
+	worker   WorkerClient
+	sched    *Scheduler
+	workers  int           // 异步派发协程数（0 = 关闭异步派发）
+	poll     time.Duration // 异步队列轮询间隔
+	keep     time.Duration // 执行记录保留时长
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // New 创建技能用例；skill_hubs 为空时用 conf 播种默认市场。
@@ -55,6 +68,13 @@ func New(repo Repo, hub HubClient, hist history.Recorder, c *conf.Data) (*UseCas
 		maxFile:  maxFile,
 		hubLimit: 100,
 		hist:     hist,
+		// 运行时旋钮走环境变量：它们是按部署形态调整的运维参数
+		// （单机跑 0 个派发协程，集群里每个副本开 4 个），不适合进配置协议。
+		sched:   NewScheduler(envDuration("SKILL_INSTANCE_TTL", 45*time.Second), DefaultBreakerThreshold),
+		workers: envIntValue("SKILL_RUNTIME_WORKERS", 0),
+		poll:    envDuration("SKILL_POLL_INTERVAL", 2*time.Second),
+		keep:    envDuration("SKILL_EXECUTION_RETENTION", DefaultExecutionRetention),
+		stopCh:  make(chan struct{}),
 		confHub: Hub{
 			Name:      "default",
 			BaseURL:   strings.TrimRight(strings.TrimSpace(sc.GetHubBaseURL()), "/"),
@@ -218,6 +238,17 @@ func (u *UseCase) build(ctx context.Context, name string, in InstallInput) (*Ski
 	if title == "" {
 		title = name
 	}
+	exec := ExecutionSpec{}
+	if in.Execution != nil {
+		exec = in.Execution.Normalized()
+		if err := exec.Valid(); err != nil {
+			return nil, err
+		}
+	} else if existing, err := u.repo.Get(ctx, name); err == nil {
+		// 升级时未显式给执行配置则沿用：从市场重装/覆盖上传不该把远程技能
+		// 悄悄降级成 local（那会让线上 Agent 突然拿不到结果）
+		exec = existing.Execution.Normalized()
+	}
 	return &Skill{
 		Name:        name,
 		Version:     version,
@@ -231,6 +262,7 @@ func (u *UseCase) build(ctx context.Context, name string, in InstallInput) (*Ski
 		Files:       files,
 		FileCount:   len(files),
 		Size:        size,
+		Execution:   exec,
 	}, nil
 }
 
@@ -248,6 +280,26 @@ func (u *UseCase) Enable(ctx context.Context, name string) (*Skill, error) {
 		return nil, err
 	}
 	return u.repo.Get(ctx, s.Name)
+}
+
+// SetExecution 修改执行配置（不改内容、不重装）。
+//
+// 典型场景：技能先以 local 装上验证提示词，验证完再切 remote 指向 Worker；
+// 或者线上把某个技能从 remote 降级为 local 止损。这两种操作都不该走「重新安装」，
+// 否则会连带覆盖 SKILL.md 与文件。
+func (u *UseCase) SetExecution(ctx context.Context, name string, spec ExecutionSpec) (*Skill, error) {
+	name = strings.TrimSpace(name)
+	if _, err := u.repo.Get(ctx, name); err != nil {
+		return nil, err
+	}
+	norm := spec.Normalized()
+	if err := norm.Valid(); err != nil {
+		return nil, err
+	}
+	if err := u.repo.SetExecutionSpec(ctx, name, norm); err != nil {
+		return nil, err
+	}
+	return u.repo.Get(ctx, name)
 }
 
 // Disable 停用并从落盘目录移除
@@ -640,6 +692,7 @@ func (u *UseCase) materialize(s *Skill) error {
 		"source_url":   s.SourceURL,
 		"checksum":     s.Checksum,
 		"enabled":      s.Enabled,
+		"execution":    s.Execution.Normalized(),
 		"installed_at": s.InstalledAt,
 	}
 	raw, _ := json.MarshalIndent(meta, "", "  ")
@@ -729,4 +782,32 @@ func cleanTags(tags []string) []string {
 		out = append(out, t)
 	}
 	return out
+}
+
+// —— 运行时配置（环境变量旋钮，与 agentfactory 的执行参数一致走 env） ——
+
+// envDuration 读时长型环境变量（"45s" / "5m"），缺失或非法用默认值
+func envDuration(key string, def time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// envIntValue 读整型环境变量，缺失或非法用默认值
+func envIntValue(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }

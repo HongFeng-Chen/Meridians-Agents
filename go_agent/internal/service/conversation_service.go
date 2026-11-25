@@ -91,12 +91,45 @@ func (s *ConversationService) ensureConvOwned(ctx context.Context, id string) er
 }
 
 // CreateConversation 新建会话。
+// 返回体带 bootstrap：创建时只召回长期记忆（不召回历史会话消息）。
 func (s *ConversationService) CreateConversation(ctx context.Context, req *v1.CreateConversationRequest) (*v1.CreateConversationReply, error) {
-	c, err := s.uc.Create(ctx, req.GetId(), req.GetTitle(), req.GetAgentKey())
+	c, bootstrap, err := s.uc.Create(ctx, req.GetId(), req.GetTitle(), req.GetAgentKey())
 	if err != nil {
 		return nil, err
 	}
-	return &v1.CreateConversationReply{Conversation: toConversation(*c)}, nil
+	return &v1.CreateConversationReply{
+		Conversation: toConversation(*c),
+		Bootstrap:    toSessionBootstrap(bootstrap),
+	}, nil
+}
+
+// toSessionBootstrap 启动召回 DO → DTO（nil 时不返回该字段）
+func toSessionBootstrap(b *conversation.SessionBootstrap) *v1.SessionBootstrap {
+	if b == nil {
+		return nil
+	}
+	out := &v1.SessionBootstrap{
+		ContextBlock: b.Block,
+		Source:       b.Source,
+		Skipped:      b.Skipped,
+		Error:        b.Err,
+		Memories:     make([]*v1.SessionBootstrapMemory, 0, len(b.Memories)),
+	}
+	for _, m := range b.Memories {
+		if m.LongTermMemory == nil {
+			continue
+		}
+		out.Memories = append(out.Memories, &v1.SessionBootstrapMemory{
+			Id:         m.ID,
+			Kind:       m.Kind,
+			Content:    m.Content,
+			Score:      float64(m.Score),
+			Importance: int32(m.Importance),
+			Source:     m.Source,
+			SessionId:  m.SessionID,
+		})
+	}
+	return out
 }
 
 // ListConversations 会话目录（只返回当前用户的会话）。

@@ -124,8 +124,10 @@ type LongTermMemory struct {
 	RecallCount int32 `protobuf:"varint,16,opt,name=recall_count,proto3" json:"recall_count,omitempty"`
 	// 最近一次被召回时间；null = 从未被召回
 	LastRecalledAt *string `protobuf:"bytes,17,opt,name=last_recalled_at,proto3,oneof" json:"last_recalled_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// 来源会话 ID（会话归档写入时有值，手动写入为空）
+	SessionId     string `protobuf:"bytes,18,opt,name=session_id,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LongTermMemory) Reset() {
@@ -277,6 +279,13 @@ func (x *LongTermMemory) GetLastRecalledAt() string {
 	return ""
 }
 
+func (x *LongTermMemory) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
 // RecalledMemory 召回的记忆 + 相关度。
 type RecalledMemory struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -294,6 +303,8 @@ type RecalledMemory struct {
 	UpdatedAt  string                 `protobuf:"bytes,12,opt,name=updated_at,proto3" json:"updated_at,omitempty"`
 	Deduped    bool                   `protobuf:"varint,13,opt,name=deduped,proto3" json:"deduped,omitempty"`
 	Expired    bool                   `protobuf:"varint,14,opt,name=expired,proto3" json:"expired,omitempty"`
+	// 来源会话 ID（会话总结类记忆有值）
+	SessionId string `protobuf:"bytes,19,opt,name=session_id,proto3" json:"session_id,omitempty"`
 	// 提取来源规则名
 	RuleName string `protobuf:"bytes,16,opt,name=rule_name,proto3" json:"rule_name,omitempty"`
 	// 被召回次数
@@ -431,6 +442,13 @@ func (x *RecalledMemory) GetExpired() bool {
 		return x.Expired
 	}
 	return false
+}
+
+func (x *RecalledMemory) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 func (x *RecalledMemory) GetRuleName() string {
@@ -1232,7 +1250,9 @@ type RememberRequest struct {
 	// 相对过期天数
 	TtlDays int32 `protobuf:"varint,9,opt,name=ttl_days,proto3" json:"ttl_days,omitempty"`
 	// 是否同时写入图谱，缺省用配置默认值
-	Graph         *bool `protobuf:"varint,10,opt,name=graph,proto3,oneof" json:"graph,omitempty"`
+	Graph *bool `protobuf:"varint,10,opt,name=graph,proto3,oneof" json:"graph,omitempty"`
+	// 来源会话 ID：会话归档写入时带上次结束的会话 ID，便于从记忆反查对话
+	SessionId     string `protobuf:"bytes,11,opt,name=session_id,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1335,6 +1355,13 @@ func (x *RememberRequest) GetGraph() bool {
 		return *x.Graph
 	}
 	return false
+}
+
+func (x *RememberRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 type ListLongRequest struct {
@@ -2848,7 +2875,7 @@ const file_memory_v1_memory_proto_rawDesc = "" +
 	"\fShortMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x12\x0e\n" +
-	"\x02at\x18\x03 \x01(\tR\x02at\"\x9e\x04\n" +
+	"\x02at\x18\x03 \x01(\tR\x02at\"\xbe\x04\n" +
 	"\x0eLongTermMemory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\auser_id\x18\x02 \x01(\tR\auser_id\x12\x12\n" +
@@ -2875,9 +2902,12 @@ const file_memory_v1_memory_proto_rawDesc = "" +
 	"\aexpired\x18\x0e \x01(\bR\aexpired\x12\x1c\n" +
 	"\trule_name\x18\x0f \x01(\tR\trule_name\x12\"\n" +
 	"\frecall_count\x18\x10 \x01(\x05R\frecall_count\x12/\n" +
-	"\x10last_recalled_at\x18\x11 \x01(\tH\x01R\x10last_recalled_at\x88\x01\x01B\r\n" +
+	"\x10last_recalled_at\x18\x11 \x01(\tH\x01R\x10last_recalled_at\x88\x01\x01\x12\x1e\n" +
+	"\n" +
+	"session_id\x18\x12 \x01(\tR\n" +
+	"session_idB\r\n" +
 	"\v_expires_atB\x13\n" +
-	"\x11_last_recalled_at\"\xb4\x04\n" +
+	"\x11_last_recalled_at\"\xd4\x04\n" +
 	"\x0eRecalledMemory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\auser_id\x18\x02 \x01(\tR\auser_id\x12\x12\n" +
@@ -2901,7 +2931,10 @@ const file_memory_v1_memory_proto_rawDesc = "" +
 	"updated_at\x18\f \x01(\tR\n" +
 	"updated_at\x12\x18\n" +
 	"\adeduped\x18\r \x01(\bR\adeduped\x12\x18\n" +
-	"\aexpired\x18\x0e \x01(\bR\aexpired\x12\x1c\n" +
+	"\aexpired\x18\x0e \x01(\bR\aexpired\x12\x1e\n" +
+	"\n" +
+	"session_id\x18\x13 \x01(\tR\n" +
+	"session_id\x12\x1c\n" +
 	"\trule_name\x18\x10 \x01(\tR\trule_name\x12\"\n" +
 	"\frecall_count\x18\x11 \x01(\x05R\frecall_count\x12/\n" +
 	"\x10last_recalled_at\x18\x12 \x01(\tH\x01R\x10last_recalled_at\x88\x01\x01\x12\x14\n" +
@@ -2973,7 +3006,7 @@ const file_memory_v1_memory_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\n" +
 	"session_id\x12\x18\n" +
-	"\acleared\x18\x02 \x01(\bR\acleared\"\x99\x02\n" +
+	"\acleared\x18\x02 \x01(\bR\acleared\"\xb9\x02\n" +
 	"\x0fRememberRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\auser_id\x18\x02 \x01(\tR\auser_id\x12\x12\n" +
@@ -2987,7 +3020,10 @@ const file_memory_v1_memory_proto_rawDesc = "" +
 	"\texpire_at\x18\b \x01(\tR\texpire_at\x12\x1a\n" +
 	"\bttl_days\x18\t \x01(\x05R\bttl_days\x12\x19\n" +
 	"\x05graph\x18\n" +
-	" \x01(\bH\x00R\x05graph\x88\x01\x01B\b\n" +
+	" \x01(\bH\x00R\x05graph\x88\x01\x01\x12\x1e\n" +
+	"\n" +
+	"session_id\x18\v \x01(\tR\n" +
+	"session_idB\b\n" +
 	"\x06_graph\"k\n" +
 	"\x0fListLongRequest\x12\x18\n" +
 	"\auser_id\x18\x01 \x01(\tR\auser_id\x12(\n" +

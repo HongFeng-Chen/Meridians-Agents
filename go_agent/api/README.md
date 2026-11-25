@@ -38,7 +38,7 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `memory.v1` | 短期/长期记忆、召回问答 | `internal/biz/memory` | 18 |
 | `llm.v1`（`LLMService`） | 大模型数据源管理、连通性测试、媒体生成（图 / 视频） | `internal/biz/llm` | 18 |
 | `llm.v1`（`LLMCallQueryService`） | 调用历史、token 用量与下钻排行 | `internal/biz/llm` | 3 |
-| `skill.v1` | 技能与技能市场 | `internal/biz/skill` | 21 |
+| `skill.v1` | 技能与技能市场 + V2 运行时（执行 / 实例 / 执行记录） | `internal/biz/skill` | 30 |
 | `harness.v1` | 评测 Harness（用例集 / 用例 / 运行 / 报告） | `internal/biz/harness` | 11 |
 | `mcp.v1` | MCP 服务与工具管理面 | `internal/biz/mcp` | 22 |
 | `agentfactory.v1` | Agent 低代码工厂 + 异步任务 + 审批 | `internal/biz/agentfactory` | 19 |
@@ -49,7 +49,7 @@ api/<domain>/v1/*.proto          ← 手写：路径、请求/响应结构、字
 | `admin.v1` | 系统管理：多租户 + 成员名册 + 文档 / 规模统计 | `internal/biz/org` | 11 |
 | `todo.v1` | Kratos 脚手架样例（**未接线**，不参与契约校验） | — | 7 |
 
-合计 **177** 个对外操作（不含 `todo.v1` 的 7 个样例操作），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
+合计 **186** 个对外操作（不含 `todo.v1` 的 7 个样例操作），全部挂在 `/api` 下；另有 1 个非 REST 端点 `/mcp/platform`。
 
 ## 约定
 

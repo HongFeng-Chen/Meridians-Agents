@@ -28,11 +28,36 @@ var _ rag.DocumentRepo = (*DocumentRepo)(nil)
 func NewDocumentRepo(c *conf.Data, d *db.Data) (rag.DocumentRepo, error) {
 	r := &DocumentRepo{db: d.DB()}
 	if c.GetDatabase().GetAutoMigrate() {
-		if err := r.db.AutoMigrate(&models.DocumentPO{}); err != nil {
-			return nil, fmt.Errorf("迁移 rag_documents 表: %w", err)
+		if err := r.db.AutoMigrate(&models.DocumentPO{}, &models.DocumentTextPO{}); err != nil {
+			return nil, fmt.Errorf("迁移 rag_documents / rag_doc_texts 表: %w", err)
 		}
 	}
 	return r, nil
+}
+
+// SaveText 保存文档原文（入库成功后调用；同步索引补建向量时重放分块用）。
+// 覆盖写：重复入库（内容变化）时原文跟着更新。
+func (r *DocumentRepo) SaveText(ctx context.Context, docID, text string) error {
+	if strings.TrimSpace(docID) == "" {
+		return fmt.Errorf("doc_id 不能为空")
+	}
+	return r.db.WithContext(ctx).Save(&models.DocumentTextPO{
+		DocID: docID,
+		Text:  text,
+	}).Error
+}
+
+// GetText 读取文档原文（文档不存在原文时返回空串）。
+func (r *DocumentRepo) GetText(ctx context.Context, docID string) (string, error) {
+	var po models.DocumentTextPO
+	err := r.db.WithContext(ctx).Where("doc_id = ?", docID).First(&po).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return po.Text, nil
 }
 
 // Upsert 按 doc_id 写入或更新（内容与状态变化都覆盖）
@@ -161,6 +186,42 @@ func (r *DocumentRepo) ListDocIDsBySpaces(ctx context.Context, tenantID, userID 
 		return nil, err
 	}
 	return ids, nil
+}
+
+// ListBySpace 按空间精确匹配列出文档（知识空间树按节点查看）。
+func (r *DocumentRepo) ListBySpace(ctx context.Context, spaceID string, limit int) ([]rag.Document, error) {
+	sid := strings.TrimSpace(spaceID)
+	if sid == "" {
+		return nil, fmt.Errorf("space_id 不能为空")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	var pos []models.DocumentPO
+	if err := r.db.WithContext(ctx).Model(&models.DocumentPO{}).
+		Where("space_id = ?", sid).
+		Order("updated_at DESC").Limit(limit).Find(&pos).Error; err != nil {
+		return nil, err
+	}
+	out := make([]rag.Document, 0, len(pos))
+	for i := range pos {
+		out = append(out, *documentToBiz(&pos[i]))
+	}
+	return out, nil
+}
+
+// UpdateSpaceID 移动文档到目标空间。
+func (r *DocumentRepo) UpdateSpaceID(ctx context.Context, docID, spaceID string) error {
+	res := r.db.WithContext(ctx).Model(&models.DocumentPO{}).
+		Where("doc_id = ?", docID).
+		Update("space_id", strings.TrimSpace(spaceID))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // Delete 删除元数据

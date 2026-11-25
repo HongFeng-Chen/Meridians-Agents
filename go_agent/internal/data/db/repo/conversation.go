@@ -38,27 +38,29 @@ func NewConversationRepo(c *conf.Data, d *db.Data) (*ConversationRepo, error) {
 
 func toConversationPO(c *conversation.Conversation) *models.ConversationPO {
 	return &models.ConversationPO{
-		ID:           c.ID,
-		UserID:       ownerOr(c.UserID),
-		Title:        c.Title,
-		AgentKey:     c.AgentKey,
-		MessageCount: c.MessageCount,
-		LastMessage:  clip(c.LastMessage, 255),
-		CreatedAt:    c.CreatedAt,
-		UpdatedAt:    c.UpdatedAt,
+		ID:             c.ID,
+		UserID:         ownerOr(c.UserID),
+		Title:          c.Title,
+		AgentKey:       c.AgentKey,
+		MessageCount:   c.MessageCount,
+		LastMessage:    clip(c.LastMessage, 255),
+		CreatedAt:      c.CreatedAt,
+		UpdatedAt:      c.UpdatedAt,
+		MemorySyncedAt: c.MemorySyncedAt,
 	}
 }
 
 func fromConversationPO(p *models.ConversationPO) conversation.Conversation {
 	return conversation.Conversation{
-		ID:           p.ID,
-		UserID:       p.UserID,
-		Title:        p.Title,
-		AgentKey:     p.AgentKey,
-		MessageCount: p.MessageCount,
-		LastMessage:  p.LastMessage,
-		CreatedAt:    p.CreatedAt,
-		UpdatedAt:    p.UpdatedAt,
+		ID:             p.ID,
+		UserID:         p.UserID,
+		Title:          p.Title,
+		AgentKey:       p.AgentKey,
+		MessageCount:   p.MessageCount,
+		LastMessage:    p.LastMessage,
+		CreatedAt:      p.CreatedAt,
+		UpdatedAt:      p.UpdatedAt,
+		MemorySyncedAt: p.MemorySyncedAt,
 	}
 }
 
@@ -118,6 +120,34 @@ func (r *ConversationRepo) List(ctx context.Context, f conversation.Filter) ([]c
 		}
 	}
 	return out, total, nil
+}
+
+// ListUnsynced 最近未归档进记忆系统的会话（只挑有实质对话的：消息数 ≥ 2）
+func (r *ConversationRepo) ListUnsynced(ctx context.Context, userID, excludeID string, limit int) ([]conversation.Conversation, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 3
+	}
+	q := r.db.WithContext(ctx).Model(&models.ConversationPO{}).
+		Where("user_id = ? AND message_count >= 2 AND memory_synced_at IS NULL", ownerOr(userID))
+	if excludeID != "" {
+		q = q.Where("id <> ?", excludeID)
+	}
+	var rows []models.ConversationPO
+	if err := q.Order("updated_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]conversation.Conversation, 0, len(rows))
+	for i := range rows {
+		out = append(out, fromConversationPO(&rows[i]))
+	}
+	return out, nil
+}
+
+// MarkMemorySynced 回填归档时间；只更新这一列，不动 updated_at（避免打乱会话排序）
+func (r *ConversationRepo) MarkMemorySynced(ctx context.Context, id string, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&models.ConversationPO{}).
+		Where("id = ?", id).
+		UpdateColumn("memory_synced_at", at).Error
 }
 
 func (r *ConversationRepo) Get(ctx context.Context, id string) (*conversation.Conversation, error) {

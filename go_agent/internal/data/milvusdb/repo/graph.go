@@ -458,6 +458,88 @@ func dropRefs(refs []string, prefix string) []string {
 // refScanLimit 引用改写时单次扫描上限：超过这个量级说明图谱该分片了
 const refScanLimit = 16384
 
+// DocGraph 取某文档贡献的实体与关系：全量扫描后按 chunk_refs 前缀
+// "docID#" 客户端过滤（refs 是 JSON 数组字符串，Milvus 无法直接按前缀过滤），
+// 与 DetachDocRefs 同一扫描口径。结果按 limit 截断。
+func (g *GraphStore) DocGraph(ctx context.Context, docID string, limit int) ([]graphrag.Entity, []graphrag.Relation, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	prefix := docID + "#"
+	hasDoc := func(refs []string) bool {
+		for _, r := range refs {
+			if strings.HasPrefix(r, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	ers, err := g.CLI().Query(ctx, milvusclient.NewQueryOption(g.entityColl).
+		WithFilter(fmt.Sprintf("%s >= 0", models.EntityFieldID)).
+		WithOutputFields(models.EntityFieldName, models.EntityFieldType,
+			models.EntityFieldDescription, models.EntityFieldFreq, models.EntityFieldRefs).
+		WithLimit(refScanLimit))
+	if err != nil {
+		return nil, nil, fmt.Errorf("query entities of doc: %w", err)
+	}
+	ents := make([]graphrag.Entity, 0, 32)
+	if n := ers.ResultCount; n > 0 && ers.Err == nil {
+		nameCol, _ := ers.GetColumn(models.EntityFieldName).(*column.ColumnVarChar)
+		typeCol, _ := ers.GetColumn(models.EntityFieldType).(*column.ColumnVarChar)
+		descCol, _ := ers.GetColumn(models.EntityFieldDescription).(*column.ColumnVarChar)
+		freqCol, _ := ers.GetColumn(models.EntityFieldFreq).(*column.ColumnInt64)
+		refsCol, _ := ers.GetColumn(models.EntityFieldRefs).(*column.ColumnVarChar)
+		for i := 0; i < n && len(ents) < limit; i++ {
+			raw, rerr := refsCol.Value(i)
+			if rerr != nil || !hasDoc(parseRefs(raw)) {
+				continue
+			}
+			name, _ := nameCol.Value(i)
+			typ, _ := typeCol.Value(i)
+			desc, _ := descCol.Value(i)
+			freq, _ := freqCol.Value(i)
+			ents = append(ents, graphrag.Entity{
+				Name: name, Type: typ, Description: desc, Freq: int(freq),
+			})
+		}
+	}
+
+	rrs, err := g.CLI().Query(ctx, milvusclient.NewQueryOption(g.relationColl).
+		WithFilter(fmt.Sprintf("%s >= 0", models.RelationFieldID)).
+		WithOutputFields(models.RelationFieldSource, models.RelationFieldTarget,
+			models.RelationFieldRelation, models.RelationFieldDescription,
+			models.RelationFieldWeight, models.RelationFieldRefs).
+		WithLimit(refScanLimit))
+	if err != nil {
+		return nil, nil, fmt.Errorf("query relations of doc: %w", err)
+	}
+	rels := make([]graphrag.Relation, 0, 32)
+	if n := rrs.ResultCount; n > 0 && rrs.Err == nil {
+		srcCol, _ := rrs.GetColumn(models.RelationFieldSource).(*column.ColumnVarChar)
+		tgtCol, _ := rrs.GetColumn(models.RelationFieldTarget).(*column.ColumnVarChar)
+		relCol, _ := rrs.GetColumn(models.RelationFieldRelation).(*column.ColumnVarChar)
+		descCol, _ := rrs.GetColumn(models.RelationFieldDescription).(*column.ColumnVarChar)
+		wCol, _ := rrs.GetColumn(models.RelationFieldWeight).(*column.ColumnDouble)
+		refsCol, _ := rrs.GetColumn(models.RelationFieldRefs).(*column.ColumnVarChar)
+		for i := 0; i < n && len(rels) < limit; i++ {
+			raw, rerr := refsCol.Value(i)
+			if rerr != nil || !hasDoc(parseRefs(raw)) {
+				continue
+			}
+			src, _ := srcCol.Value(i)
+			tgt, _ := tgtCol.Value(i)
+			rel, _ := relCol.Value(i)
+			desc, _ := descCol.Value(i)
+			w, _ := wCol.Value(i)
+			rels = append(rels, graphrag.Relation{
+				Source: src, Target: tgt, Relation: rel, Description: desc, Weight: w,
+			})
+		}
+	}
+	return ents, rels, nil
+}
+
 // parseEntities 从结果集解析实体（保持结果集顺序）
 func parseEntities(rs milvusclient.ResultSet) []graphrag.Entity {
 	n := rs.ResultCount
@@ -473,6 +555,9 @@ func parseEntities(rs milvusclient.ResultSet) []graphrag.Entity {
 	ents := make([]graphrag.Entity, 0, n)
 	for i := 0; i < n; i++ {
 		var e graphrag.Entity
+		if len(rs.Scores) > i {
+			e.Score = rs.Scores[i]
+		}
 		if nameCol != nil {
 			if v, err := nameCol.Value(i); err == nil {
 				e.Name = v

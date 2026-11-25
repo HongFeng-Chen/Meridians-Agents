@@ -66,13 +66,11 @@ func trimSuffixSlash(s string) string {
 	return s
 }
 
-// Rerank 精排：返回按相关度降序的文档下标（长度 = min(len(docs), topN)，topN<=0 取 len(docs)）。
-func (r *Reranker) Rerank(ctx context.Context, query string, docs []string) ([]int, error) {
+// Rerank 精排：返回 (按相关度降序的文档下标, 每个下标对应的 0~1 相关性分)。
+// 不做条数截断——保留多少条由调用方决定（截断语义分散在两处会互相打架）。
+func (r *Reranker) Rerank(ctx context.Context, query string, docs []string) ([]int, []float64, error) {
 	if r == nil || len(docs) == 0 {
-		return nil, fmt.Errorf("rerank 未启用")
-	}
-	if r.topN > 0 && len(docs) > r.topN {
-		docs = docs[:r.topN]
+		return nil, nil, fmt.Errorf("rerank 未启用")
 	}
 	var (
 		url  string
@@ -100,11 +98,11 @@ func (r *Reranker) Rerank(ctx context.Context, query string, docs []string) ([]i
 		})
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if r.apiKey != "" {
@@ -112,12 +110,12 @@ func (r *Reranker) Rerank(ctx context.Context, query string, docs []string) ([]i
 	}
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("rerank api %d: %s", resp.StatusCode, truncateBytes(raw, 200))
+		return nil, nil, fmt.Errorf("rerank api %d: %s", resp.StatusCode, truncateBytes(raw, 200))
 	}
 
 	// 两种协议的 results 均为 [{index, relevance_score}]，dashscope 多一层 output 包裹
@@ -132,22 +130,24 @@ func (r *Reranker) Rerank(ctx context.Context, query string, docs []string) ([]i
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	results := cr.Results
 	if len(results) == 0 {
 		results = cr.Output.Results
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("rerank 响应无 results")
+		return nil, nil, fmt.Errorf("rerank 响应无 results")
 	}
-	out := make([]int, 0, len(results))
+	order := make([]int, 0, len(results))
+	scores := make([]float64, len(docs)) // 按文档下标存相关性分，未返回的默认 0
 	for _, it := range results {
 		if it.Index >= 0 && it.Index < len(docs) {
-			out = append(out, it.Index)
+			order = append(order, it.Index)
+			scores[it.Index] = it.Score
 		}
 	}
-	return out, nil
+	return order, scores, nil
 }
 
 func truncateBytes(b []byte, n int) string {

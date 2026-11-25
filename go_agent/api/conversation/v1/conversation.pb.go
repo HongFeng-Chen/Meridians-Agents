@@ -393,16 +393,196 @@ func (x *CreateConversationRequest) GetAgentKey() string {
 	return ""
 }
 
+// SessionBootstrapMemory 新会话启动时召回的一条长期记忆。
+type SessionBootstrapMemory struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Kind    string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Content string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	// 相似度 0~1
+	Score      float64 `protobuf:"fixed64,4,opt,name=score,proto3" json:"score,omitempty"`
+	Importance int32   `protobuf:"varint,5,opt,name=importance,proto3" json:"importance,omitempty"`
+	Source     string  `protobuf:"bytes,6,opt,name=source,proto3" json:"source,omitempty"`
+	// 来源会话 ID（会话总结类记忆有值）
+	SessionId     string `protobuf:"bytes,7,opt,name=session_id,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionBootstrapMemory) Reset() {
+	*x = SessionBootstrapMemory{}
+	mi := &file_conversation_v1_conversation_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionBootstrapMemory) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionBootstrapMemory) ProtoMessage() {}
+
+func (x *SessionBootstrapMemory) ProtoReflect() protoreflect.Message {
+	mi := &file_conversation_v1_conversation_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionBootstrapMemory.ProtoReflect.Descriptor instead.
+func (*SessionBootstrapMemory) Descriptor() ([]byte, []int) {
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SessionBootstrapMemory) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SessionBootstrapMemory) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *SessionBootstrapMemory) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *SessionBootstrapMemory) GetScore() float64 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *SessionBootstrapMemory) GetImportance() int32 {
+	if x != nil {
+		return x.Importance
+	}
+	return 0
+}
+
+func (x *SessionBootstrapMemory) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *SessionBootstrapMemory) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+// SessionBootstrap 新会话启动上下文。
+// 只含长期记忆：创建新会话时主动召回用户已沉淀的记忆，
+// 明确不召回任何历史会话的消息（会话之间不串上下文）。
+type SessionBootstrap struct {
+	state    protoimpl.MessageState    `protogen:"open.v1"`
+	Memories []*SessionBootstrapMemory `protobuf:"bytes,1,rep,name=memories,proto3" json:"memories,omitempty"`
+	// 渲染后的提示词块（供客户端展示 / 排查）
+	ContextBlock string `protobuf:"bytes,2,opt,name=context_block,proto3" json:"context_block,omitempty"`
+	// 固定为 long_term_memory，标注本次启动只用了长期记忆
+	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	// 记忆系统未装配或召回失败时为 true（不阻塞建会话）
+	Skipped bool `protobuf:"varint,4,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	// 失败原因（best-effort，仅排查用）
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionBootstrap) Reset() {
+	*x = SessionBootstrap{}
+	mi := &file_conversation_v1_conversation_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionBootstrap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionBootstrap) ProtoMessage() {}
+
+func (x *SessionBootstrap) ProtoReflect() protoreflect.Message {
+	mi := &file_conversation_v1_conversation_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionBootstrap.ProtoReflect.Descriptor instead.
+func (*SessionBootstrap) Descriptor() ([]byte, []int) {
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SessionBootstrap) GetMemories() []*SessionBootstrapMemory {
+	if x != nil {
+		return x.Memories
+	}
+	return nil
+}
+
+func (x *SessionBootstrap) GetContextBlock() string {
+	if x != nil {
+		return x.ContextBlock
+	}
+	return ""
+}
+
+func (x *SessionBootstrap) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *SessionBootstrap) GetSkipped() bool {
+	if x != nil {
+		return x.Skipped
+	}
+	return false
+}
+
+func (x *SessionBootstrap) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 type CreateConversationReply struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Conversation  *Conversation          `protobuf:"bytes,1,opt,name=conversation,proto3" json:"conversation,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Conversation *Conversation          `protobuf:"bytes,1,opt,name=conversation,proto3" json:"conversation,omitempty"`
+	// 新会话启动召回：只有长期记忆，没有历史会话消息
+	Bootstrap     *SessionBootstrap `protobuf:"bytes,2,opt,name=bootstrap,proto3" json:"bootstrap,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateConversationReply) Reset() {
 	*x = CreateConversationReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[4]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -414,7 +594,7 @@ func (x *CreateConversationReply) String() string {
 func (*CreateConversationReply) ProtoMessage() {}
 
 func (x *CreateConversationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[4]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,12 +607,19 @@ func (x *CreateConversationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateConversationReply.ProtoReflect.Descriptor instead.
 func (*CreateConversationReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{4}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CreateConversationReply) GetConversation() *Conversation {
 	if x != nil {
 		return x.Conversation
+	}
+	return nil
+}
+
+func (x *CreateConversationReply) GetBootstrap() *SessionBootstrap {
+	if x != nil {
+		return x.Bootstrap
 	}
 	return nil
 }
@@ -449,7 +636,7 @@ type ListConversationsRequest struct {
 
 func (x *ListConversationsRequest) Reset() {
 	*x = ListConversationsRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[5]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -461,7 +648,7 @@ func (x *ListConversationsRequest) String() string {
 func (*ListConversationsRequest) ProtoMessage() {}
 
 func (x *ListConversationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[5]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +661,7 @@ func (x *ListConversationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListConversationsRequest.ProtoReflect.Descriptor instead.
 func (*ListConversationsRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{5}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListConversationsRequest) GetKw() string {
@@ -508,7 +695,7 @@ type ListConversationsReply struct {
 
 func (x *ListConversationsReply) Reset() {
 	*x = ListConversationsReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[6]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -520,7 +707,7 @@ func (x *ListConversationsReply) String() string {
 func (*ListConversationsReply) ProtoMessage() {}
 
 func (x *ListConversationsReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[6]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -533,7 +720,7 @@ func (x *ListConversationsReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListConversationsReply.ProtoReflect.Descriptor instead.
 func (*ListConversationsReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{6}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListConversationsReply) GetConversations() []*Conversation {
@@ -559,7 +746,7 @@ type GetConversationRequest struct {
 
 func (x *GetConversationRequest) Reset() {
 	*x = GetConversationRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[7]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +758,7 @@ func (x *GetConversationRequest) String() string {
 func (*GetConversationRequest) ProtoMessage() {}
 
 func (x *GetConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[7]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +771,7 @@ func (x *GetConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConversationRequest.ProtoReflect.Descriptor instead.
 func (*GetConversationRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{7}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetConversationRequest) GetId() string {
@@ -604,7 +791,7 @@ type GetConversationReply struct {
 
 func (x *GetConversationReply) Reset() {
 	*x = GetConversationReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[8]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -616,7 +803,7 @@ func (x *GetConversationReply) String() string {
 func (*GetConversationReply) ProtoMessage() {}
 
 func (x *GetConversationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[8]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -629,7 +816,7 @@ func (x *GetConversationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConversationReply.ProtoReflect.Descriptor instead.
 func (*GetConversationReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{8}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetConversationReply) GetConversation() *Conversation {
@@ -660,7 +847,7 @@ type ListMessagesRequest struct {
 
 func (x *ListMessagesRequest) Reset() {
 	*x = ListMessagesRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[9]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -672,7 +859,7 @@ func (x *ListMessagesRequest) String() string {
 func (*ListMessagesRequest) ProtoMessage() {}
 
 func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[9]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -685,7 +872,7 @@ func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesRequest.ProtoReflect.Descriptor instead.
 func (*ListMessagesRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{9}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ListMessagesRequest) GetId() string {
@@ -721,7 +908,7 @@ type ListMessagesReply struct {
 
 func (x *ListMessagesReply) Reset() {
 	*x = ListMessagesReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[10]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -733,7 +920,7 @@ func (x *ListMessagesReply) String() string {
 func (*ListMessagesReply) ProtoMessage() {}
 
 func (x *ListMessagesReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[10]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -746,7 +933,7 @@ func (x *ListMessagesReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesReply.ProtoReflect.Descriptor instead.
 func (*ListMessagesReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{10}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListMessagesReply) GetMessages() []*ConversationMessage {
@@ -773,7 +960,7 @@ type UpdateConversationRequest struct {
 
 func (x *UpdateConversationRequest) Reset() {
 	*x = UpdateConversationRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[11]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -785,7 +972,7 @@ func (x *UpdateConversationRequest) String() string {
 func (*UpdateConversationRequest) ProtoMessage() {}
 
 func (x *UpdateConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[11]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -798,7 +985,7 @@ func (x *UpdateConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateConversationRequest.ProtoReflect.Descriptor instead.
 func (*UpdateConversationRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{11}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *UpdateConversationRequest) GetId() string {
@@ -824,7 +1011,7 @@ type UpdateConversationReply struct {
 
 func (x *UpdateConversationReply) Reset() {
 	*x = UpdateConversationReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[12]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -836,7 +1023,7 @@ func (x *UpdateConversationReply) String() string {
 func (*UpdateConversationReply) ProtoMessage() {}
 
 func (x *UpdateConversationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[12]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -849,7 +1036,7 @@ func (x *UpdateConversationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateConversationReply.ProtoReflect.Descriptor instead.
 func (*UpdateConversationReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{12}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *UpdateConversationReply) GetConversation() *Conversation {
@@ -868,7 +1055,7 @@ type DeleteConversationRequest struct {
 
 func (x *DeleteConversationRequest) Reset() {
 	*x = DeleteConversationRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[13]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -880,7 +1067,7 @@ func (x *DeleteConversationRequest) String() string {
 func (*DeleteConversationRequest) ProtoMessage() {}
 
 func (x *DeleteConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[13]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -893,7 +1080,7 @@ func (x *DeleteConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConversationRequest.ProtoReflect.Descriptor instead.
 func (*DeleteConversationRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{13}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeleteConversationRequest) GetId() string {
@@ -911,7 +1098,7 @@ type DeleteConversationReply struct {
 
 func (x *DeleteConversationReply) Reset() {
 	*x = DeleteConversationReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[14]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -923,7 +1110,7 @@ func (x *DeleteConversationReply) String() string {
 func (*DeleteConversationReply) ProtoMessage() {}
 
 func (x *DeleteConversationReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[14]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -936,7 +1123,7 @@ func (x *DeleteConversationReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConversationReply.ProtoReflect.Descriptor instead.
 func (*DeleteConversationReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{14}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{16}
 }
 
 type AppendMessageRequest struct {
@@ -956,7 +1143,7 @@ type AppendMessageRequest struct {
 
 func (x *AppendMessageRequest) Reset() {
 	*x = AppendMessageRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[15]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -968,7 +1155,7 @@ func (x *AppendMessageRequest) String() string {
 func (*AppendMessageRequest) ProtoMessage() {}
 
 func (x *AppendMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[15]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -981,7 +1168,7 @@ func (x *AppendMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendMessageRequest.ProtoReflect.Descriptor instead.
 func (*AppendMessageRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{15}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AppendMessageRequest) GetId() string {
@@ -1028,7 +1215,7 @@ type AppendMessageReply struct {
 
 func (x *AppendMessageReply) Reset() {
 	*x = AppendMessageReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[16]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1040,7 +1227,7 @@ func (x *AppendMessageReply) String() string {
 func (*AppendMessageReply) ProtoMessage() {}
 
 func (x *AppendMessageReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[16]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1053,7 +1240,7 @@ func (x *AppendMessageReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendMessageReply.ProtoReflect.Descriptor instead.
 func (*AppendMessageReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{16}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AppendMessageReply) GetMessage() *ConversationMessage {
@@ -1077,7 +1264,7 @@ type ChatRequest struct {
 
 func (x *ChatRequest) Reset() {
 	*x = ChatRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[17]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1089,7 +1276,7 @@ func (x *ChatRequest) String() string {
 func (*ChatRequest) ProtoMessage() {}
 
 func (x *ChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[17]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +1289,7 @@ func (x *ChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatRequest.ProtoReflect.Descriptor instead.
 func (*ChatRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{17}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ChatRequest) GetId() string {
@@ -1136,7 +1323,7 @@ type ChatReply struct {
 
 func (x *ChatReply) Reset() {
 	*x = ChatReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[18]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1148,7 +1335,7 @@ func (x *ChatReply) String() string {
 func (*ChatReply) ProtoMessage() {}
 
 func (x *ChatReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[18]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1161,7 +1348,7 @@ func (x *ChatReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatReply.ProtoReflect.Descriptor instead.
 func (*ChatReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{18}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ChatReply) GetUserMessage() *ConversationMessage {
@@ -1194,7 +1381,7 @@ type UploadMediaRequest struct {
 
 func (x *UploadMediaRequest) Reset() {
 	*x = UploadMediaRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[19]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1206,7 +1393,7 @@ func (x *UploadMediaRequest) String() string {
 func (*UploadMediaRequest) ProtoMessage() {}
 
 func (x *UploadMediaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[19]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1219,7 +1406,7 @@ func (x *UploadMediaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadMediaRequest.ProtoReflect.Descriptor instead.
 func (*UploadMediaRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{19}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UploadMediaRequest) GetFile() []byte {
@@ -1245,7 +1432,7 @@ type UploadMediaReply struct {
 
 func (x *UploadMediaReply) Reset() {
 	*x = UploadMediaReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[20]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1444,7 @@ func (x *UploadMediaReply) String() string {
 func (*UploadMediaReply) ProtoMessage() {}
 
 func (x *UploadMediaReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[20]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1457,7 @@ func (x *UploadMediaReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadMediaReply.ProtoReflect.Descriptor instead.
 func (*UploadMediaReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{20}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *UploadMediaReply) GetAttachment() *Attachment {
@@ -1293,7 +1480,7 @@ type DebateRole struct {
 
 func (x *DebateRole) Reset() {
 	*x = DebateRole{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[21]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1305,7 +1492,7 @@ func (x *DebateRole) String() string {
 func (*DebateRole) ProtoMessage() {}
 
 func (x *DebateRole) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[21]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1318,7 +1505,7 @@ func (x *DebateRole) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebateRole.ProtoReflect.Descriptor instead.
 func (*DebateRole) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{21}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DebateRole) GetName() string {
@@ -1371,7 +1558,7 @@ type Debate struct {
 
 func (x *Debate) Reset() {
 	*x = Debate{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[22]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1383,7 +1570,7 @@ func (x *Debate) String() string {
 func (*Debate) ProtoMessage() {}
 
 func (x *Debate) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[22]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1396,7 +1583,7 @@ func (x *Debate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Debate.ProtoReflect.Descriptor instead.
 func (*Debate) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{22}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *Debate) GetId() int64 {
@@ -1491,7 +1678,7 @@ type CreateDebateRequest struct {
 
 func (x *CreateDebateRequest) Reset() {
 	*x = CreateDebateRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[23]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1503,7 +1690,7 @@ func (x *CreateDebateRequest) String() string {
 func (*CreateDebateRequest) ProtoMessage() {}
 
 func (x *CreateDebateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[23]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1516,7 +1703,7 @@ func (x *CreateDebateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateDebateRequest.ProtoReflect.Descriptor instead.
 func (*CreateDebateRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{23}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateDebateRequest) GetId() string {
@@ -1563,7 +1750,7 @@ type CreateDebateReply struct {
 
 func (x *CreateDebateReply) Reset() {
 	*x = CreateDebateReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[24]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1575,7 +1762,7 @@ func (x *CreateDebateReply) String() string {
 func (*CreateDebateReply) ProtoMessage() {}
 
 func (x *CreateDebateReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[24]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1588,7 +1775,7 @@ func (x *CreateDebateReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateDebateReply.ProtoReflect.Descriptor instead.
 func (*CreateDebateReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{24}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateDebateReply) GetDebate() *Debate {
@@ -1607,7 +1794,7 @@ type GetDebateReply struct {
 
 func (x *GetDebateReply) Reset() {
 	*x = GetDebateReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[25]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1619,7 +1806,7 @@ func (x *GetDebateReply) String() string {
 func (*GetDebateReply) ProtoMessage() {}
 
 func (x *GetDebateReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[25]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1632,7 +1819,7 @@ func (x *GetDebateReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDebateReply.ProtoReflect.Descriptor instead.
 func (*GetDebateReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{25}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetDebateReply) GetDebate() *Debate {
@@ -1651,7 +1838,7 @@ type StopDebateReply struct {
 
 func (x *StopDebateReply) Reset() {
 	*x = StopDebateReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[26]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1663,7 +1850,7 @@ func (x *StopDebateReply) String() string {
 func (*StopDebateReply) ProtoMessage() {}
 
 func (x *StopDebateReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[26]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1676,7 +1863,7 @@ func (x *StopDebateReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopDebateReply.ProtoReflect.Descriptor instead.
 func (*StopDebateReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{26}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *StopDebateReply) GetDebate() *Debate {
@@ -1697,7 +1884,7 @@ type AddDebateRoleRequest struct {
 
 func (x *AddDebateRoleRequest) Reset() {
 	*x = AddDebateRoleRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[27]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1709,7 +1896,7 @@ func (x *AddDebateRoleRequest) String() string {
 func (*AddDebateRoleRequest) ProtoMessage() {}
 
 func (x *AddDebateRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[27]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1722,7 +1909,7 @@ func (x *AddDebateRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDebateRoleRequest.ProtoReflect.Descriptor instead.
 func (*AddDebateRoleRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{27}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *AddDebateRoleRequest) GetId() string {
@@ -1748,7 +1935,7 @@ type AddDebateRoleReply struct {
 
 func (x *AddDebateRoleReply) Reset() {
 	*x = AddDebateRoleReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[28]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1760,7 +1947,7 @@ func (x *AddDebateRoleReply) String() string {
 func (*AddDebateRoleReply) ProtoMessage() {}
 
 func (x *AddDebateRoleReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[28]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1773,7 +1960,7 @@ func (x *AddDebateRoleReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDebateRoleReply.ProtoReflect.Descriptor instead.
 func (*AddDebateRoleReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{28}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *AddDebateRoleReply) GetDebate() *Debate {
@@ -1794,7 +1981,7 @@ type RemoveDebateRoleRequest struct {
 
 func (x *RemoveDebateRoleRequest) Reset() {
 	*x = RemoveDebateRoleRequest{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[29]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1806,7 +1993,7 @@ func (x *RemoveDebateRoleRequest) String() string {
 func (*RemoveDebateRoleRequest) ProtoMessage() {}
 
 func (x *RemoveDebateRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[29]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1819,7 +2006,7 @@ func (x *RemoveDebateRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDebateRoleRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDebateRoleRequest) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{29}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *RemoveDebateRoleRequest) GetId() string {
@@ -1845,7 +2032,7 @@ type RemoveDebateRoleReply struct {
 
 func (x *RemoveDebateRoleReply) Reset() {
 	*x = RemoveDebateRoleReply{}
-	mi := &file_conversation_v1_conversation_proto_msgTypes[30]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1857,7 +2044,7 @@ func (x *RemoveDebateRoleReply) String() string {
 func (*RemoveDebateRoleReply) ProtoMessage() {}
 
 func (x *RemoveDebateRoleReply) ProtoReflect() protoreflect.Message {
-	mi := &file_conversation_v1_conversation_proto_msgTypes[30]
+	mi := &file_conversation_v1_conversation_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1870,7 +2057,7 @@ func (x *RemoveDebateRoleReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDebateRoleReply.ProtoReflect.Descriptor instead.
 func (*RemoveDebateRoleReply) Descriptor() ([]byte, []int) {
-	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{30}
+	return file_conversation_v1_conversation_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *RemoveDebateRoleReply) GetDebate() *Debate {
@@ -1922,9 +2109,28 @@ const file_conversation_v1_conversation_proto_rawDesc = "" +
 	"\x19CreateConversationRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1c\n" +
-	"\tagent_key\x18\x03 \x01(\tR\tagent_key\"\\\n" +
+	"\tagent_key\x18\x03 \x01(\tR\tagent_key\"\xc4\x01\n" +
+	"\x16SessionBootstrapMemory\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x18\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12\x14\n" +
+	"\x05score\x18\x04 \x01(\x01R\x05score\x12\x1e\n" +
+	"\n" +
+	"importance\x18\x05 \x01(\x05R\n" +
+	"importance\x12\x16\n" +
+	"\x06source\x18\x06 \x01(\tR\x06source\x12\x1e\n" +
+	"\n" +
+	"session_id\x18\a \x01(\tR\n" +
+	"session_id\"\xc5\x01\n" +
+	"\x10SessionBootstrap\x12C\n" +
+	"\bmemories\x18\x01 \x03(\v2'.conversation.v1.SessionBootstrapMemoryR\bmemories\x12$\n" +
+	"\rcontext_block\x18\x02 \x01(\tR\rcontext_block\x12\x16\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\x12\x18\n" +
+	"\askipped\x18\x04 \x01(\bR\askipped\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"\x9d\x01\n" +
 	"\x17CreateConversationReply\x12A\n" +
-	"\fconversation\x18\x01 \x01(\v2\x1d.conversation.v1.ConversationR\fconversation\"X\n" +
+	"\fconversation\x18\x01 \x01(\v2\x1d.conversation.v1.ConversationR\fconversation\x12?\n" +
+	"\tbootstrap\x18\x02 \x01(\v2!.conversation.v1.SessionBootstrapR\tbootstrap\"X\n" +
 	"\x18ListConversationsRequest\x12\x0e\n" +
 	"\x02kw\x18\x01 \x01(\tR\x02kw\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
@@ -2054,98 +2260,102 @@ func file_conversation_v1_conversation_proto_rawDescGZIP() []byte {
 	return file_conversation_v1_conversation_proto_rawDescData
 }
 
-var file_conversation_v1_conversation_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_conversation_v1_conversation_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_conversation_v1_conversation_proto_goTypes = []any{
 	(*Conversation)(nil),              // 0: conversation.v1.Conversation
 	(*ConversationMessage)(nil),       // 1: conversation.v1.ConversationMessage
 	(*Attachment)(nil),                // 2: conversation.v1.Attachment
 	(*CreateConversationRequest)(nil), // 3: conversation.v1.CreateConversationRequest
-	(*CreateConversationReply)(nil),   // 4: conversation.v1.CreateConversationReply
-	(*ListConversationsRequest)(nil),  // 5: conversation.v1.ListConversationsRequest
-	(*ListConversationsReply)(nil),    // 6: conversation.v1.ListConversationsReply
-	(*GetConversationRequest)(nil),    // 7: conversation.v1.GetConversationRequest
-	(*GetConversationReply)(nil),      // 8: conversation.v1.GetConversationReply
-	(*ListMessagesRequest)(nil),       // 9: conversation.v1.ListMessagesRequest
-	(*ListMessagesReply)(nil),         // 10: conversation.v1.ListMessagesReply
-	(*UpdateConversationRequest)(nil), // 11: conversation.v1.UpdateConversationRequest
-	(*UpdateConversationReply)(nil),   // 12: conversation.v1.UpdateConversationReply
-	(*DeleteConversationRequest)(nil), // 13: conversation.v1.DeleteConversationRequest
-	(*DeleteConversationReply)(nil),   // 14: conversation.v1.DeleteConversationReply
-	(*AppendMessageRequest)(nil),      // 15: conversation.v1.AppendMessageRequest
-	(*AppendMessageReply)(nil),        // 16: conversation.v1.AppendMessageReply
-	(*ChatRequest)(nil),               // 17: conversation.v1.ChatRequest
-	(*ChatReply)(nil),                 // 18: conversation.v1.ChatReply
-	(*UploadMediaRequest)(nil),        // 19: conversation.v1.UploadMediaRequest
-	(*UploadMediaReply)(nil),          // 20: conversation.v1.UploadMediaReply
-	(*DebateRole)(nil),                // 21: conversation.v1.DebateRole
-	(*Debate)(nil),                    // 22: conversation.v1.Debate
-	(*CreateDebateRequest)(nil),       // 23: conversation.v1.CreateDebateRequest
-	(*CreateDebateReply)(nil),         // 24: conversation.v1.CreateDebateReply
-	(*GetDebateReply)(nil),            // 25: conversation.v1.GetDebateReply
-	(*StopDebateReply)(nil),           // 26: conversation.v1.StopDebateReply
-	(*AddDebateRoleRequest)(nil),      // 27: conversation.v1.AddDebateRoleRequest
-	(*AddDebateRoleReply)(nil),        // 28: conversation.v1.AddDebateRoleReply
-	(*RemoveDebateRoleRequest)(nil),   // 29: conversation.v1.RemoveDebateRoleRequest
-	(*RemoveDebateRoleReply)(nil),     // 30: conversation.v1.RemoveDebateRoleReply
+	(*SessionBootstrapMemory)(nil),    // 4: conversation.v1.SessionBootstrapMemory
+	(*SessionBootstrap)(nil),          // 5: conversation.v1.SessionBootstrap
+	(*CreateConversationReply)(nil),   // 6: conversation.v1.CreateConversationReply
+	(*ListConversationsRequest)(nil),  // 7: conversation.v1.ListConversationsRequest
+	(*ListConversationsReply)(nil),    // 8: conversation.v1.ListConversationsReply
+	(*GetConversationRequest)(nil),    // 9: conversation.v1.GetConversationRequest
+	(*GetConversationReply)(nil),      // 10: conversation.v1.GetConversationReply
+	(*ListMessagesRequest)(nil),       // 11: conversation.v1.ListMessagesRequest
+	(*ListMessagesReply)(nil),         // 12: conversation.v1.ListMessagesReply
+	(*UpdateConversationRequest)(nil), // 13: conversation.v1.UpdateConversationRequest
+	(*UpdateConversationReply)(nil),   // 14: conversation.v1.UpdateConversationReply
+	(*DeleteConversationRequest)(nil), // 15: conversation.v1.DeleteConversationRequest
+	(*DeleteConversationReply)(nil),   // 16: conversation.v1.DeleteConversationReply
+	(*AppendMessageRequest)(nil),      // 17: conversation.v1.AppendMessageRequest
+	(*AppendMessageReply)(nil),        // 18: conversation.v1.AppendMessageReply
+	(*ChatRequest)(nil),               // 19: conversation.v1.ChatRequest
+	(*ChatReply)(nil),                 // 20: conversation.v1.ChatReply
+	(*UploadMediaRequest)(nil),        // 21: conversation.v1.UploadMediaRequest
+	(*UploadMediaReply)(nil),          // 22: conversation.v1.UploadMediaReply
+	(*DebateRole)(nil),                // 23: conversation.v1.DebateRole
+	(*Debate)(nil),                    // 24: conversation.v1.Debate
+	(*CreateDebateRequest)(nil),       // 25: conversation.v1.CreateDebateRequest
+	(*CreateDebateReply)(nil),         // 26: conversation.v1.CreateDebateReply
+	(*GetDebateReply)(nil),            // 27: conversation.v1.GetDebateReply
+	(*StopDebateReply)(nil),           // 28: conversation.v1.StopDebateReply
+	(*AddDebateRoleRequest)(nil),      // 29: conversation.v1.AddDebateRoleRequest
+	(*AddDebateRoleReply)(nil),        // 30: conversation.v1.AddDebateRoleReply
+	(*RemoveDebateRoleRequest)(nil),   // 31: conversation.v1.RemoveDebateRoleRequest
+	(*RemoveDebateRoleReply)(nil),     // 32: conversation.v1.RemoveDebateRoleReply
 }
 var file_conversation_v1_conversation_proto_depIdxs = []int32{
 	2,  // 0: conversation.v1.ConversationMessage.attachments:type_name -> conversation.v1.Attachment
-	0,  // 1: conversation.v1.CreateConversationReply.conversation:type_name -> conversation.v1.Conversation
-	0,  // 2: conversation.v1.ListConversationsReply.conversations:type_name -> conversation.v1.Conversation
-	0,  // 3: conversation.v1.GetConversationReply.conversation:type_name -> conversation.v1.Conversation
-	1,  // 4: conversation.v1.GetConversationReply.messages:type_name -> conversation.v1.ConversationMessage
-	1,  // 5: conversation.v1.ListMessagesReply.messages:type_name -> conversation.v1.ConversationMessage
-	0,  // 6: conversation.v1.UpdateConversationReply.conversation:type_name -> conversation.v1.Conversation
-	1,  // 7: conversation.v1.AppendMessageReply.message:type_name -> conversation.v1.ConversationMessage
-	2,  // 8: conversation.v1.ChatRequest.attachments:type_name -> conversation.v1.Attachment
-	1,  // 9: conversation.v1.ChatReply.user_message:type_name -> conversation.v1.ConversationMessage
-	1,  // 10: conversation.v1.ChatReply.assistant_message:type_name -> conversation.v1.ConversationMessage
-	2,  // 11: conversation.v1.UploadMediaReply.attachment:type_name -> conversation.v1.Attachment
-	21, // 12: conversation.v1.Debate.roles:type_name -> conversation.v1.DebateRole
-	21, // 13: conversation.v1.CreateDebateRequest.roles:type_name -> conversation.v1.DebateRole
-	22, // 14: conversation.v1.CreateDebateReply.debate:type_name -> conversation.v1.Debate
-	22, // 15: conversation.v1.GetDebateReply.debate:type_name -> conversation.v1.Debate
-	22, // 16: conversation.v1.StopDebateReply.debate:type_name -> conversation.v1.Debate
-	21, // 17: conversation.v1.AddDebateRoleRequest.role:type_name -> conversation.v1.DebateRole
-	22, // 18: conversation.v1.AddDebateRoleReply.debate:type_name -> conversation.v1.Debate
-	22, // 19: conversation.v1.RemoveDebateRoleReply.debate:type_name -> conversation.v1.Debate
-	3,  // 20: conversation.v1.ConversationService.CreateConversation:input_type -> conversation.v1.CreateConversationRequest
-	5,  // 21: conversation.v1.ConversationService.ListConversations:input_type -> conversation.v1.ListConversationsRequest
-	7,  // 22: conversation.v1.ConversationService.GetConversation:input_type -> conversation.v1.GetConversationRequest
-	9,  // 23: conversation.v1.ConversationService.ListMessages:input_type -> conversation.v1.ListMessagesRequest
-	11, // 24: conversation.v1.ConversationService.UpdateConversation:input_type -> conversation.v1.UpdateConversationRequest
-	13, // 25: conversation.v1.ConversationService.DeleteConversation:input_type -> conversation.v1.DeleteConversationRequest
-	15, // 26: conversation.v1.ConversationService.AppendMessage:input_type -> conversation.v1.AppendMessageRequest
-	17, // 27: conversation.v1.ConversationService.Chat:input_type -> conversation.v1.ChatRequest
-	19, // 28: conversation.v1.ConversationService.UploadMedia:input_type -> conversation.v1.UploadMediaRequest
-	23, // 29: conversation.v1.ConversationService.CreateDebate:input_type -> conversation.v1.CreateDebateRequest
-	7,  // 30: conversation.v1.ConversationService.GetCurrentDebate:input_type -> conversation.v1.GetConversationRequest
-	7,  // 31: conversation.v1.ConversationService.StopDebate:input_type -> conversation.v1.GetConversationRequest
-	7,  // 32: conversation.v1.ConversationService.PauseDebate:input_type -> conversation.v1.GetConversationRequest
-	7,  // 33: conversation.v1.ConversationService.ResumeDebate:input_type -> conversation.v1.GetConversationRequest
-	27, // 34: conversation.v1.ConversationService.AddDebateRole:input_type -> conversation.v1.AddDebateRoleRequest
-	29, // 35: conversation.v1.ConversationService.RemoveDebateRole:input_type -> conversation.v1.RemoveDebateRoleRequest
-	4,  // 36: conversation.v1.ConversationService.CreateConversation:output_type -> conversation.v1.CreateConversationReply
-	6,  // 37: conversation.v1.ConversationService.ListConversations:output_type -> conversation.v1.ListConversationsReply
-	8,  // 38: conversation.v1.ConversationService.GetConversation:output_type -> conversation.v1.GetConversationReply
-	10, // 39: conversation.v1.ConversationService.ListMessages:output_type -> conversation.v1.ListMessagesReply
-	12, // 40: conversation.v1.ConversationService.UpdateConversation:output_type -> conversation.v1.UpdateConversationReply
-	14, // 41: conversation.v1.ConversationService.DeleteConversation:output_type -> conversation.v1.DeleteConversationReply
-	16, // 42: conversation.v1.ConversationService.AppendMessage:output_type -> conversation.v1.AppendMessageReply
-	18, // 43: conversation.v1.ConversationService.Chat:output_type -> conversation.v1.ChatReply
-	20, // 44: conversation.v1.ConversationService.UploadMedia:output_type -> conversation.v1.UploadMediaReply
-	24, // 45: conversation.v1.ConversationService.CreateDebate:output_type -> conversation.v1.CreateDebateReply
-	25, // 46: conversation.v1.ConversationService.GetCurrentDebate:output_type -> conversation.v1.GetDebateReply
-	26, // 47: conversation.v1.ConversationService.StopDebate:output_type -> conversation.v1.StopDebateReply
-	26, // 48: conversation.v1.ConversationService.PauseDebate:output_type -> conversation.v1.StopDebateReply
-	26, // 49: conversation.v1.ConversationService.ResumeDebate:output_type -> conversation.v1.StopDebateReply
-	28, // 50: conversation.v1.ConversationService.AddDebateRole:output_type -> conversation.v1.AddDebateRoleReply
-	30, // 51: conversation.v1.ConversationService.RemoveDebateRole:output_type -> conversation.v1.RemoveDebateRoleReply
-	36, // [36:52] is the sub-list for method output_type
-	20, // [20:36] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	4,  // 1: conversation.v1.SessionBootstrap.memories:type_name -> conversation.v1.SessionBootstrapMemory
+	0,  // 2: conversation.v1.CreateConversationReply.conversation:type_name -> conversation.v1.Conversation
+	5,  // 3: conversation.v1.CreateConversationReply.bootstrap:type_name -> conversation.v1.SessionBootstrap
+	0,  // 4: conversation.v1.ListConversationsReply.conversations:type_name -> conversation.v1.Conversation
+	0,  // 5: conversation.v1.GetConversationReply.conversation:type_name -> conversation.v1.Conversation
+	1,  // 6: conversation.v1.GetConversationReply.messages:type_name -> conversation.v1.ConversationMessage
+	1,  // 7: conversation.v1.ListMessagesReply.messages:type_name -> conversation.v1.ConversationMessage
+	0,  // 8: conversation.v1.UpdateConversationReply.conversation:type_name -> conversation.v1.Conversation
+	1,  // 9: conversation.v1.AppendMessageReply.message:type_name -> conversation.v1.ConversationMessage
+	2,  // 10: conversation.v1.ChatRequest.attachments:type_name -> conversation.v1.Attachment
+	1,  // 11: conversation.v1.ChatReply.user_message:type_name -> conversation.v1.ConversationMessage
+	1,  // 12: conversation.v1.ChatReply.assistant_message:type_name -> conversation.v1.ConversationMessage
+	2,  // 13: conversation.v1.UploadMediaReply.attachment:type_name -> conversation.v1.Attachment
+	23, // 14: conversation.v1.Debate.roles:type_name -> conversation.v1.DebateRole
+	23, // 15: conversation.v1.CreateDebateRequest.roles:type_name -> conversation.v1.DebateRole
+	24, // 16: conversation.v1.CreateDebateReply.debate:type_name -> conversation.v1.Debate
+	24, // 17: conversation.v1.GetDebateReply.debate:type_name -> conversation.v1.Debate
+	24, // 18: conversation.v1.StopDebateReply.debate:type_name -> conversation.v1.Debate
+	23, // 19: conversation.v1.AddDebateRoleRequest.role:type_name -> conversation.v1.DebateRole
+	24, // 20: conversation.v1.AddDebateRoleReply.debate:type_name -> conversation.v1.Debate
+	24, // 21: conversation.v1.RemoveDebateRoleReply.debate:type_name -> conversation.v1.Debate
+	3,  // 22: conversation.v1.ConversationService.CreateConversation:input_type -> conversation.v1.CreateConversationRequest
+	7,  // 23: conversation.v1.ConversationService.ListConversations:input_type -> conversation.v1.ListConversationsRequest
+	9,  // 24: conversation.v1.ConversationService.GetConversation:input_type -> conversation.v1.GetConversationRequest
+	11, // 25: conversation.v1.ConversationService.ListMessages:input_type -> conversation.v1.ListMessagesRequest
+	13, // 26: conversation.v1.ConversationService.UpdateConversation:input_type -> conversation.v1.UpdateConversationRequest
+	15, // 27: conversation.v1.ConversationService.DeleteConversation:input_type -> conversation.v1.DeleteConversationRequest
+	17, // 28: conversation.v1.ConversationService.AppendMessage:input_type -> conversation.v1.AppendMessageRequest
+	19, // 29: conversation.v1.ConversationService.Chat:input_type -> conversation.v1.ChatRequest
+	21, // 30: conversation.v1.ConversationService.UploadMedia:input_type -> conversation.v1.UploadMediaRequest
+	25, // 31: conversation.v1.ConversationService.CreateDebate:input_type -> conversation.v1.CreateDebateRequest
+	9,  // 32: conversation.v1.ConversationService.GetCurrentDebate:input_type -> conversation.v1.GetConversationRequest
+	9,  // 33: conversation.v1.ConversationService.StopDebate:input_type -> conversation.v1.GetConversationRequest
+	9,  // 34: conversation.v1.ConversationService.PauseDebate:input_type -> conversation.v1.GetConversationRequest
+	9,  // 35: conversation.v1.ConversationService.ResumeDebate:input_type -> conversation.v1.GetConversationRequest
+	29, // 36: conversation.v1.ConversationService.AddDebateRole:input_type -> conversation.v1.AddDebateRoleRequest
+	31, // 37: conversation.v1.ConversationService.RemoveDebateRole:input_type -> conversation.v1.RemoveDebateRoleRequest
+	6,  // 38: conversation.v1.ConversationService.CreateConversation:output_type -> conversation.v1.CreateConversationReply
+	8,  // 39: conversation.v1.ConversationService.ListConversations:output_type -> conversation.v1.ListConversationsReply
+	10, // 40: conversation.v1.ConversationService.GetConversation:output_type -> conversation.v1.GetConversationReply
+	12, // 41: conversation.v1.ConversationService.ListMessages:output_type -> conversation.v1.ListMessagesReply
+	14, // 42: conversation.v1.ConversationService.UpdateConversation:output_type -> conversation.v1.UpdateConversationReply
+	16, // 43: conversation.v1.ConversationService.DeleteConversation:output_type -> conversation.v1.DeleteConversationReply
+	18, // 44: conversation.v1.ConversationService.AppendMessage:output_type -> conversation.v1.AppendMessageReply
+	20, // 45: conversation.v1.ConversationService.Chat:output_type -> conversation.v1.ChatReply
+	22, // 46: conversation.v1.ConversationService.UploadMedia:output_type -> conversation.v1.UploadMediaReply
+	26, // 47: conversation.v1.ConversationService.CreateDebate:output_type -> conversation.v1.CreateDebateReply
+	27, // 48: conversation.v1.ConversationService.GetCurrentDebate:output_type -> conversation.v1.GetDebateReply
+	28, // 49: conversation.v1.ConversationService.StopDebate:output_type -> conversation.v1.StopDebateReply
+	28, // 50: conversation.v1.ConversationService.PauseDebate:output_type -> conversation.v1.StopDebateReply
+	28, // 51: conversation.v1.ConversationService.ResumeDebate:output_type -> conversation.v1.StopDebateReply
+	30, // 52: conversation.v1.ConversationService.AddDebateRole:output_type -> conversation.v1.AddDebateRoleReply
+	32, // 53: conversation.v1.ConversationService.RemoveDebateRole:output_type -> conversation.v1.RemoveDebateRoleReply
+	38, // [38:54] is the sub-list for method output_type
+	22, // [22:38] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_conversation_v1_conversation_proto_init() }
@@ -2159,7 +2369,7 @@ func file_conversation_v1_conversation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_conversation_v1_conversation_proto_rawDesc), len(file_conversation_v1_conversation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

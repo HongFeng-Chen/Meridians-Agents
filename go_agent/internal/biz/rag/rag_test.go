@@ -103,6 +103,10 @@ func (fakeGraphStore) DetachDocRefs(ctx context.Context, prefix string) (int, in
 	return 0, 0, nil
 }
 
+func (fakeGraphStore) DocGraph(ctx context.Context, docID string, limit int) ([]graphrag.Entity, []graphrag.Relation, error) {
+	return nil, nil, nil
+}
+
 type fakeRepo struct {
 	mu   sync.Mutex
 	docs map[string]*Document
@@ -181,6 +185,34 @@ func (f *fakeRepo) ListDocIDsBySpaces(ctx context.Context, tenantID, userID stri
 		}
 	}
 	return out, nil
+}
+
+// ListBySpace 按空间精确匹配返回文档（知识空间树按节点查看）。
+func (f *fakeRepo) ListBySpace(_ context.Context, spaceID string, limit int) ([]Document, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]Document, 0)
+	for _, d := range f.docs {
+		if d.SpaceID == spaceID {
+			out = append(out, *d)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// UpdateSpaceID 移动文档到目标空间。
+func (f *fakeRepo) UpdateSpaceID(_ context.Context, docID, spaceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.docs[docID]
+	if !ok {
+		return errors.New("doc not found")
+	}
+	d.SpaceID = spaceID
+	return nil
 }
 
 func (f *fakeRepo) Delete(ctx context.Context, docID string) error {
@@ -631,4 +663,141 @@ func TestReingestKeepsOldVersionWhenWriteFails(t *testing.T) {
 	if doc.Status != "failed" {
 		t.Fatalf("失败状态应落库，实际 %s", doc.Status)
 	}
+}
+
+// ---------- 绝对分数线（FilterAbsScore）----------
+
+// TestFilterAbsScore RRF 绝对分数线：低于线的命中直接剔除，无保底。
+func TestFilterAbsScore(t *testing.T) {
+	hits := []Hit{
+		{DocID: "top", Score: 0.0328}, // 双通道双第一，满分
+		{DocID: "mid", Score: 0.0164}, // 单通道第一，过线
+		{DocID: "tail", Score: 0.0137}, // 单通道第 10 名 < 0.0145 → 丢
+	}
+	kept := FilterAbsScore(hits, DefaultMinRRF)
+	if len(kept) != 2 || kept[0].DocID != "top" || kept[1].DocID != "mid" {
+		t.Fatalf("应保留 top/mid，实际: %+v", kept)
+	}
+	// min ≤ 0：不过滤
+	if got := FilterAbsScore(hits, 0); len(got) != 3 {
+		t.Fatalf("min=0 应不过滤，实际 %d", len(got))
+	}
+	// 全部低于线：无保底，滤空即空（由问答管线兜底输出 NoContextAnswer）
+	if got := FilterAbsScore(hits, 0.05); len(got) != 0 {
+		t.Fatalf("全部低于线应滤空，实际 %d 条", len(got))
+	}
+	if got := FilterAbsScore(nil, DefaultMinRRF); got != nil {
+		t.Fatalf("空入参应返回 nil")
+	}
+}
+
+// TestQuerySkipsLowScoreHits 问答链路：低分命中不进 prompt、不进引用，
+// Answer.FilteredOut 记录被滤数量。
+func TestQuerySkipsLowScoreHits(t *testing.T) {
+	// 可注入检索结果的存储：一条强相关 + 一条弱相关（低于 RRF 绝对分数线）
+	store := &injectStore{fakeStore: fakeStore{}, hits: []Hit{
+		{DocID: "d1", Source: "a.md", Text: "强相关内容", Score: 0.0328},
+		{DocID: "d2", Source: "b.md", Text: "弱相关内容", Score: 0.01}, // 0.01 < 0.0145 → 丢
+	}}
+	llm := &fakeLLM{}
+	r, err := NewRag(store, fakeGraphStore{}, &fakeRepo{}, newFakeCache(), nil,
+		fakeEmbedder{}, llm, nil, nil, nil, &conf.Data{
+			Rag: &conf.Data_Rag{TopK: 5, TopN: 5, MinRRF: 0.0145, ScopeCheck: false, Rewrite: false, Prescreen: false},
+		})
+	if err != nil {
+		t.Fatalf("构建 Rag: %v", err)
+	}
+	ans, err := r.Query(context.Background(), "问题", "")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(ans.Citations) != 1 || ans.Citations[0].DocID != "d1" {
+		t.Fatalf("低分命中不应出现在引用里，实际: %+v", ans.Citations)
+	}
+	if ans.FilteredOut != 1 {
+		t.Fatalf("FilteredOut 应为 1，实际 %d", ans.FilteredOut)
+	}
+	if ans.NoContext {
+		t.Fatalf("有保留候选时 NoContext 应为 false")
+	}
+	// 拼给 LLM 的上下文里不应出现被滤掉的片段正文
+	if strings.Contains(llm.lastUser, "弱相关内容") {
+		t.Fatalf("被滤片段不应出现在 prompt 中: %s", llm.lastUser)
+	}
+	if !strings.Contains(llm.lastUser, "强相关内容") {
+		t.Fatalf("保留片段应出现在 prompt 中: %s", llm.lastUser)
+	}
+}
+
+// TestQueryEmptyCandidatesNoHardAnswer 候选全被滤空：直接输出兜底话术，不调 LLM 生成。
+func TestQueryEmptyCandidatesNoHardAnswer(t *testing.T) {
+	store := &injectStore{fakeStore: fakeStore{}, hits: []Hit{
+		{DocID: "d1", Source: "a.md", Text: "弱相关内容", Score: 0.008}, // 全部低于线
+	}}
+	llm := &fakeLLM{}
+	r, err := NewRag(store, fakeGraphStore{}, &fakeRepo{}, newFakeCache(), nil,
+		fakeEmbedder{}, llm, nil, nil, nil, &conf.Data{
+			Rag: &conf.Data_Rag{TopK: 5, TopN: 5, MinRRF: 0.0145, ScopeCheck: false, Rewrite: false, Prescreen: false},
+		})
+	if err != nil {
+		t.Fatalf("构建 Rag: %v", err)
+	}
+	ans, err := r.Query(context.Background(), "问题", "")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if !ans.NoContext || ans.Answer != NoContextAnswer {
+		t.Fatalf("应输出兜底话术，实际: %q no_context=%v", ans.Answer, ans.NoContext)
+	}
+	if len(ans.Citations) != 0 {
+		t.Fatalf("兜底不应带引用")
+	}
+	if llm.lastUser != "" {
+		t.Fatalf("空候选不应调用 LLM 生成，实际 prompt: %s", llm.lastUser)
+	}
+}
+
+// TestQueryOutOfScopeFallback 范围判定 out_scope：不检索直接兜底。
+func TestQueryOutOfScopeFallback(t *testing.T) {
+	store := &injectStore{fakeStore: fakeStore{}, hits: []Hit{
+		{DocID: "d1", Source: "a.md", Text: "内容", Score: 0.03},
+	}}
+	llm := &scopeLLM{lastSystem: ""}
+	r, err := NewRag(store, fakeGraphStore{}, &fakeRepo{}, newFakeCache(), nil,
+		fakeEmbedder{}, llm, nil, nil, nil, &conf.Data{
+			Rag: &conf.Data_Rag{TopK: 5, TopN: 5, MinRRF: 0.0145, ScopeCheck: true, Rewrite: false, Prescreen: false},
+		})
+	if err != nil {
+		t.Fatalf("构建 Rag: %v", err)
+	}
+	ans, err := r.Query(context.Background(), "你好呀", "")
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if !ans.NoContext || ans.Answer != NoContextAnswer {
+		t.Fatalf("out_scope 应直接兜底，实际: %q no_context=%v", ans.Answer, ans.NoContext)
+	}
+}
+
+// scopeLLM 固定回复 out_scope 的 LLM（范围判定测试用）。
+type scopeLLM struct{ lastSystem string }
+
+func (f *scopeLLM) Chat(ctx context.Context, system, user string) (string, error) {
+	f.lastSystem = system
+	return "好的", nil
+}
+func (f *scopeLLM) ChatTemp(ctx context.Context, system, user string, temperature float64) (string, error) {
+	f.lastSystem = system
+	return "out_scope", nil
+}
+func (f *scopeLLM) Model() string { return "fake" }
+
+// injectStore 在 fakeStore 之上覆写 HybridSearch，注入自定义命中（分数阈值测试用）。
+type injectStore struct {
+	fakeStore
+	hits []Hit
+}
+
+func (f *injectStore) HybridSearch(ctx context.Context, q string, vec []float32, topK int, filter string) ([]Hit, error) {
+	return f.hits, nil
 }

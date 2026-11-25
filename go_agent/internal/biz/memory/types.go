@@ -47,8 +47,10 @@ type LongTermMemory struct {
 	Tags       []string `json:"tags"`
 	Source     string   `json:"source"` // 来源描述（会话、文档、人工输入…）
 	RuleName   string   `json:"rule_name,omitempty"`
-	Entities   int      `json:"entities"`
-	Relations  int      `json:"relations"`
+	// SessionID 来源会话 ID（会话归档写入时有值，手动写入为空）
+	SessionID string `json:"session_id,omitempty"`
+	Entities  int    `json:"entities"`
+	Relations int    `json:"relations"`
 	// 召回统计（每次召回命中后回填）
 	RecallCount    int        `json:"recall_count"`
 	LastRecalledAt *time.Time `json:"last_recalled_at,omitempty"`
@@ -89,17 +91,20 @@ type RecallResult struct {
 
 // RememberInput 写入长期记忆的入参
 type RememberInput struct {
-	ID         string        `json:"id"`      // 留空自动生成
-	UserID     string        `json:"user_id"` // 留空为 default
-	Kind       string        `json:"kind"`    // 留空为 fact
-	Content    string        `json:"content"`
-	Importance int           `json:"importance"`
-	Tags       []string      `json:"tags"`
-	Source     string        `json:"source"`
-	RuleName   string        `json:"rule_name"`  // 提取来源规则名（空 = 手动写入）
-	ExpiresAt  *time.Time    `json:"expires_at"` // nil = 永不过期
-	TTL        time.Duration `json:"-"`          // 与 ExpiresAt 二选一：>0 时按 now+TTL 计算
-	Graph      *bool         `json:"graph"`      // 留空用配置默认值
+	ID         string   `json:"id"`      // 留空自动生成
+	UserID     string   `json:"user_id"` // 留空为 default
+	Kind       string   `json:"kind"`    // 留空为 fact
+	Content    string   `json:"content"`
+	Importance int      `json:"importance"`
+	Tags       []string `json:"tags"`
+	Source     string   `json:"source"`
+	RuleName   string   `json:"rule_name"` // 提取来源规则名（空 = 手动写入）
+	// SessionID 来源会话（会话归档写入时带上次结束的会话 ID；手动写入为空）。
+	// 让记忆能反查它来自哪段对话，也便于按会话清理/审计。
+	SessionID string        `json:"session_id"`
+	ExpiresAt *time.Time    `json:"expires_at"` // nil = 永不过期
+	TTL       time.Duration `json:"-"`          // 与 ExpiresAt 二选一：>0 时按 now+TTL 计算
+	Graph     *bool         `json:"graph"`      // 留空用配置默认值
 }
 
 // RememberResult 写入结果
@@ -196,4 +201,6 @@ const (
 	RecallSourceChat   = "chat"
 	RecallSourceAPI    = "api"
 	RecallSourceAnswer = "answer"
+	// RecallSourceSessionStart 新会话启动召回（创建会话时只召回长期记忆）
+	RecallSourceSessionStart = "session_start"
 )

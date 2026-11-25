@@ -17,41 +17,60 @@ var _ = new(context.Context)
 
 const _ = http.SupportPackageIsVersion3
 
+const OperationSkillServiceCancelSkillExecution = "/skill.v1.SkillService/CancelSkillExecution"
 const OperationSkillServiceCreateHub = "/skill.v1.SkillService/CreateHub"
 const OperationSkillServiceDeleteHub = "/skill.v1.SkillService/DeleteHub"
+const OperationSkillServiceDeleteSkillInstance = "/skill.v1.SkillService/DeleteSkillInstance"
 const OperationSkillServiceDisableSkill = "/skill.v1.SkillService/DisableSkill"
 const OperationSkillServiceEnableSkill = "/skill.v1.SkillService/EnableSkill"
+const OperationSkillServiceExecuteSkill = "/skill.v1.SkillService/ExecuteSkill"
 const OperationSkillServiceGetSkill = "/skill.v1.SkillService/GetSkill"
+const OperationSkillServiceGetSkillExecution = "/skill.v1.SkillService/GetSkillExecution"
 const OperationSkillServiceGetSkillStats = "/skill.v1.SkillService/GetSkillStats"
+const OperationSkillServiceHeartbeatSkillInstance = "/skill.v1.SkillService/HeartbeatSkillInstance"
 const OperationSkillServiceImportSkillFromURL = "/skill.v1.SkillService/ImportSkillFromURL"
 const OperationSkillServiceInstallFromHub = "/skill.v1.SkillService/InstallFromHub"
 const OperationSkillServiceInstallSkill = "/skill.v1.SkillService/InstallSkill"
 const OperationSkillServiceListHubs = "/skill.v1.SkillService/ListHubs"
+const OperationSkillServiceListSkillExecutions = "/skill.v1.SkillService/ListSkillExecutions"
 const OperationSkillServiceListSkillFiles = "/skill.v1.SkillService/ListSkillFiles"
+const OperationSkillServiceListSkillInstances = "/skill.v1.SkillService/ListSkillInstances"
 const OperationSkillServiceListSkillhubHubs = "/skill.v1.SkillService/ListSkillhubHubs"
 const OperationSkillServiceListSkills = "/skill.v1.SkillService/ListSkills"
 const OperationSkillServiceReadSkillFile = "/skill.v1.SkillService/ReadSkillFile"
+const OperationSkillServiceRegisterSkillInstance = "/skill.v1.SkillService/RegisterSkillInstance"
 const OperationSkillServiceSearchHubSkills = "/skill.v1.SkillService/SearchHubSkills"
 const OperationSkillServiceSearchSkillhub = "/skill.v1.SkillService/SearchSkillhub"
 const OperationSkillServiceSetDefaultHub = "/skill.v1.SkillService/SetDefaultHub"
+const OperationSkillServiceSetSkillExecution = "/skill.v1.SkillService/SetSkillExecution"
 const OperationSkillServiceSyncSkills = "/skill.v1.SkillService/SyncSkills"
 const OperationSkillServiceUninstallSkill = "/skill.v1.SkillService/UninstallSkill"
 const OperationSkillServiceUpdateHub = "/skill.v1.SkillService/UpdateHub"
 const OperationSkillServiceUseSkill = "/skill.v1.SkillService/UseSkill"
 
 type SkillServiceHTTPServer interface {
+	// CancelSkillExecution CancelSkillExecution 取消排队中的执行。
+	CancelSkillExecution(context.Context, *CancelSkillExecutionRequest) (*SkillExecution, error)
 	// CreateHub CreateHub 新增技能市场。
 	CreateHub(context.Context, *CreateHubRequest) (*Hub, error)
 	// DeleteHub DeleteHub 删除技能市场。
 	DeleteHub(context.Context, *DeleteHubRequest) (*DeleteHubReply, error)
+	// DeleteSkillInstance DeleteSkillInstance 摘除实例（Worker 下线）。
+	DeleteSkillInstance(context.Context, *DeleteSkillInstanceRequest) (*DeleteSkillInstanceReply, error)
 	// DisableSkill DisableSkill 停用技能。
 	DisableSkill(context.Context, *ToggleSkillRequest) (*Skill, error)
 	// EnableSkill EnableSkill 启用技能。
 	EnableSkill(context.Context, *ToggleSkillRequest) (*Skill, error)
+	// ExecuteSkill ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+	ExecuteSkill(context.Context, *ExecuteSkillRequest) (*ExecuteSkillReply, error)
 	// GetSkill GetSkill 技能详情（含 SKILL.md 与文件正文）。
 	GetSkill(context.Context, *GetSkillRequest) (*Skill, error)
+	// GetSkillExecution GetSkillExecution 单条执行记录（异步结果轮询）。
+	GetSkillExecution(context.Context, *GetSkillExecutionRequest) (*SkillExecution, error)
 	// GetSkillStats GetSkillStats 规模统计。
 	GetSkillStats(context.Context, *GetSkillStatsRequest) (*SkillStats, error)
+	// HeartbeatSkillInstance HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+	HeartbeatSkillInstance(context.Context, *HeartbeatSkillInstanceRequest) (*HeartbeatSkillInstanceReply, error)
 	// ImportSkillFromURL ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
 	ImportSkillFromURL(context.Context, *ImportSkillFromURLRequest) (*Skill, error)
 	// InstallFromHub InstallFromHub 从技能市场安装。
@@ -60,20 +79,28 @@ type SkillServiceHTTPServer interface {
 	InstallSkill(context.Context, *InstallSkillRequest) (*Skill, error)
 	// ListHubs ListHubs 技能市场列表。
 	ListHubs(context.Context, *ListHubsRequest) (*ListHubsReply, error)
+	// ListSkillExecutions ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+	ListSkillExecutions(context.Context, *ListSkillExecutionsRequest) (*ListSkillExecutionsReply, error)
 	// ListSkillFiles ListSkillFiles 技能文件清单（只返回路径与大小）。
 	ListSkillFiles(context.Context, *ListSkillFilesRequest) (*SkillFiles, error)
+	// ListSkillInstances ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+	ListSkillInstances(context.Context, *ListSkillInstancesRequest) (*ListSkillInstancesReply, error)
 	// ListSkillhubHubs ListSkillhubHubs 技能市场列表（语义入口）。
 	ListSkillhubHubs(context.Context, *ListHubsRequest) (*ListHubsReply, error)
 	// ListSkills ListSkills 技能列表。
 	ListSkills(context.Context, *ListSkillsRequest) (*ListSkillsReply, error)
 	// ReadSkillFile ReadSkillFile 读取单个文件正文。
 	ReadSkillFile(context.Context, *ReadSkillFileRequest) (*File, error)
+	// RegisterSkillInstance RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+	RegisterSkillInstance(context.Context, *RegisterSkillInstanceRequest) (*SkillInstance, error)
 	// SearchHubSkills SearchHubSkills 搜索技能市场。
 	SearchHubSkills(context.Context, *SearchHubSkillsRequest) (*SearchHubSkillsReply, error)
 	// SearchSkillhub SearchSkillhub 搜索技能市场（与 SearchHubSkills 等价的语义入口）。
 	SearchSkillhub(context.Context, *SearchHubSkillsRequest) (*SearchHubSkillsReply, error)
 	// SetDefaultHub SetDefaultHub 设为默认市场。
 	SetDefaultHub(context.Context, *SetDefaultHubRequest) (*Hub, error)
+	// SetSkillExecution SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+	SetSkillExecution(context.Context, *SetSkillExecutionRequest) (*Skill, error)
 	// SyncSkills SyncSkills 把启用技能落盘到 sync_dir。
 	SyncSkills(context.Context, *SyncSkillsRequest) (*SyncResult, error)
 	// UninstallSkill UninstallSkill 卸载技能。
@@ -93,7 +120,16 @@ func RegisterSkillServiceHTTPServer(s *http.Server, srv SkillServiceHTTPServer) 
 	r.Handle("GET", "/api/skillhub/search", _SkillService_SearchSkillhub0_HTTP_Handler(srv))
 	r.Handle("GET", "/api/skillhub/hubs", _SkillService_ListSkillhubHubs0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/skills/import-url", _SkillService_ImportSkillFromURL0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/skills/executions", _SkillService_ListSkillExecutions0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/skills/executions/{id}", _SkillService_GetSkillExecution0_HTTP_Handler(srv))
 	r.Handle("GET", "/api/skills/{name}", _SkillService_GetSkill0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/skills/{name}/execute", _SkillService_ExecuteSkill0_HTTP_Handler(srv))
+	r.Handle("PUT", "/api/skills/{name}/execution", _SkillService_SetSkillExecution0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/skills/executions/{id}/cancel", _SkillService_CancelSkillExecution0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/skills/{name}/instances", _SkillService_ListSkillInstances0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/skills/{name}/instances", _SkillService_RegisterSkillInstance0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/skills/{name}/instances/{id}/heartbeat", _SkillService_HeartbeatSkillInstance0_HTTP_Handler(srv))
+	r.Handle("DELETE", "/api/skills/{name}/instances/{id}", _SkillService_DeleteSkillInstance0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/skills", _SkillService_InstallSkill0_HTTP_Handler(srv))
 	r.Handle("DELETE", "/api/skills/{name}", _SkillService_UninstallSkill0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/skills/{name}/enable", _SkillService_EnableSkill0_HTTP_Handler(srv))
@@ -242,6 +278,47 @@ func _SkillService_ImportSkillFromURL0_HTTP_Handler(srv SkillServiceHTTPServer) 
 	}
 }
 
+func _SkillService_ListSkillExecutions0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ListSkillExecutionsRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceListSkillExecutions)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ListSkillExecutions(ctx, req.(*ListSkillExecutionsRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*ListSkillExecutionsReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_GetSkillExecution0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in GetSkillExecutionRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceGetSkillExecution)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.GetSkillExecution(ctx, req.(*GetSkillExecutionRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*SkillExecution)
+		return ctx.Result(200, reply)
+	}
+}
+
 func _SkillService_GetSkill0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
 	return func(ctx http.Context) error {
 		var in GetSkillRequest
@@ -260,6 +337,160 @@ func _SkillService_GetSkill0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx h
 			return err
 		}
 		reply := out.(*Skill)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_ExecuteSkill0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ExecuteSkillRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceExecuteSkill)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ExecuteSkill(ctx, req.(*ExecuteSkillRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*ExecuteSkillReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_SetSkillExecution0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in SetSkillExecutionRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceSetSkillExecution)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.SetSkillExecution(ctx, req.(*SetSkillExecutionRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*Skill)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_CancelSkillExecution0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in CancelSkillExecutionRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceCancelSkillExecution)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.CancelSkillExecution(ctx, req.(*CancelSkillExecutionRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*SkillExecution)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_ListSkillInstances0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in ListSkillInstancesRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceListSkillInstances)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.ListSkillInstances(ctx, req.(*ListSkillInstancesRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*ListSkillInstancesReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_RegisterSkillInstance0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in RegisterSkillInstanceRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceRegisterSkillInstance)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.RegisterSkillInstance(ctx, req.(*RegisterSkillInstanceRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*SkillInstance)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_HeartbeatSkillInstance0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in HeartbeatSkillInstanceRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceHeartbeatSkillInstance)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.HeartbeatSkillInstance(ctx, req.(*HeartbeatSkillInstanceRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*HeartbeatSkillInstanceReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _SkillService_DeleteSkillInstance0_HTTP_Handler(srv SkillServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in DeleteSkillInstanceRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationSkillServiceDeleteSkillInstance)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.DeleteSkillInstance(ctx, req.(*DeleteSkillInstanceRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*DeleteSkillInstanceReply)
 		return ctx.Result(200, reply)
 	}
 }
@@ -539,18 +770,28 @@ func _SkillService_SetDefaultHub0_HTTP_Handler(srv SkillServiceHTTPServer) func(
 }
 
 type SkillServiceHTTPClient interface {
+	// CancelSkillExecution CancelSkillExecution 取消排队中的执行。
+	CancelSkillExecution(ctx context.Context, req *CancelSkillExecutionRequest, opts ...http.CallOption) (rsp *SkillExecution, err error)
 	// CreateHub CreateHub 新增技能市场。
 	CreateHub(ctx context.Context, req *CreateHubRequest, opts ...http.CallOption) (rsp *Hub, err error)
 	// DeleteHub DeleteHub 删除技能市场。
 	DeleteHub(ctx context.Context, req *DeleteHubRequest, opts ...http.CallOption) (rsp *DeleteHubReply, err error)
+	// DeleteSkillInstance DeleteSkillInstance 摘除实例（Worker 下线）。
+	DeleteSkillInstance(ctx context.Context, req *DeleteSkillInstanceRequest, opts ...http.CallOption) (rsp *DeleteSkillInstanceReply, err error)
 	// DisableSkill DisableSkill 停用技能。
 	DisableSkill(ctx context.Context, req *ToggleSkillRequest, opts ...http.CallOption) (rsp *Skill, err error)
 	// EnableSkill EnableSkill 启用技能。
 	EnableSkill(ctx context.Context, req *ToggleSkillRequest, opts ...http.CallOption) (rsp *Skill, err error)
+	// ExecuteSkill ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+	ExecuteSkill(ctx context.Context, req *ExecuteSkillRequest, opts ...http.CallOption) (rsp *ExecuteSkillReply, err error)
 	// GetSkill GetSkill 技能详情（含 SKILL.md 与文件正文）。
 	GetSkill(ctx context.Context, req *GetSkillRequest, opts ...http.CallOption) (rsp *Skill, err error)
+	// GetSkillExecution GetSkillExecution 单条执行记录（异步结果轮询）。
+	GetSkillExecution(ctx context.Context, req *GetSkillExecutionRequest, opts ...http.CallOption) (rsp *SkillExecution, err error)
 	// GetSkillStats GetSkillStats 规模统计。
 	GetSkillStats(ctx context.Context, req *GetSkillStatsRequest, opts ...http.CallOption) (rsp *SkillStats, err error)
+	// HeartbeatSkillInstance HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+	HeartbeatSkillInstance(ctx context.Context, req *HeartbeatSkillInstanceRequest, opts ...http.CallOption) (rsp *HeartbeatSkillInstanceReply, err error)
 	// ImportSkillFromURL ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
 	ImportSkillFromURL(ctx context.Context, req *ImportSkillFromURLRequest, opts ...http.CallOption) (rsp *Skill, err error)
 	// InstallFromHub InstallFromHub 从技能市场安装。
@@ -559,20 +800,28 @@ type SkillServiceHTTPClient interface {
 	InstallSkill(ctx context.Context, req *InstallSkillRequest, opts ...http.CallOption) (rsp *Skill, err error)
 	// ListHubs ListHubs 技能市场列表。
 	ListHubs(ctx context.Context, req *ListHubsRequest, opts ...http.CallOption) (rsp *ListHubsReply, err error)
+	// ListSkillExecutions ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+	ListSkillExecutions(ctx context.Context, req *ListSkillExecutionsRequest, opts ...http.CallOption) (rsp *ListSkillExecutionsReply, err error)
 	// ListSkillFiles ListSkillFiles 技能文件清单（只返回路径与大小）。
 	ListSkillFiles(ctx context.Context, req *ListSkillFilesRequest, opts ...http.CallOption) (rsp *SkillFiles, err error)
+	// ListSkillInstances ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+	ListSkillInstances(ctx context.Context, req *ListSkillInstancesRequest, opts ...http.CallOption) (rsp *ListSkillInstancesReply, err error)
 	// ListSkillhubHubs ListSkillhubHubs 技能市场列表（语义入口）。
 	ListSkillhubHubs(ctx context.Context, req *ListHubsRequest, opts ...http.CallOption) (rsp *ListHubsReply, err error)
 	// ListSkills ListSkills 技能列表。
 	ListSkills(ctx context.Context, req *ListSkillsRequest, opts ...http.CallOption) (rsp *ListSkillsReply, err error)
 	// ReadSkillFile ReadSkillFile 读取单个文件正文。
 	ReadSkillFile(ctx context.Context, req *ReadSkillFileRequest, opts ...http.CallOption) (rsp *File, err error)
+	// RegisterSkillInstance RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+	RegisterSkillInstance(ctx context.Context, req *RegisterSkillInstanceRequest, opts ...http.CallOption) (rsp *SkillInstance, err error)
 	// SearchHubSkills SearchHubSkills 搜索技能市场。
 	SearchHubSkills(ctx context.Context, req *SearchHubSkillsRequest, opts ...http.CallOption) (rsp *SearchHubSkillsReply, err error)
 	// SearchSkillhub SearchSkillhub 搜索技能市场（与 SearchHubSkills 等价的语义入口）。
 	SearchSkillhub(ctx context.Context, req *SearchHubSkillsRequest, opts ...http.CallOption) (rsp *SearchHubSkillsReply, err error)
 	// SetDefaultHub SetDefaultHub 设为默认市场。
 	SetDefaultHub(ctx context.Context, req *SetDefaultHubRequest, opts ...http.CallOption) (rsp *Hub, err error)
+	// SetSkillExecution SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+	SetSkillExecution(ctx context.Context, req *SetSkillExecutionRequest, opts ...http.CallOption) (rsp *Skill, err error)
 	// SyncSkills SyncSkills 把启用技能落盘到 sync_dir。
 	SyncSkills(ctx context.Context, req *SyncSkillsRequest, opts ...http.CallOption) (rsp *SyncResult, err error)
 	// UninstallSkill UninstallSkill 卸载技能。
@@ -589,6 +838,23 @@ type SkillServiceHTTPClientImpl struct {
 
 func NewSkillServiceHTTPClient(client *http.Client) SkillServiceHTTPClient {
 	return &SkillServiceHTTPClientImpl{client}
+}
+
+// CancelSkillExecution CancelSkillExecution 取消排队中的执行。
+func (c *SkillServiceHTTPClientImpl) CancelSkillExecution(ctx context.Context, in *CancelSkillExecutionRequest, opts ...http.CallOption) (*SkillExecution, error) {
+	var out SkillExecution
+	pattern := "/api/skills/executions/{id}/cancel"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationSkillServiceCancelSkillExecution),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // CreateHub CreateHub 新增技能市场。
@@ -617,6 +883,23 @@ func (c *SkillServiceHTTPClientImpl) DeleteHub(ctx context.Context, in *DeleteHu
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.Operation(OperationSkillServiceDeleteHub),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "DELETE", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteSkillInstance DeleteSkillInstance 摘除实例（Worker 下线）。
+func (c *SkillServiceHTTPClientImpl) DeleteSkillInstance(ctx context.Context, in *DeleteSkillInstanceRequest, opts ...http.CallOption) (*DeleteSkillInstanceReply, error) {
+	var out DeleteSkillInstanceReply
+	pattern := "/api/skills/{name}/instances/{id}"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationSkillServiceDeleteSkillInstance),
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "DELETE", path, nil, &out, opts...)
@@ -660,6 +943,24 @@ func (c *SkillServiceHTTPClientImpl) EnableSkill(ctx context.Context, in *Toggle
 	return &out, nil
 }
 
+// ExecuteSkill ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+func (c *SkillServiceHTTPClientImpl) ExecuteSkill(ctx context.Context, in *ExecuteSkillRequest, opts ...http.CallOption) (*ExecuteSkillReply, error) {
+	var out ExecuteSkillReply
+	pattern := "/api/skills/{name}/execute"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationSkillServiceExecuteSkill),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetSkill GetSkill 技能详情（含 SKILL.md 与文件正文）。
 func (c *SkillServiceHTTPClientImpl) GetSkill(ctx context.Context, in *GetSkillRequest, opts ...http.CallOption) (*Skill, error) {
 	var out Skill
@@ -668,6 +969,23 @@ func (c *SkillServiceHTTPClientImpl) GetSkill(ctx context.Context, in *GetSkillR
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.Operation(OperationSkillServiceGetSkill),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSkillExecution GetSkillExecution 单条执行记录（异步结果轮询）。
+func (c *SkillServiceHTTPClientImpl) GetSkillExecution(ctx context.Context, in *GetSkillExecutionRequest, opts ...http.CallOption) (*SkillExecution, error) {
+	var out SkillExecution
+	pattern := "/api/skills/executions/{id}"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationSkillServiceGetSkillExecution),
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
@@ -688,6 +1006,24 @@ func (c *SkillServiceHTTPClientImpl) GetSkillStats(ctx context.Context, in *GetS
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// HeartbeatSkillInstance HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+func (c *SkillServiceHTTPClientImpl) HeartbeatSkillInstance(ctx context.Context, in *HeartbeatSkillInstanceRequest, opts ...http.CallOption) (*HeartbeatSkillInstanceReply, error) {
+	var out HeartbeatSkillInstanceReply
+	pattern := "/api/skills/{name}/instances/{id}/heartbeat"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationSkillServiceHeartbeatSkillInstance),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -765,6 +1101,23 @@ func (c *SkillServiceHTTPClientImpl) ListHubs(ctx context.Context, in *ListHubsR
 	return &out, nil
 }
 
+// ListSkillExecutions ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+func (c *SkillServiceHTTPClientImpl) ListSkillExecutions(ctx context.Context, in *ListSkillExecutionsRequest, opts ...http.CallOption) (*ListSkillExecutionsReply, error) {
+	var out ListSkillExecutionsReply
+	pattern := "/api/skills/executions"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationSkillServiceListSkillExecutions),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListSkillFiles ListSkillFiles 技能文件清单（只返回路径与大小）。
 func (c *SkillServiceHTTPClientImpl) ListSkillFiles(ctx context.Context, in *ListSkillFilesRequest, opts ...http.CallOption) (*SkillFiles, error) {
 	var out SkillFiles
@@ -773,6 +1126,23 @@ func (c *SkillServiceHTTPClientImpl) ListSkillFiles(ctx context.Context, in *Lis
 	opts = append([]http.CallOption{
 		http.Accept("application/protojson"),
 		http.Operation(OperationSkillServiceListSkillFiles),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListSkillInstances ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+func (c *SkillServiceHTTPClientImpl) ListSkillInstances(ctx context.Context, in *ListSkillInstancesRequest, opts ...http.CallOption) (*ListSkillInstancesReply, error) {
+	var out ListSkillInstancesReply
+	pattern := "/api/skills/{name}/instances"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationSkillServiceListSkillInstances),
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
@@ -833,6 +1203,24 @@ func (c *SkillServiceHTTPClientImpl) ReadSkillFile(ctx context.Context, in *Read
 	return &out, nil
 }
 
+// RegisterSkillInstance RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+func (c *SkillServiceHTTPClientImpl) RegisterSkillInstance(ctx context.Context, in *RegisterSkillInstanceRequest, opts ...http.CallOption) (*SkillInstance, error) {
+	var out SkillInstance
+	pattern := "/api/skills/{name}/instances"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationSkillServiceRegisterSkillInstance),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SearchHubSkills SearchHubSkills 搜索技能市场。
 func (c *SkillServiceHTTPClientImpl) SearchHubSkills(ctx context.Context, in *SearchHubSkillsRequest, opts ...http.CallOption) (*SearchHubSkillsReply, error) {
 	var out SearchHubSkillsReply
@@ -878,6 +1266,24 @@ func (c *SkillServiceHTTPClientImpl) SetDefaultHub(ctx context.Context, in *SetD
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "POST", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetSkillExecution SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+func (c *SkillServiceHTTPClientImpl) SetSkillExecution(ctx context.Context, in *SetSkillExecutionRequest, opts ...http.CallOption) (*Skill, error) {
+	var out Skill
+	pattern := "/api/skills/{name}/execution"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationSkillServiceSetSkillExecution),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "PUT", path, in, &out, opts...)
 	if err != nil {
 		return nil, err
 	}

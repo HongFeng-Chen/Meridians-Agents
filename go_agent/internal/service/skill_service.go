@@ -7,10 +7,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"time"
 
 	v1 "go_agent/api/skill/v1"
 	"go_agent/internal/biz/skill"
+	"go_agent/internal/pkg/identity"
 )
 
 // SkillService 技能管理面。
@@ -83,6 +86,7 @@ func (s *SkillService) InstallSkill(ctx context.Context, req *v1.InstallSkillReq
 		Tags:        req.GetTags(),
 		Content:     req.GetContent(),
 		Enabled:     req.Enabled,
+		Execution:   fromSpecPB(req.GetExecution()),
 	}
 	for _, f := range req.GetFiles() {
 		in.Files = append(in.Files, skill.File{Path: f.GetPath(), Content: f.GetContent(), Size: int(f.GetSize())})
@@ -335,6 +339,208 @@ func (s *SkillService) SetDefaultHub(ctx context.Context, req *v1.SetDefaultHubR
 	return toHub(*h), nil
 }
 
+// ---------- V2 运行时：执行 / 实例 / 执行记录 ----------
+
+// ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+//
+// 不做管理员闸门：执行技能是「用能力」，不是「改平台配置」。能不能用由技能是否启用
+// 与 Agent 白名单决定；租户隔离靠运行时写入的执行记录（tenant_id / user_id）。
+func (s *SkillService) ExecuteSkill(ctx context.Context, req *v1.ExecuteSkillRequest) (*v1.ExecuteSkillReply, error) {
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		return nil, badRequest("需要 name 字段")
+	}
+	input := map[string]any{}
+	if raw := strings.TrimSpace(req.GetInput()); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &input); err != nil {
+			return nil, badRequest("input 必须是 JSON 对象字符串：" + err.Error())
+		}
+	}
+	info := identity.From(ctx)
+	res, err := s.uc.Execute(ctx, skill.RuntimeRequest{
+		SkillName:      name,
+		TaskID:         strings.TrimSpace(req.GetTaskId()),
+		Input:          input,
+		TenantID:       info.TenantID,
+		UserID:         info.UserID,
+		Purpose:        req.GetPurpose(),
+		IdempotencyKey: req.GetIdempotencyKey(),
+		ForceAsync:     req.GetAsync(),
+		Timeout:        time.Duration(req.GetTimeoutSec()) * time.Second,
+	})
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	return &v1.ExecuteSkillReply{
+		ExecutionId: res.ExecutionID,
+		SkillName:   res.SkillName,
+		Mode:        res.Mode,
+		Status:      res.Status,
+		Output:      marshalMap(res.Output),
+		Text:        res.Text,
+		WorkerId:    res.WorkerID,
+		Attempts:    int32(res.Attempts),
+		LatencyMs:   res.LatencyMS,
+		Replayed:    res.Replayed,
+		Queued:      res.Queued,
+	}, nil
+}
+
+// SetSkillExecution 修改执行配置（local ⇄ remote ⇄ async），不动技能内容。
+func (s *SkillService) SetSkillExecution(ctx context.Context, req *v1.SetSkillExecutionRequest) (*v1.Skill, error) {
+	// 改执行配置 = 改流量去向（可能指向外部 Worker），平台级变更
+	if err := requireAdmin(ctx, "skill.execution.update"); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetName()) == "" {
+		return nil, badRequest("需要 name 字段")
+	}
+	if req.GetExecution() == nil {
+		return nil, badRequest("需要 execution 字段（mode=local/remote/async）")
+	}
+	spec := *fromSpecPB(req.GetExecution())
+	sk, err := s.uc.SetExecution(ctx, req.GetName(), spec)
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	return toSkill(sk, true), nil
+}
+
+// ListSkillExecutions 执行记录列表（非管理员只看自己的）。
+func (s *SkillService) ListSkillExecutions(ctx context.Context, req *v1.ListSkillExecutionsRequest) (*v1.ListSkillExecutionsReply, error) {
+	info := identity.From(ctx)
+	f := skill.ExecutionFilter{
+		SkillName: strings.TrimSpace(req.GetSkill()),
+		Status:    strings.TrimSpace(req.GetStatus()),
+		TaskID:    strings.TrimSpace(req.GetTaskId()),
+		// 跨租户硬隔离：即使管理员也不跨租户查（跨租户排障走审计）
+		TenantID: info.TenantID,
+		Limit:    int(req.GetLimit()),
+	}
+	if !info.Admin {
+		f.UserID = info.UserID
+	}
+	list, err := s.uc.ListExecutions(ctx, f)
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	out := &v1.ListSkillExecutionsReply{Executions: make([]*v1.SkillExecution, 0, len(list)), Total: int32(len(list))}
+	for i := range list {
+		out.Executions = append(out.Executions, toExecution(&list[i]))
+	}
+	return out, nil
+}
+
+// GetSkillExecution 单条执行记录（异步结果轮询）。
+func (s *SkillService) GetSkillExecution(ctx context.Context, req *v1.GetSkillExecutionRequest) (*v1.SkillExecution, error) {
+	exec, err := s.uc.GetExecution(ctx, req.GetId())
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	// 拿到记录还要过一遍归属：ID 可枚举，不能靠「不知道别人的 ID」当隔离
+	if err := guardExecution(ctx, exec); err != nil {
+		return nil, err
+	}
+	return toExecution(exec), nil
+}
+
+// CancelSkillExecution 取消排队中的执行。
+func (s *SkillService) CancelSkillExecution(ctx context.Context, req *v1.CancelSkillExecutionRequest) (*v1.SkillExecution, error) {
+	exec, err := s.uc.GetExecution(ctx, req.GetId())
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	if err := guardExecution(ctx, exec); err != nil {
+		return nil, err
+	}
+	out, err := s.uc.CancelExecution(ctx, req.GetId())
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	return toExecution(out), nil
+}
+
+// ListSkillInstances 实例列表。
+func (s *SkillService) ListSkillInstances(ctx context.Context, req *v1.ListSkillInstancesRequest) (*v1.ListSkillInstancesReply, error) {
+	list, err := s.uc.ListInstances(ctx, req.GetName())
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	out := &v1.ListSkillInstancesReply{Instances: make([]*v1.SkillInstance, 0, len(list)), Total: int32(len(list))}
+	for i := range list {
+		out.Instances = append(out.Instances, toInstance(&list[i]))
+	}
+	return out, nil
+}
+
+// RegisterSkillInstance Worker 自注册。
+//
+// 注册决定「流量打到哪」，是平台级变更；Worker 侧用平台令牌（或认证关闭时的本机回环）注册。
+func (s *SkillService) RegisterSkillInstance(ctx context.Context, req *v1.RegisterSkillInstanceRequest) (*v1.SkillInstance, error) {
+	if err := requireAdmin(ctx, "skill.instance.register"); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetEndpoint()) == "" {
+		return nil, badRequest("需要 endpoint 字段")
+	}
+	inst, err := s.uc.RegisterInstance(ctx, skill.RegisterInstanceInput{
+		SkillName:      req.GetName(),
+		ID:             req.GetId(),
+		Endpoint:       req.GetEndpoint(),
+		Version:        req.GetVersion(),
+		Region:         req.GetRegion(),
+		Labels:         req.GetLabels(),
+		Weight:         int(req.GetWeight()),
+		MaxConcurrency: int(req.GetMaxConcurrency()),
+	})
+	if err != nil {
+		return nil, mapSkillErr(err)
+	}
+	return toInstance(inst), nil
+}
+
+// HeartbeatSkillInstance 实例心跳。
+//
+// 心跳只更新自身的在途数与状态，不改平台配置，因此不接管理员闸门——
+// 否则 Worker 必须持有管理员令牌才能保活，权限过大。
+func (s *SkillService) HeartbeatSkillInstance(ctx context.Context, req *v1.HeartbeatSkillInstanceRequest) (*v1.HeartbeatSkillInstanceReply, error) {
+	err := s.uc.Heartbeat(ctx, skill.InstanceHeartbeat{
+		SkillName: req.GetName(),
+		ID:        req.GetId(),
+		Inflight:  int(req.GetInflight()),
+		LatencyMS: req.GetLatencyMs(),
+		Status:    req.GetStatus(),
+	})
+	if err != nil {
+		// 心跳打到未注册实例：404 让 Worker 知道要重新注册
+		return nil, mapSkillErr(err)
+	}
+	return &v1.HeartbeatSkillInstanceReply{Ok: true}, nil
+}
+
+// DeleteSkillInstance 摘除实例。
+func (s *SkillService) DeleteSkillInstance(ctx context.Context, req *v1.DeleteSkillInstanceRequest) (*v1.DeleteSkillInstanceReply, error) {
+	if err := requireAdmin(ctx, "skill.instance.delete"); err != nil {
+		return nil, err
+	}
+	if err := s.uc.DeleteInstance(ctx, req.GetName(), req.GetId()); err != nil {
+		return nil, mapSkillErr(err)
+	}
+	return &v1.DeleteSkillInstanceReply{Deleted: true}, nil
+}
+
+// guardExecution 执行记录归属校验：同租户 + （管理员或本人）
+func guardExecution(ctx context.Context, e *skill.Execution) error {
+	info := identity.From(ctx)
+	if e.TenantID != "" && info.TenantID != "" && e.TenantID != info.TenantID {
+		return notFound("执行记录不存在: " + e.ID)
+	}
+	if !info.Admin && e.UserID != "" && e.UserID != info.UserID {
+		return notFound("执行记录不存在: " + e.ID)
+	}
+	return nil
+}
+
 // ---------- 领域模型 → 协议 ----------
 
 // toSkill 技能详情。列表接口不返回 SKILL.md 与文件正文（withBody=false），
@@ -358,6 +564,7 @@ func toSkill(sk *skill.Skill, withBody bool) *v1.Skill {
 		Size:        int32(sk.Size),
 		InstalledAt: sk.InstalledAt.Format(timeLayout),
 		UpdatedAt:   sk.UpdatedAt.Format(timeLayout),
+		Execution:   toSpecPB(sk.Execution),
 	}
 	if withBody {
 		out.Content = sk.Content
@@ -400,4 +607,116 @@ func toHubSkills(list []skill.HubSkill) *v1.SearchHubSkillsReply {
 		})
 	}
 	return out
+}
+
+// —— 运行时：领域模型 → 协议 ——
+
+func toSpecPB(spec skill.ExecutionSpec) *v1.SkillExecutionSpec {
+	n := spec.Normalized()
+	return &v1.SkillExecutionSpec{
+		Mode:           n.Mode,
+		Protocol:       n.Protocol,
+		Endpoint:       n.Endpoint,
+		InputSchema:    n.InputSchema,
+		OutputSchema:   n.OutputSchema,
+		TimeoutSec:     int32(n.TimeoutSec),
+		Retry:          int32(n.Retry),
+		Concurrency:    int32(n.Concurrency),
+		Idempotent:     n.Idempotent,
+		RequiredScopes: n.RequiredScopes,
+		Handler:        n.Handler,
+	}
+}
+
+// fromSpecPB 协议 → 领域；nil 表示「沿用已安装的执行配置」
+func fromSpecPB(in *v1.SkillExecutionSpec) *skill.ExecutionSpec {
+	if in == nil {
+		return nil
+	}
+	return &skill.ExecutionSpec{
+		Mode:           in.GetMode(),
+		Protocol:       in.GetProtocol(),
+		Endpoint:       in.GetEndpoint(),
+		InputSchema:    in.GetInputSchema(),
+		OutputSchema:   in.GetOutputSchema(),
+		TimeoutSec:     int(in.GetTimeoutSec()),
+		Retry:          int(in.GetRetry()),
+		Concurrency:    int(in.GetConcurrency()),
+		Idempotent:     in.GetIdempotent(),
+		RequiredScopes: in.GetRequiredScopes(),
+		Handler:        in.GetHandler(),
+	}
+}
+
+func toInstance(inst *skill.Instance) *v1.SkillInstance {
+	if inst == nil {
+		return nil
+	}
+	return &v1.SkillInstance{
+		Id:             inst.ID,
+		SkillName:      inst.SkillName,
+		Endpoint:       inst.Endpoint,
+		Version:        inst.Version,
+		Region:         inst.Region,
+		Labels:         inst.Labels,
+		Weight:         int32(inst.Weight),
+		MaxConcurrency: int32(inst.MaxConcurrency),
+		Inflight:       int32(inst.Inflight),
+		Status:         inst.Status,
+		LastHeartbeat:  formatTime(inst.LastHeartbeat),
+		LatencyMs:      inst.LatencyMS,
+		Failures:       int32(inst.Failures),
+		Successes:      inst.Successes,
+		LastError:      inst.LastError,
+	}
+}
+
+func toExecution(e *skill.Execution) *v1.SkillExecution {
+	if e == nil {
+		return nil
+	}
+	return &v1.SkillExecution{
+		Id:             e.ID,
+		TaskId:         e.TaskID,
+		SkillName:      e.SkillName,
+		SkillVersion:   e.SkillVersion,
+		Mode:           e.Mode,
+		Status:         e.Status,
+		TenantId:       e.TenantID,
+		UserId:         e.UserID,
+		AgentKey:       e.AgentKey,
+		SessionId:      e.SessionID,
+		IdempotencyKey: e.IdempotencyKey,
+		Input:          e.Input,
+		Output:         e.Output,
+		Error:          e.Error,
+		WorkerId:       e.WorkerID,
+		Attempts:       int32(e.Attempts),
+		LatencyMs:      e.LatencyMS,
+		TraceId:        e.TraceID,
+		QueuedAt:       formatTimePtr(e.QueuedAt),
+		StartedAt:      formatTimePtr(e.StartedAt),
+		FinishedAt:     formatTimePtr(e.FinishedAt),
+		CreatedAt:      formatTime(e.CreatedAt),
+	}
+}
+
+// formatTimePtr 指针时间（零值/空指针都返回空串）
+func formatTimePtr(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// marshalMap 输出 JSON（nil/序列化失败都退化为空串：这是展示字段，不该影响主流程）
+func marshalMap(m map[string]any) string {
+	if len(m) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

@@ -38,6 +38,7 @@ import (
 	"go_agent/internal/data/third_service/aiplatform"
 	"go_agent/internal/data/third_service/mcpclient"
 	"go_agent/internal/data/third_service/skillhub"
+	"go_agent/internal/data/third_service/skillworker"
 	"go_agent/internal/data/video_generations"
 	"go_agent/internal/server"
 	"go_agent/internal/service"
@@ -307,7 +308,16 @@ func wireApp(confServer *conf.Server, confData *conf.Data, security *conf.Securi
 	auditUseCase := audit.New(auditRepo)
 	usageUseCase := usage.New(usageRepo)
 	httpServer := server.NewHTTPServer(confServer, security, ragService, promptService, memoryService, llmService, skillService, mcpService, agentFactoryService, llmCallQueryService, historyService, conversationService, platformMCPService, aiPlatformService, harnessService, adminService, authService, auditUseCase, spaceUseCase, resourceUseCase, usageUseCase, agentfactoryUseCase)
-	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService, mediaManager)
+	memoryConvSource := repo2.NewMemoryConvSource(conversationRepo)
+	runtimeStore, err := repo2.NewSkillRuntimeRepo(confData, dbData)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	skillworkerClient := skillworker.New(confData)
+	app := newApp(logger, grpcServer, httpServer, agentfactoryUseCase, harnessUseCase, platformMCPService, mediaManager, memoryUseCase, memoryConvSource, skillUseCase, runtimeStore, skillworkerClient)
 	return app, func() {
 		cleanup3()
 		cleanup2()

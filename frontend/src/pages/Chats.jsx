@@ -31,6 +31,64 @@ const DEBATE_STATUS = {
 // paused 也算活跃：暂停期间保持轮询（状态可被别处恢复 / 消息仍可能在途）
 const isLive = (d) => d && ['running', 'paused', 'stopping'].includes(d.status);
 
+// ApprovalCard 会话内人工审批卡（参考 WorkBuddy 提问卡的交互样式）：
+// 左侧强调条 + 「人工审批」徽标 + 任务上下文 + 选项按钮。
+// 批准直接生效；驳回先展开备注输入，确认后以失败终态结束任务。
+function ApprovalCard({ task, busy, done, rejecting, rejectNote, onRejectOpen, onRejectCancel, onRejectNote, onApprove, onReject }) {
+  return (
+    <div className="approval-card">
+      <div className="approval-head">
+        <span className="approval-badge">🛡️ 人工审批</span>
+        {task.risk_pause_level === 'high' && <span className="approval-risk">高危操作需人工确认</span>}
+        <span className="approval-task-no">任务 #{task.id}</span>
+      </div>
+      <div className="approval-title">{task.title || `${task.agent_key} 请求执行`}</div>
+      {task.input && <div className="approval-desc">{truncate(task.input, 260)}</div>}
+      {done ? (
+        <div className={`approval-done ${done.decision === 'reject' ? 'bad' : ''}`}>
+          {done.decision === 'approve'
+            ? `已批准任务 #${done.id}，Agent 正在从断点续跑…`
+            : `已驳回任务 #${done.id}${done.note ? `：${done.note}` : ''}`}
+        </div>
+      ) : task.status && task.status !== 'paused' ? (
+        <div className="approval-done">该任务已不在审批挂起状态（当前 {task.status}），无需审批</div>
+      ) : (
+        <div className="approval-actions">
+          {rejecting ? (
+            <>
+              <input
+                className="approval-note-input"
+                placeholder="驳回原因（可选）"
+                value={rejectNote}
+                disabled={busy}
+                onChange={(e) => onRejectNote(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onReject();
+                }}
+              />
+              <button className="approval-btn ghost" type="button" disabled={busy} onClick={onRejectCancel}>
+                取消
+              </button>
+              <button className="approval-btn danger" type="button" disabled={busy} onClick={onReject}>
+                确认驳回
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="approval-btn primary" type="button" disabled={busy} onClick={onApprove}>
+                {busy ? '提交中…' : '批准'}
+              </button>
+              <button className="approval-btn ghost" type="button" disabled={busy} onClick={onRejectOpen}>
+                驳回
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function metaChips(metaStr) {
   if (!metaStr) return null;
   let m;
@@ -121,14 +179,26 @@ function TaskTraceInline({ taskId }) {
     }
   };
 
-  // 入口条自身轻量拉一次任务状态做徽标
+  // 入口条徽标：任务在 pending / running / retry_wait 时每 3s 轮询刷新，
+  // 保证重新进入会话也能看到「最新执行状态」（排队中 → 执行中 → 成功/失败）
   const [status, setStatus] = useState(null);
   useEffect(() => {
     let alive = true;
-    agentfactory.getTask({ id: taskId })
-      .then((t) => { if (alive) setStatus(t?.status || null); })
-      .catch(() => { /* 徽标失败不打扰 */ });
-    return () => { alive = false; };
+    let timer = null;
+    const load = () => {
+      agentfactory.getTask({ id: taskId })
+        .then((t) => {
+          if (!alive) return;
+          const s = t?.status || null;
+          setStatus(s);
+          const liveStatus = s && ['pending', 'running', 'retry_wait'].includes(s);
+          if (liveStatus && !timer) timer = setInterval(load, 3000);
+          if (!liveStatus && timer) { clearInterval(timer); timer = null; }
+        })
+        .catch(() => { /* 徽标失败不打扰 */ });
+    };
+    load();
+    return () => { alive = false; if (timer) clearInterval(timer); };
   }, [taskId]);
 
   const st = status ? TRACE_STATUS[status] || { text: status, tone: 'default' } : null;
@@ -282,6 +352,9 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
   const [pendingText, setPendingText] = useState('');
+  // 新会话启动召回：只含长期记忆（不含历史会话消息），来自 createConversation 的 bootstrap
+  const [boot, setBoot] = useState(null);
+  const [bootOpen, setBootOpen] = useState(false);
   const [addRole, setAddRole] = useState(null); // 辩论中加角色的内联表单
   const [error, setError] = useState('');
   const [hasMore, setHasMore] = useState(false); // 是否还有更早的消息（向上翻页）
@@ -478,6 +551,163 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id, debate?.status]);
 
+  // —— 重新进入会话时的「执行中」状态补齐 ——
+  // 后端 Chat 先落 user 消息、编排完成才落 assistant 回复（Agent 任务最长等待 5 分钟）。
+  // 若重新进入会话时最后一轮仍在执行（最后一条是 user 且非本地乐观消息），
+  // 展示与发送时一致的「思考中…」气泡，并每 2s 轮询最新一页，结果落库后自动补上。
+  const [convPending, setConvPending] = useState(false);
+  const [, setPendingTick] = useState(0); // 轮询节拍：即使无新消息也驱动「等待超时」文案刷新
+  const [stopNote, setStopNote] = useState('');
+  // 已被用户主动「停止等待」的死轮次（conv → 末条 user 消息 id）：
+  // 后端编排被重启打断时 assistant 回复永远不会再落库，标记后不再轮询、
+  // 展示「已停止等待」提示；用户再次发消息（更新的消息出现）自动失效。
+  const [abandonedMap, setAbandonedMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('chats:abandoned') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const persistAbandoned = (convId, msgId) => {
+    setAbandonedMap((prev) => {
+      const next = { ...prev, [convId]: String(msgId) };
+      try {
+        localStorage.setItem('chats:abandoned', JSON.stringify(next));
+      } catch { /* 存储失败只影响跨会话记忆，不影响本次 */ }
+      return next;
+    });
+  };
+  // 停止等待：轮询立即停 + 终止本会话仍在执行的任务（pending/running/paused）
+  const stopWaiting = async () => {
+    const convId = active?.id;
+    const last = messagesRef.current[messagesRef.current.length - 1];
+    setConvPending(false);
+    if (convId && last && last.role === 'user') persistAbandoned(convId, last.id);
+    const canceled = [];
+    try {
+      const r = await agentfactory.listTasks({ conv_id: convId, limit: 20 });
+      const live = (r?.tasks || []).filter((t) => ['pending', 'running', 'paused'].includes(t.status));
+      for (const t of live) {
+        try {
+          await agentfactory.cancelTask({ id: t.id });
+          canceled.push(`#${t.id}`);
+        } catch { /* 单个终止失败不阻断其余 */ }
+      }
+    } catch { /* 列表失败不阻断，仅停止等待 */ }
+    setStopNote(canceled.length
+      ? `已终止任务 ${canceled.join('、')}，本轮不再等待结果。可直接重新发送消息继续对话。`
+      : '已停止等待本轮结果（本轮可能已被后端重启中断）。可直接重新发送消息继续对话。');
+  };
+  useEffect(() => {
+    const inDebateNow = !!debate && !setup;
+    if (!active?.id || inDebateNow || busy) {
+      setConvPending(false);
+      return undefined;
+    }
+    const list = messagesRef.current;
+    const last = list.length ? list[list.length - 1] : null;
+    if (!last || last.role !== 'user' || String(last.id).startsWith('tmp-')) {
+      setConvPending(false);
+      return undefined;
+    }
+    // 用户已对这轮「停止等待」：不再轮询，渲染停止提示
+    if (String(abandonedMap[active.id] ?? '') === String(last.id)) {
+      setConvPending(false);
+      return undefined;
+    }
+    setConvPending(true);
+    let alive = true;
+    const tick = async () => {
+      try {
+        const res = await conversation.listMessages({ id: active.id, limit: PAGE_SIZE });
+        if (!alive) return;
+        const newest = res.messages || [];
+        setMessages((prev) => {
+          if (!prev.length || !newest.length) return prev;
+          const firstId = Number(newest[0].id);
+          if (!Number.isFinite(firstId)) return prev;
+          // 保留向上翻页加载的更早消息，并剔除本地乐观插入的 tmp 消息（与辩论轮询同策略）
+          const older = prev.filter((m) => Number(m.id) < firstId && !String(m.id).startsWith('tmp-'));
+          return [...older, ...newest];
+        });
+        setPendingTick((v) => v + 1);
+      } catch {
+        /* 轮询失败不打扰用户，下次再试 */
+      }
+    };
+    const timer = setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+    // messages.length 变化（assistant 回复落库）即重评条件，结果到达后自动停轮询
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id, debate?.status, setup, busy, messages.length, abandonedMap]);
+
+  // —— 会话内人工审批卡 ——
+  // Agent 任务因高危操作触发四眼审批时挂起（status=paused）。参考 WorkBuddy 的
+  // 提问卡样式，把「批准 / 驳回」内联到会话流里：不用跳任务中心，点卡片按钮即可，
+  // 批准后任务从断点续跑，本轮对话继续。每 2.5s 轮询该会话的挂起任务（best-effort）。
+  const [approvalTask, setApprovalTask] = useState(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const approvalBusyRef = useRef(false); // 轮询闭包里读的实时标记（state 有渲染延迟）
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectNote, setRejectNote] = useState('');
+  const [approvalDone, setApprovalDone] = useState(null); // { id, decision, note } 审批结果内联展示
+  useEffect(() => {
+    const inDebateNow = !!debate && !setup;
+    if (!active?.id || inDebateNow) {
+      setApprovalTask(null);
+      return undefined;
+    }
+    let alive = true;
+    const tick = () => {
+      // 审批提交中不覆盖卡片状态，避免轮询的旧快照把刚清掉的卡又插回来
+      if (approvalBusyRef.current) return;
+      agentfactory.listTasks({ conv_id: active.id, status: 'paused', limit: 10 })
+        .then((r) => {
+          if (!alive) return;
+          // 双保险：只认真正处于 paused 的任务（后端 status 过滤修复前的兜底）
+          const t = (r?.tasks || []).find((x) => x.status === 'paused') || null;
+          setApprovalTask(t);
+        })
+        .catch(() => { /* best-effort：审批卡拉不到就下轮再试 */ });
+    };
+    tick();
+    const timer = setInterval(tick, 2500);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id, debate?.status, setup]);
+
+  const decideApproval = async (decision, note = '') => {
+    if (!approvalTask) return;
+    approvalBusyRef.current = true;
+    setApprovalBusy(true);
+    try {
+      // 提交前先核对实时状态：轮询快照可能已过期（任务被并发续跑/取消）
+      const cur = await agentfactory.getTask({ id: approvalTask.id }).catch(() => null);
+      if (!cur || cur.status !== 'paused') {
+        setApprovalTask(null);
+        setApprovalDone(null);
+        setError(`任务 #${approvalTask.id} 已不在审批挂起状态${cur?.status ? `（当前 ${cur.status}）` : ''}，无需审批`);
+        return;
+      }
+      await agentfactory.approveTask({ id: approvalTask.id, decision, note });
+      setApprovalDone({ id: approvalTask.id, decision, note });
+      setApprovalTask(null);
+      setRejectOpen(false);
+      setRejectNote('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      approvalBusyRef.current = false;
+      setApprovalBusy(false);
+    }
+  };
+
   // 流内容变化时贴底：
   //   刚打开会话 → 即时贴底（微信式从最新一条看起）；
   //   其余情况 → 只有接近底部才自动滚，避免轮询/翻页把视野顶走。
@@ -491,7 +721,7 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
     }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
     if (nearBottom || messages.length <= 2) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, pendingText]);
+  }, [messages.length, pendingText, convPending]);
 
   // Mermaid 等异步渲染撑高气泡后：仅当用户此前贴底（或刚进会话）时跟随贴底，
   // 用户已向上翻阅时绝不打扰其位置。
@@ -574,6 +804,11 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
       if (!convID) {
         const res = await conversation.createConversation({ title: truncate(text, 24) || '新对话' });
         const c = res.conversation;
+        // 启动召回：只有长期记忆；skipped 表示记忆系统未装配/召回失败，不打扰用户
+        const b = res.bootstrap;
+        setBoot(b && !b.skipped && (b.memories?.length || 0) > 0
+          ? { id: c.id, count: b.memories.length, block: b.context_block, source: b.source }
+          : null);
         setActive(c);
         notifyChanged();
         convID = c.id;
@@ -827,6 +1062,21 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
     [convs, tab],
   );
 
+  // 上一轮等待是否已超时（Agent 任务最长等待 5 分钟 + 余量）：超时改提示可能已中断
+  const pendingOverdue = (() => {
+    if (!convPending) return false;
+    const last = messages[messages.length - 1];
+    if (!last) return false;
+    return Date.now() - new Date(last.created_at).getTime() > 6 * 60 * 1000;
+  })();
+
+  // 当前会话末条 user 消息是否已被「停止等待」（死轮次标记命中）
+  const lastMsgForStop = messages.length ? messages[messages.length - 1] : null;
+  const convStoppedShown = !!lastMsgForStop
+    && lastMsgForStop.role === 'user'
+    && !String(lastMsgForStop.id).startsWith('tmp-')
+    && String(abandonedMap[active?.id] ?? '') === String(lastMsgForStop.id);
+
   return (
     <div className="chats-layout">
       {/* 会话目录 */}
@@ -1062,12 +1312,64 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
                   <p>辩论已开局，第 1 轮发言马上开始。你可以随时在下方补充引导，或直接叫停。</p>
                 </div>
               )}
+              {active && boot && boot.id === active.id && (
+                <div className="chat-boot">
+                  <div className="chat-boot-row">
+                    <button className="link-btn" type="button" onClick={() => setBootOpen((v) => !v)}>
+                      {bootOpen ? '收起召回内容' : `新会话已召回 ${boot.count} 条长期记忆`}
+                    </button>
+                    <span className="muted">仅长期记忆，未召回历史会话</span>
+                  </div>
+                  {bootOpen && <pre className="chat-boot-body">{boot.block}</pre>}
+                </div>
+              )}
               {messages.map((m) => <MessageBubble key={m.id} msg={m} roles={roles} />)}
-              {(pendingText || (inDebate && isLive(debate))) && (
+              {/* 人工审批卡：本会话编排的任务因高危操作挂起时，内联提供批准 / 驳回 */}
+              {approvalTask && (
+                <ApprovalCard
+                  task={approvalTask}
+                  busy={approvalBusy}
+                  done={approvalDone}
+                  rejecting={rejectOpen}
+                  rejectNote={rejectNote}
+                  onRejectOpen={() => setRejectOpen(true)}
+                  onRejectCancel={() => { setRejectOpen(false); setRejectNote(''); }}
+                  onRejectNote={setRejectNote}
+                  onApprove={() => decideApproval('approve')}
+                  onReject={() => decideApproval('reject', rejectNote.trim() || '人工驳回')}
+                />
+              )}
+              {/* 执行中气泡：本地发送等待（pendingText）与重新进入会话时的在途轮次（convPending）
+                  复用同一套样式，保证「重进会话看到的最新执行状态」与发送后一致 */}
+              {(pendingText || convPending || (inDebate && isLive(debate))) && (
                 <div className="chat-msg assistant">
                   <div className="chat-bubble pending">
-                    <Spinner text={pendingText || '下一个角色正在组织语言…'} />
+                    <Spinner
+                      text={
+                        pendingText
+                          || (convPending && pendingOverdue
+                            ? '上一轮执行等待超时（Agent 任务最长等待 5 分钟，可能已中断），仍在自动刷新…'
+                            : undefined)
+                          || (convPending ? '思考中…（LLM 决策是否调用 Agent / MCP 工具）' : undefined)
+                          || '下一个角色正在组织语言…'
+                      }
+                    />
+                    {/* WorkBuddy 式停止入口：重进会话的在途轮次可主动停止等待，
+                        并顺带终止本会话仍在执行的后端任务 */}
+                    {convPending && (
+                      <div className="chat-pending-stop">
+                        <button className="chat-stop-btn" type="button" onClick={stopWaiting}>
+                          ⏹ 停止等待
+                        </button>
+                      </div>
+                    )}
                   </div>
+                </div>
+              )}
+              {/* 用户已停止等待的死轮次：muted 提示替代气泡，不再轮询 */}
+              {convStoppedShown && !pendingText && (
+                <div className="chat-msg assistant">
+                  <div className="chat-bubble stopped">⏹ {stopNote || '已停止等待本轮结果（本轮可能已被后端重启中断）。'}</div>
                 </div>
               )}
               <div ref={bottomRef} />
@@ -1099,36 +1401,15 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
                   ))}
                 </div>
               )}
-              <div className="chat-input-row">
-                {/* 附件入口：图片（≤10MB）与视频（≤50MB），单条消息最多 9 个 */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,video/mp4,video/webm,video/quicktime"
-                  multiple
-                  hidden
-                  onChange={(e) => {
-                    addFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  className="btn ghost chat-attach-btn"
-                  type="button"
-                  title="添加图片 / 视频附件"
-                  aria-label="添加图片 / 视频附件"
-                  disabled={busy || uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  📎
-                </button>
+              {/* 输入区（WorkBuddy 式卡片）：无边框输入面 + 底部工具条（左提示/附件，右发送） */}
+              <div className="composer-card">
                 <textarea
-                  className="input"
+                  className="composer-textarea"
                   rows={2}
                   placeholder={
                     inDebate
-                      ? '监督引导：写下你的补充要求或追问，角色下一轮会读到（不会强迫它们改立场）'
-                      : '发消息…（可点 📎、Ctrl+V 粘贴或拖入图片 / 视频；Enter 发送，Shift+Enter 换行）LLM 会自动决定是否调用 Agent / MCP 工具'
+                      ? '监督引导：写下你的补充要求或追问…'
+                      : '发消息…（可点 📎、Ctrl+V 粘贴或拖入图片 / 视频）'
                   }
                   value={input}
                   disabled={busy}
@@ -1142,14 +1423,44 @@ export default function Chats({ debateEntry = false, onNewChat, onNewDebate, onN
                     }
                   }}
                 />
-                <button
-                  className="btn primary"
-                  type="button"
-                  disabled={busy || uploading || (inDebate ? !input.trim() || !active : (!input.trim() && pendingFiles.length === 0))}
-                  onClick={inDebate ? supervise : send}
-                >
-                  {busy ? '执行中…' : inDebate ? '提交引导' : '发送'}
-                </button>
+                <div className="composer-toolbar">
+                  <div className="composer-hint">
+                    {inDebate
+                      ? 'Enter 提交引导 · 角色下一轮会读到（不会强迫它们改立场）'
+                      : 'Enter 发送，Shift+Enter 换行 · LLM 会自动决定是否调用 Agent / MCP 工具'}
+                  </div>
+                  <div className="composer-actions">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*,video/mp4,video/webm,video/quicktime"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        addFiles(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button
+                      className="composer-icon-btn"
+                      type="button"
+                      title="添加图片 / 视频附件"
+                      aria-label="添加图片 / 视频附件"
+                      disabled={busy || uploading}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      📎
+                    </button>
+                    <button
+                      className="composer-send-btn"
+                      type="button"
+                      disabled={busy || uploading || (inDebate ? !input.trim() || !active : (!input.trim() && pendingFiles.length === 0))}
+                      onClick={inDebate ? supervise : send}
+                    >
+                      {busy ? '执行中…' : inDebate ? '提交引导' : '发送'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </footer>
           </>

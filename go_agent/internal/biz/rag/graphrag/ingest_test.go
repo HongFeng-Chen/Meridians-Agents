@@ -52,6 +52,10 @@ func (f *fakeStore) DetachDocRefs(_ context.Context, prefix string) (int, int, e
 	return 0, 0, nil
 }
 
+func (f *fakeStore) DocGraph(_ context.Context, docID string, limit int) ([]Entity, []Relation, error) {
+	return nil, nil, nil
+}
+
 type fakeEmbed struct{}
 
 func (fakeEmbed) Embed(_ context.Context, texts []string) ([][]float32, error) {

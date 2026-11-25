@@ -1,6 +1,7 @@
 import {
   IconBox,
   IconBrain,
+  IconChart,
   IconCloud,
   IconDashboard,
   IconDatabase,
@@ -39,6 +40,7 @@ const NAV_GROUPS = [
       { key: 'agents', label: 'Agent 工厂', icon: IconBrain },
       { key: 'eval', label: '评测中心', icon: IconFlask },
       { key: 'tasks', label: '任务中心', icon: IconSpark },
+      { key: 'cost', label: '成本看板', icon: IconChart },
     ],
   },
   {

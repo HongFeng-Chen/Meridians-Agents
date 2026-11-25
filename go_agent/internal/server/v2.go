@@ -16,19 +16,22 @@ import (
 	"strings"
 	"time"
 
+	"go_agent/api/rag/v1"
 	"go_agent/internal/biz/agentfactory"
+	"go_agent/internal/biz/rag"
 	"go_agent/internal/biz/resource"
 	"go_agent/internal/biz/space"
 	"go_agent/internal/biz/usage"
 	"go_agent/internal/pkg/principal"
 	"go_agent/internal/pkg/trace"
+	"go_agent/internal/service"
 
 	kerrors "github.com/go-kratos/kratos/v3/errors"
 	khttp "github.com/go-kratos/kratos/v3/transport/http"
 )
 
 // registerV2Routes 挂上 V2 资源与空间接口。
-func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource.UseCase, usageUC *usage.UseCase, taskUC *agentfactory.UseCase) {
+func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource.UseCase, usageUC *usage.UseCase, taskUC *agentfactory.UseCase, ragSvc *service.RagService) {
 	if srv == nil || spaceUC == nil || resUC == nil {
 		return
 	}
@@ -121,6 +124,102 @@ func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource
 		})
 	})
 
+	// PATCH /spaces/reorder：兄弟空间排序（ordered_ids 顺序即展示顺序）。
+	// biz.Reorder 校验：全部空间可管理 + 同一父节点的兄弟，事务内整体生效。
+	r.PATCH("/spaces/reorder", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			var in struct {
+				OrderedIDs []string `json:"ordered_ids"`
+			}
+			if err := decodeJSON(ctx, &in); err != nil {
+				return err
+			}
+			if err := spaceUC.Reorder(c, principal.From(c), in.OrderedIDs); err != nil {
+				return v2Error(err)
+			}
+			return ctx.JSON(http.StatusOK, map[string]any{"reordered": len(in.OrderedIDs)})
+		})
+	})
+
+	// —— 入库执行进度（前端步骤条） ——
+	// 入库是同步 RPC，前端用自生成的 progress_id 在请求期间轮询 GET /ingest-progress。
+	// POST 时带 progress_id → 绑定进 ctx，biz 各阶段 ReportProgress 写进度；
+	// 请求结束（成功/失败）由 handler 统一 FinishIngestProgress。
+
+	// POST /ingest-url：在线 URL 导入（同 v1 /api/ingest-url，多了进度上报）。
+	r.POST("/ingest-url", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			var in struct {
+				URL        string `json:"url"`
+				DocID      string `json:"doc_id"`
+				Source     string `json:"source"`
+				Mode       string `json:"mode"`
+				SpaceID    string `json:"space_id"`
+				ProgressID string `json:"progress_id"`
+			}
+			if err := decodeJSON(ctx, &in); err != nil {
+				return err
+			}
+			pc := rag.WithIngestProgress(c, in.ProgressID)
+			res, err := ragSvc.IngestUrl(pc, &v1.IngestUrlRequest{
+				Url:     in.URL,
+				DocId:   in.DocID,
+				Source:  in.Source,
+				Mode:    in.Mode,
+				SpaceId: in.SpaceID,
+			})
+			rag.FinishIngestProgress(pc, errString(err))
+			if err != nil {
+				return v2Error(err)
+			}
+			return ctx.JSON(http.StatusOK, res)
+		})
+	})
+
+	// POST /ingest：文本入库（同 v1 /api/ingest，多了进度上报）。
+	r.POST("/ingest", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			var in struct {
+				Text       string `json:"text"`
+				DocID      string `json:"doc_id"`
+				Source     string `json:"source"`
+				Mode       string `json:"mode"`
+				Scope      string `json:"scope"`
+				SpaceID    string `json:"space_id"`
+				ProgressID string `json:"progress_id"`
+			}
+			if err := decodeJSON(ctx, &in); err != nil {
+				return err
+			}
+			pc := rag.WithIngestProgress(c, in.ProgressID)
+			res, err := ragSvc.Ingest(pc, &v1.IngestRequest{
+				Text:    in.Text,
+				DocId:   in.DocID,
+				Source:  in.Source,
+				Mode:    in.Mode,
+				Scope:   in.Scope,
+				SpaceId: in.SpaceID,
+			})
+			rag.FinishIngestProgress(pc, errString(err))
+			if err != nil {
+				return v2Error(err)
+			}
+			return ctx.JSON(http.StatusOK, res)
+		})
+	})
+
+	// GET /ingest-progress?id=：轮询入库进度
+	r.GET("/ingest-progress", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			id := ctx.Query().Get("id")
+			st, ok := rag.IngestProgressStore.Get(id)
+			if !ok {
+				return ctx.JSON(http.StatusOK, map[string]any{"found": false})
+			}
+			return ctx.JSON(http.StatusOK, map[string]any{"found": true, "progress": st})
+		})
+	})
+
 	r.GET("/spaces/shares", func(ctx khttp.Context) error {
 		return withMiddleware(ctx, func(c context.Context) error {
 			list, err := spaceUC.Shares(c, principal.From(c), ctx.Query().Get("space_id"))
@@ -162,6 +261,44 @@ func registerV2Routes(srv *khttp.Server, spaceUC *space.UseCase, resUC *resource
 				return v2Error(err)
 			}
 			return ctx.JSON(http.StatusOK, map[string]any{"deleted": true})
+		})
+	})
+
+	// PATCH /spaces/documents：把文档移动到目标空间（知识空间树整理）。
+	// 权限双闸在 biz.MoveDoc：文档自身可写 + 目标空间可管理。
+	r.PATCH("/spaces/documents", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			var in struct {
+				DocID   string `json:"doc_id"`
+				SpaceID string `json:"space_id"`
+			}
+			if err := decodeJSON(ctx, &in); err != nil {
+				return err
+			}
+			doc, err := ragSvc.MoveDoc(c, in.DocID, in.SpaceID)
+			if err != nil {
+				return v2Error(err)
+			}
+			return ctx.JSON(http.StatusOK, doc)
+		})
+	})
+
+	// POST /spaces/documents/sync-index：补建文档缺失的索引（同步索引）。
+	// 仅向量 → 用 Milvus 分块重建原文补建图谱；仅图谱 → 用入库时保存的
+	// 原文重放分块补建向量；补齐后文档升级为双索引（both）。写权限闸在 biz。
+	r.POST("/spaces/documents/sync-index", func(ctx khttp.Context) error {
+		return withMiddleware(ctx, func(c context.Context) error {
+			var in struct {
+				DocID string `json:"doc_id"`
+			}
+			if err := decodeJSON(ctx, &in); err != nil {
+				return err
+			}
+			res, err := ragSvc.SyncDocIndex(c, in.DocID)
+			if err != nil {
+				return v2Error(err)
+			}
+			return ctx.JSON(http.StatusOK, res)
 		})
 	})
 
@@ -646,6 +783,14 @@ func parseTime(s string) (time.Time, error) {
 }
 
 // v2Error 领域错误 → HTTP 状态码（与 rag_service 的口径一致）。
+// errString 错误转进度文案（nil → 空串）
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func v2Error(err error) error {
 	switch {
 	case err == nil:

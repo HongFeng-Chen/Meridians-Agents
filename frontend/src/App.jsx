@@ -13,12 +13,81 @@ import AIPlatforms from './pages/AIPlatforms.jsx';
 import Eval from './pages/Eval.jsx';
 import Agents from './pages/Agents.jsx';
 import Tasks from './pages/Tasks.jsx';
+import Cost from './pages/Cost.jsx';
 import Chats from './pages/Chats.jsx';
 import Tenants from './pages/Tenants.jsx';
 import Users from './pages/Users.jsx';
 import Login from './pages/Login.jsx';
-import { api } from './api.js';
-import { IconRefresh } from './components/Icons.jsx';
+import { api, clearAuthToken } from './api.js';
+
+// ROLE_LABEL 角色徽标文案（与用户管理页保持一致）
+const ROLE_LABEL = {
+  platform_admin: '平台管理员',
+  tenant_admin: '租户管理员',
+  user: '普通用户',
+  admin: '管理员',
+};
+
+// UserChip 顶栏右上角的当前登录人：头像 + 名称，点开显示身份信息与退出登录。
+// 登录未开启（开发态）时也能看到当前生效的身份（如 default@public）。
+function UserChip({ me, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const name = me?.display_name || me?.user_id || '未登录';
+  const avatarChar = (me?.display_name || me?.user_id || '?').slice(0, 1).toUpperCase();
+  const roles = me?.roles || [];
+  const devMode = !roles.length || (me?.user_id === 'default' && (roles.length === 0 || (roles.length === 1 && roles[0] === 'user')));
+
+  return (
+    <div className="userchip-wrap">
+      <button
+        type="button"
+        className="userchip"
+        onClick={() => setOpen((v) => !v)}
+        title="当前登录身份"
+        aria-expanded={open}
+      >
+        <span className="userchip-avatar">{avatarChar}</span>
+        <span className="userchip-name ellipsis">{name}</span>
+        <span className="userchip-caret">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <>
+          <div className="userchip-mask" onClick={() => setOpen(false)} />
+          <div className="userchip-menu">
+            <div className="userchip-head">
+              <span className="userchip-avatar lg">{avatarChar}</span>
+              <div className="userchip-head-info">
+                <b className="ellipsis">{name}</b>
+                <span className="muted ellipsis">{me?.email || '未登记邮箱'}</span>
+              </div>
+            </div>
+            <div className="userchip-facts">
+              <div><span>用户 ID</span><b className="mono">{me?.user_id || '—'}</b></div>
+              <div><span>租户</span><b className="mono">{me?.tenant_id || '—'}</b></div>
+              <div>
+                <span>角色</span>
+                <b>
+                  {roles.length
+                    ? roles.map((r) => <em key={r} className="userchip-role">{ROLE_LABEL[r] || r}</em>)
+                    : <span className="muted">—</span>}
+                </b>
+              </div>
+              <div><span>认证方式</span><b>{me?.source ? (me.source === 'ldap' ? 'LDAP' : '本地密码') : '开发态（登录未开启）'}</b></div>
+            </div>
+            {devMode && (
+              <p className="muted userchip-hint">
+                当前为开发态身份：后端未开启登录（AUTH_LOGIN_ENABLED=false），所有人共享该身份
+              </p>
+            )}
+            <button type="button" className="btn danger sm userchip-logout" onClick={onLogout}>
+              退出登录
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 const PAGES = {
   dashboard: {
@@ -81,6 +150,11 @@ const PAGES = {
     desc: '异步 worker 执行、多 Agent 协作链路树、trace 事件流实时跟中',
     component: Tasks,
   },
+  cost: {
+    title: '成本看板',
+    desc: '按天 / Agent / 模型 / 来源 / 任务 / 归属聚合用量与成本；口径是「已上报部分」，不是全量账单',
+    component: Cost,
+  },
   chats: {
     title: '会话',
     desc: '多轮对话目录：会话内调用 Agent / MCP 工具与 RAG / GraphRAG / Memory 检索召回，链路全程记录（会话 id = 任务 id）',
@@ -131,10 +205,12 @@ function pageFromHash() {
 export default function App() {
   const [page, setPage] = useState(pageFromHash);
   const [health, setHealth] = useState('checking');
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshTick] = useState(0);
   // 认证探测：pending=查询中，ok=已登录（或后端未启用认证），need=需要登录。
   // 未开启认证时 /api/auth/me 返回开发态身份，同样落在 ok。
   const [authState, setAuthState] = useState('pending');
+  // 当前登录身份档案（顶栏 UserChip 展示用）
+  const [me, setMe] = useState(null);
 
   const newChat = () => {
     setRefreshTick((t) => t + 1);
@@ -174,13 +250,25 @@ export default function App() {
   // 启动探测一次登录态；登录成功 / 登出后由回调驱动
   const checkAuth = useCallback(async () => {
     try {
-      await api.authMe();
+      const info = await api.authMe();
+      setMe(info || null);
       setAuthState('ok');
     } catch (err) {
+      setMe(null);
       // 404 = 后端未开启 login（老版本行为），401 = 需要登录；403（停用）也进登录页
       setAuthState(err?.status === 404 ? 'ok' : 'need');
     }
   }, []);
+
+  // 退出登录：清令牌 → 重新探测（登录开启时回到登录页；
+  // 登录未开启的后端 me 永远 404，表现为以同一开发态身份重进，属预期行为）
+  const logout = useCallback(() => {
+    clearAuthToken();
+    setMe(null);
+    setAuthState('pending');
+    window.location.hash = '#/dashboard';
+    checkAuth();
+  }, [checkAuth]);
 
   useEffect(() => {
     checkAuth();
@@ -217,18 +305,7 @@ export default function App() {
             <p className="page-desc">{meta.desc}</p>
           </div>
           <div className="topbar-actions">
-            <button
-              className="btn ghost sm"
-              type="button"
-              onClick={() => {
-                setRefreshTick((t) => t + 1);
-                checkHealth();
-              }}
-              title="刷新数据"
-            >
-              <IconRefresh size={16} />
-              刷新
-            </button>
+            <UserChip me={me} onLogout={logout} />
           </div>
         </header>
         <div className="content" key={`${page}-${refreshTick}`}>

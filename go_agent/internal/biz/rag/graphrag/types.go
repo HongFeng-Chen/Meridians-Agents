@@ -17,6 +17,8 @@ type Entity struct {
 	Description string   `json:"description"`
 	Freq        int      `json:"freq"`
 	ChunkRefs   []string `json:"chunk_refs"` // 形如 "doc_id#chunk_idx"
+	// Score 检索命中分（RRF 融合分，K=60 满分 ≈0.0328）；仅种子检索返回，扩展节点为 0。
+	Score float32 `json:"score,omitempty"`
 }
 
 // Relation 有向关系边
@@ -58,6 +60,9 @@ type Store interface {
 	// DetachDocRefs 移除该文档的全部引用（prefix 形如 "doc_id#"）：
 	// 引用清空后无人支撑的节点/边删除，仍被其他文档引用的只改写 refs。
 	DetachDocRefs(ctx context.Context, prefix string) (entities int, relations int, err error)
+	// DocGraph 取某文档贡献的实体与关系（chunk_refs 前缀 "docID#" 匹配），
+	// 文档详情弹层的「图谱」Tag 用；limit <= 0 时取默认 200。
+	DocGraph(ctx context.Context, docID string, limit int) ([]Entity, []Relation, error)
 }
 
 // Embedder 文本向量化
@@ -96,6 +101,9 @@ type Options struct {
 	MaxEdges     int // 每跳最多取回边数
 	MaxEntities  int // 单块最多抽取实体数
 	MaxRelations int // 单块最多抽取关系数
+	// MinScore 种子实体 RRF 绝对分数线：低于此值的检索命中不作为种子扩展子图。
+	// ≤0 不过滤；与 rag 包 DefaultMinRRF 同刻度（K=60，满分 ≈0.0328）。
+	MinScore float64
 }
 
 func normName(s string) string {

@@ -143,6 +143,8 @@ type Repo interface {
 	ListDescendants(ctx context.Context, spaceID string) ([]Space, error)
 	// UpdatePathPrefix 移动子树：oldPrefix → newPrefix，depth 同步平移
 	UpdatePathPrefix(ctx context.Context, oldPrefix, newPrefix string, delta int) error
+	// UpdateSortOrders 兄弟空间排序：orderedIDs 顺序即展示顺序（sort_order = 下标）
+	UpdateSortOrders(ctx context.Context, orderedIDs []string) error
 
 	AddShare(ctx context.Context, sh *Share) error
 	DeleteShare(ctx context.Context, id uint64) error
@@ -432,6 +434,41 @@ func (u *UseCase) move(ctx context.Context, s *Space, newParentID string) error 
 	return nil
 }
 
+// Reorder 对同一父空间下的兄弟空间重新排序：orderedIDs 顺序即展示顺序。
+// 逐个校验管理权（inherit 模式下父空间管理员天然可排子空间），
+// 且全部必须是同一父节点的兄弟；任意一个失败整体回滚。
+func (u *UseCase) Reorder(ctx context.Context, p *principal.Principal, orderedIDs []string) error {
+	if p == nil {
+		return ErrForbidden
+	}
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	parentID := ""
+	for i, id := range orderedIDs {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("%w: ordered_ids 含空 ID", ErrInvalid)
+		}
+		s, err := u.repo.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		ok, err := u.CanManage(ctx, p, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: 无权调整空间 %s 的排序", ErrForbidden, s.Name)
+		}
+		if i == 0 {
+			parentID = s.ParentSpaceID
+		} else if s.ParentSpaceID != parentID {
+			return fmt.Errorf("%w: 只能对同一父空间下的兄弟空间排序", ErrInvalid)
+		}
+	}
+	return u.repo.UpdateSortOrders(ctx, orderedIDs)
+}
+
 // Delete 删除空间：有子空间时拒绝，避免把子树变成孤儿。
 func (u *UseCase) Delete(ctx context.Context, p *principal.Principal, spaceID string) error {
 	s, err := u.repo.Get(ctx, strings.TrimSpace(spaceID))
@@ -533,6 +570,28 @@ func (u *UseCase) CanAccess(ctx context.Context, p *principal.Principal, spaceID
 		}
 	}
 	return false, nil
+}
+
+// CanManage 当前身份是否可管理空间（建子空间 / 改名 / 移动 / 授权 / 往空间里放文档）。
+//
+// 与 authorizeManage 同一口径：管理员、空间 owner、对应层级的配置权限，
+// 或持有显式共享的 manage_permission 动作。返回 (false, nil) 表示明确无权，
+// 返回非 nil error 表示判定过程本身失败（存储抖动等），调用方应报错而不是放行。
+func (u *UseCase) CanManage(ctx context.Context, p *principal.Principal, spaceID string) (bool, error) {
+	s, err := u.repo.Get(ctx, strings.TrimSpace(spaceID))
+	if err != nil {
+		return false, err
+	}
+	if s == nil {
+		return false, ErrNotFound
+	}
+	if err := u.authorizeManage(ctx, p, s); err != nil {
+		if errors.Is(err, ErrForbidden) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // AllowedSpaceIDs 计算当前身份可见的空间集合。

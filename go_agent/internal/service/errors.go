@@ -123,13 +123,19 @@ func mapSkillErr(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, skill.ErrSkillNotFound), errors.Is(err, skill.ErrHubNotFound):
+	case errors.Is(err, skill.ErrSkillNotFound),
+		errors.Is(err, skill.ErrHubNotFound),
+		errors.Is(err, skill.ErrExecutionNotFound),
+		errors.Is(err, skill.ErrNoWorker):
 		return notFound(err.Error())
 	case errors.Is(err, skill.ErrInvalidName),
 		errors.Is(err, skill.ErrEmptyContent),
 		errors.Is(err, skill.ErrInvalidFile),
 		errors.Is(err, skill.ErrInvalidURL),
 		errors.Is(err, skill.ErrHubResponse),
+		errors.Is(err, skill.ErrInvalidMode),
+		errors.Is(err, skill.ErrNotExecutable),
+		errors.Is(err, skill.ErrSkillDisabled),
 		errors.Is(err, skill.ErrNoHub):
 		return badRequest(err.Error())
 	default:

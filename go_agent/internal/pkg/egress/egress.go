@@ -14,7 +14,13 @@
 //     connect 之前校验**解析出来的 IP**——挡住「域名指向内网」与 DNS rebinding。
 //  3. 重定向（transport.go）：每一跳目标重新走 URL 校验，挡住 302 到元数据地址。
 //
-// 配置（环境变量，进程启动时读取一次，可用 SetPolicy 覆盖）：
+// 配置来源（两路，后者覆盖前者）：
+//  1. 环境变量，进程启动时读取一次（兼容旧部署）；
+//  2. 配置文件 config.yaml 的 mcp.remote 段——main.go 启动时经
+//     biz/mcp.ApplyConfig 调 SetPolicy 覆盖。段内值用 ${ENV:default}
+//     占位符书写，环境变量优先、缺省值兜底，推荐用配置文件管理。
+//
+// 环境变量清单（= 配置文件 mcp.remote 段的字段）：
 //
 //	EGRESS_ALLOWED_HOSTS=mcp.example.com,.corp.internal   主机白名单；配了就变白名单模式
 //	EGRESS_DENIED_HOSTS=evil.example.com                 额外拉黑（始终生效）
@@ -144,6 +150,7 @@ func loadPolicy() Policy {
 func SetPolicy(p Policy) {
 	p.AllowedHosts = normalizePatterns(p.AllowedHosts)
 	p.DeniedHosts = normalizePatterns(p.DeniedHosts)
+	p.AllowPrivateHosts = normalizePatterns(p.AllowPrivateHosts)
 	policyMu.Lock()
 	policy = p
 	policyMu.Unlock()

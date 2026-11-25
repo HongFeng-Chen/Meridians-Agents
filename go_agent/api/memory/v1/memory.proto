@@ -53,6 +53,8 @@ message LongTermMemory {
   int32 recall_count = 16 [json_name = "recall_count"];
   // 最近一次被召回时间；null = 从未被召回
   optional string last_recalled_at = 17 [json_name = "last_recalled_at"];
+  // 来源会话 ID（会话归档写入时有值，手动写入为空）
+  string session_id = 18 [json_name = "session_id"];
 }
 
 // RecalledMemory 召回的记忆 + 相关度。
@@ -71,6 +73,8 @@ message RecalledMemory {
   string updated_at = 12 [json_name = "updated_at"];
   bool deduped = 13 [json_name = "deduped"];
   bool expired = 14 [json_name = "expired"];
+  // 来源会话 ID（会话总结类记忆有值）
+  string session_id = 19 [json_name = "session_id"];
   // 提取来源规则名
   string rule_name = 16 [json_name = "rule_name"];
   // 被召回次数
@@ -182,6 +186,8 @@ message RememberRequest {
   int32 ttl_days = 9 [json_name = "ttl_days"];
   // 是否同时写入图谱，缺省用配置默认值
   optional bool graph = 10 [json_name = "graph"];
+  // 来源会话 ID：会话归档写入时带上次结束的会话 ID，便于从记忆反查对话
+  string session_id = 11 [json_name = "session_id"];
 }
 
 message ListLongRequest {

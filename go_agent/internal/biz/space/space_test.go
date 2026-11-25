@@ -101,6 +101,15 @@ func (f *fakeRepo) UpdatePathPrefix(_ context.Context, oldPrefix, newPrefix stri
 	return nil
 }
 
+func (f *fakeRepo) UpdateSortOrders(_ context.Context, orderedIDs []string) error {
+	for _, id := range orderedIDs {
+		if f.spaces[id] == nil {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
 func (f *fakeRepo) AddShare(_ context.Context, sh *Share) error {
 	f.seq++
 	cp := *sh

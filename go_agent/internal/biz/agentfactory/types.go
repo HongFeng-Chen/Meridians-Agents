@@ -62,8 +62,12 @@ const (
 	CapAgentPrefix = "agent:"
 	// CapToolPrefix MCP 工具能力前缀，全名 mcp:<unique_name>
 	CapToolPrefix = "mcp:"
-	// CapSkillPrefix 技能能力前缀，全名 skill:<name>（调用 = 加载技能说明到上下文）
+	// CapSkillPrefix 技能能力前缀，全名 skill:<name>
+	// local 技能 = 加载 SKILL.md 到上下文；remote/async 技能 = 调度到 Worker 执行
 	CapSkillPrefix = "skill:"
+	// CapSkillStatus 异步技能执行状态查询（args: {"execution_id":"..."}）
+	// 单独一个能力而不是让模型去猜 URL：Agent 只能调能力，不能发 HTTP。
+	CapSkillStatus = "skill:status"
 
 	// CapImage 图片生成能力（文生图 / 图生图，同步返回本地文件地址）
 	CapImage = "llm:image"

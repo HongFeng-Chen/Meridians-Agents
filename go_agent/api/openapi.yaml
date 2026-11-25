@@ -24,6 +24,13 @@ paths:
                   description: 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
                   schema:
                     type: string
+                - name: space_id
+                  in: query
+                  description: |-
+                    只看某个知识空间（不含子空间；子空间文档在知识空间树里按节点逐级查看）。
+                     需要对目标空间有管理权或可见权，否则 403。
+                  schema:
+                    type: string
             responses:
                 "200":
                     description: OK
@@ -1246,6 +1253,31 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/conversation.v1.AppendMessageReply'
+    /api/docs/{doc_id}/content:
+        get:
+            tags:
+                - RagService
+            description: DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+            operationId: RagService_DocContent
+            parameters:
+                - name: doc_id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  description: 最多返回的分块数，缺省 100（长文档按 chunk_idx 截断展示）
+                  schema:
+                    type: integer
+                    format: int32
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/rag.v1.DocContentReply'
     /api/extract:
         post:
             tags:
@@ -1639,6 +1671,25 @@ paths:
                     application/json:
                         schema:
                             $ref: '#/components/schemas/rag.v1.IngestRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/rag.v1.IngestResult'
+    /api/ingest-url:
+        post:
+            tags:
+                - RagService
+            description: IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+            operationId: RagService_IngestUrl
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/rag.v1.IngestUrlRequest'
                 required: true
             responses:
                 "200":
@@ -3415,6 +3466,75 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/skill.v1.Skill'
+    /api/skills/executions:
+        get:
+            tags:
+                - SkillService
+            description: ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+            operationId: SkillService_ListSkillExecutions
+            parameters:
+                - name: skill
+                  in: query
+                  schema:
+                    type: string
+                - name: status
+                  in: query
+                  schema:
+                    type: string
+                - name: task_id
+                  in: query
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.ListSkillExecutionsReply'
+    /api/skills/executions/{id}:
+        get:
+            tags:
+                - SkillService
+            description: GetSkillExecution 单条执行记录（异步结果轮询）。
+            operationId: SkillService_GetSkillExecution
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.SkillExecution'
+    /api/skills/executions/{id}/cancel:
+        post:
+            tags:
+                - SkillService
+            description: CancelSkillExecution 取消排队中的执行。
+            operationId: SkillService_CancelSkillExecution
+            parameters:
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.SkillExecution'
     /api/skills/from-hub:
         get:
             tags:
@@ -3674,6 +3794,56 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/skill.v1.Skill'
+    /api/skills/{name}/execute:
+        post:
+            tags:
+                - SkillService
+            description: ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+            operationId: SkillService_ExecuteSkill
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/skill.v1.ExecuteSkillRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.ExecuteSkillReply'
+    /api/skills/{name}/execution:
+        put:
+            tags:
+                - SkillService
+            description: SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+            operationId: SkillService_SetSkillExecution
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/skill.v1.SetSkillExecutionRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.Skill'
     /api/skills/{name}/file:
         get:
             tags:
@@ -3716,6 +3886,103 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/skill.v1.SkillFiles'
+    /api/skills/{name}/instances:
+        get:
+            tags:
+                - SkillService
+            description: ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+            operationId: SkillService_ListSkillInstances
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.ListSkillInstancesReply'
+        post:
+            tags:
+                - SkillService
+            description: RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+            operationId: SkillService_RegisterSkillInstance
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/skill.v1.RegisterSkillInstanceRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.SkillInstance'
+    /api/skills/{name}/instances/{id}:
+        delete:
+            tags:
+                - SkillService
+            description: DeleteSkillInstance 摘除实例（Worker 下线）。
+            operationId: SkillService_DeleteSkillInstance
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.DeleteSkillInstanceReply'
+    /api/skills/{name}/instances/{id}/heartbeat:
+        post:
+            tags:
+                - SkillService
+            description: HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+            operationId: SkillService_HeartbeatSkillInstance
+            parameters:
+                - name: name
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/skill.v1.HeartbeatSkillInstanceRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/skill.v1.HeartbeatSkillInstanceReply'
     /api/skills/{name}/use:
         post:
             tags:
@@ -3771,6 +4038,11 @@ paths:
                 - name: scope
                   in: query
                   description: 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
+                  schema:
+                    type: string
+                - name: space_id
+                  in: query
+                  description: 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权
                   schema:
                     type: string
             requestBody:
@@ -5092,6 +5364,10 @@ components:
             properties:
                 conversation:
                     $ref: '#/components/schemas/conversation.v1.Conversation'
+                bootstrap:
+                    allOf:
+                        - $ref: '#/components/schemas/conversation.v1.SessionBootstrap'
+                    description: 新会话启动召回：只有长期记忆，没有历史会话消息
         conversation.v1.CreateConversationRequest:
             type: object
             properties:
@@ -5224,6 +5500,48 @@ components:
                     description: 会话 ID（即路径 {id}）
                 name:
                     type: string
+        conversation.v1.SessionBootstrap:
+            type: object
+            properties:
+                memories:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/conversation.v1.SessionBootstrapMemory'
+                context_block:
+                    type: string
+                    description: 渲染后的提示词块（供客户端展示 / 排查）
+                source:
+                    type: string
+                    description: 固定为 long_term_memory，标注本次启动只用了长期记忆
+                skipped:
+                    type: boolean
+                    description: 记忆系统未装配或召回失败时为 true（不阻塞建会话）
+                error:
+                    type: string
+                    description: 失败原因（best-effort，仅排查用）
+            description: "SessionBootstrap 新会话启动上下文。\r\n 只含长期记忆：创建新会话时主动召回用户已沉淀的记忆，\r\n 明确不召回任何历史会话的消息（会话之间不串上下文）。"
+        conversation.v1.SessionBootstrapMemory:
+            type: object
+            properties:
+                id:
+                    type: string
+                kind:
+                    type: string
+                content:
+                    type: string
+                score:
+                    type: number
+                    description: 相似度 0~1
+                    format: double
+                importance:
+                    type: integer
+                    format: int32
+                source:
+                    type: string
+                session_id:
+                    type: string
+                    description: 来源会话 ID（会话总结类记忆有值）
+            description: SessionBootstrapMemory 新会话启动时召回的一条长期记忆。
         conversation.v1.StopDebateReply:
             type: object
             properties:
@@ -6818,6 +7136,9 @@ components:
                 last_recalled_at:
                     type: string
                     description: 最近一次被召回时间；null = 从未被召回
+                session_id:
+                    type: string
+                    description: 来源会话 ID（会话归档写入时有值，手动写入为空）
             description: LongTermMemory 长期记忆（MySQL 权威记录）。
         memory.v1.MemoryAnswer:
             type: object
@@ -6991,6 +7312,9 @@ components:
                     type: boolean
                 expired:
                     type: boolean
+                session_id:
+                    type: string
+                    description: 来源会话 ID（会话总结类记忆有值）
                 rule_name:
                     type: string
                     description: 提取来源规则名
@@ -7040,6 +7364,9 @@ components:
                 graph:
                     type: boolean
                     description: 是否同时写入图谱，缺省用配置默认值
+                session_id:
+                    type: string
+                    description: 来源会话 ID：会话归档写入时带上次结束的会话 ID，便于从记忆反查对话
         memory.v1.RememberResult:
             type: object
             properties:
@@ -7582,6 +7909,13 @@ components:
                 cached:
                     type: boolean
                     description: 命中 Redis 缓存时为 true
+                filtered_out:
+                    type: integer
+                    description: 被分数线滤掉的命中数（RRF 绝对线 + LLM 预审 + rerank 下限累计）
+                    format: int32
+                no_context:
+                    type: boolean
+                    description: 候选全被过滤或范围外：answer 固定为「知识库暂无相关资料」，前端应展示空态
             description: Answer 混合检索问答结果。
         rag.v1.DeleteDocReply:
             type: object
@@ -7600,6 +7934,34 @@ components:
                 graph_warning:
                     type: string
                     description: 图谱清理失败时的告警（向量与元数据已删除）
+        rag.v1.DocContentReply:
+            type: object
+            properties:
+                doc_id:
+                    type: string
+                source:
+                    type: string
+                mode:
+                    type: string
+                status:
+                    type: string
+                chunks:
+                    type: integer
+                    description: 实际返回的分块数
+                    format: int32
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/rag.v1.Hit'
+                graph_entities:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/rag.v1.GraphEntity'
+                    description: 图谱侧内容（仅图谱 / 双索引文档返回；仅向量文档为空集）
+                graph_relations:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/rag.v1.GraphRelation'
         rag.v1.Document:
             type: object
             properties:
@@ -7640,6 +8002,11 @@ components:
                     description: 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
                 tenant_id:
                     type: string
+                space_id:
+                    type: string
+                    description: |-
+                        所属知识空间（V2）：保留空间（system/tenant/user 映射）或自定义空间。
+                         空间树的成员与授权决定可见性，见 /api/v2/spaces。
             description: Document 文档元数据（MySQL rag_documents 为权威数据源）。
         rag.v1.Entity:
             type: object
@@ -7705,6 +8072,22 @@ components:
                 cached:
                     type: boolean
             description: GraphAnswer 图谱问答结果。
+        rag.v1.GraphEntity:
+            type: object
+            properties:
+                name:
+                    type: string
+                type:
+                    type: string
+                description:
+                    type: string
+                freq:
+                    type: integer
+                    description: 被多少个分块引用
+                    format: int32
+            description: |-
+                DocContentReply 文档原文：chunks 按向量库中的分块原文返回（未建向量索引的文档为空）。
+                 GraphEntity 文档贡献的图谱实体（详情弹层「图谱」Tag 展示）
         rag.v1.GraphQueryRequest:
             required:
                 - question
@@ -7712,6 +8095,21 @@ components:
             properties:
                 question:
                     type: string
+        rag.v1.GraphRelation:
+            type: object
+            properties:
+                source:
+                    type: string
+                target:
+                    type: string
+                relation:
+                    type: string
+                description:
+                    type: string
+                weight:
+                    type: number
+                    format: double
+            description: GraphRelation 文档贡献的图谱关系边
         rag.v1.HealthReply:
             type: object
             properties:
@@ -7763,6 +8161,9 @@ components:
                     description: |-
                         知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
                          tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
+                space_id:
+                    type: string
+                    description: 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权。
         rag.v1.IngestResult:
             type: object
             properties:
@@ -7799,7 +8200,33 @@ components:
                         本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
                          先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
                     format: int32
+                graph_error:
+                    type: string
+                    description: |-
+                        非空 = 双索引部分成功：向量索引已就绪（mode 降级为 rag、状态 ready），
+                         仅图谱抽取失败；稍后可用同步索引（补图谱）补齐
             description: IngestResult 入库结果（RAG 与 GraphRAG 共用）。
+        rag.v1.IngestUrlRequest:
+            required:
+                - url
+            type: object
+            properties:
+                url:
+                    type: string
+                    description: 目标网页地址（http/https；出站策略校验，私网地址需在白名单）
+                doc_id:
+                    type: string
+                    description: 留空自动生成 doc-{yyyymmddHHMMSS}
+                source:
+                    type: string
+                    description: 留空取 URL host+path
+                mode:
+                    type: string
+                    description: rag（默认，向量）| graph（图谱）| both（双索引）
+                space_id:
+                    type: string
+                    description: 目标知识空间：留空按 scope 落到个人保留空间；指定时要求对空间有管理权
+            description: IngestUrlRequest 在线 URL 导入：服务端拉取网页正文并入库。
         rag.v1.ListDocsReply:
             type: object
             properties:
@@ -7960,6 +8387,69 @@ components:
             properties:
                 deleted:
                     type: boolean
+        skill.v1.DeleteSkillInstanceReply:
+            type: object
+            properties:
+                deleted:
+                    type: boolean
+        skill.v1.ExecuteSkillReply:
+            type: object
+            properties:
+                execution_id:
+                    type: string
+                skill_name:
+                    type: string
+                mode:
+                    type: string
+                status:
+                    type: string
+                output:
+                    type: string
+                    description: 输出 JSON 原文
+                text:
+                    type: string
+                    description: 供 LLM 消费的文本视图
+                worker_id:
+                    type: string
+                attempts:
+                    type: integer
+                    format: int32
+                latency_ms:
+                    type: string
+                replayed:
+                    type: boolean
+                    description: 命中幂等键，回放的是上次结果
+                queued:
+                    type: boolean
+                    description: 异步模式：已入队
+            description: ExecuteSkillReply 执行结果。
+        skill.v1.ExecuteSkillRequest:
+            required:
+                - name
+            type: object
+            properties:
+                name:
+                    type: string
+                input:
+                    type: string
+                    description: 参数 JSON 对象字符串（按技能的 input_schema 生成）
+                task_id:
+                    type: string
+                    description: 关联任务（任务内调用时用于链路聚合）
+                purpose:
+                    type: string
+                    description: 用途说明（local 模式注入上下文）
+                idempotency_key:
+                    type: string
+                    description: 幂等键：同一键的重复调用回放上次成功结果
+                async:
+                    type: boolean
+                    description: 强制异步（仅对 remote 技能有意义）
+                timeout_sec:
+                    type: integer
+                    description: 覆盖技能配置的超时（秒）
+                    format: int32
+            description: ExecuteSkillRequest 执行技能（统一入口：local 返回 SKILL.md，remote 等结果，async 返回执行 ID）。
         skill.v1.File:
             type: object
             properties:
@@ -7972,6 +8462,29 @@ components:
                     type: integer
                     format: int32
             description: File 技能附带文件。
+        skill.v1.HeartbeatSkillInstanceReply:
+            type: object
+            properties:
+                ok:
+                    type: boolean
+        skill.v1.HeartbeatSkillInstanceRequest:
+            required:
+                - name
+                - id
+            type: object
+            properties:
+                name:
+                    type: string
+                id:
+                    type: string
+                inflight:
+                    type: integer
+                    format: int32
+                latency_ms:
+                    type: string
+                status:
+                    type: string
+                    description: online | draining
         skill.v1.Hub:
             type: object
             properties:
@@ -8084,6 +8597,10 @@ components:
                 enabled:
                     type: boolean
                     description: 缺省 true
+                execution:
+                    allOf:
+                        - $ref: '#/components/schemas/skill.v1.SkillExecutionSpec'
+                    description: 执行配置：缺省 local（只注入 SKILL.md）
         skill.v1.ListHubsReply:
             type: object
             properties:
@@ -8091,6 +8608,26 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/skill.v1.Hub'
+                total:
+                    type: integer
+                    format: int32
+        skill.v1.ListSkillExecutionsReply:
+            type: object
+            properties:
+                executions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/skill.v1.SkillExecution'
+                total:
+                    type: integer
+                    format: int32
+        skill.v1.ListSkillInstancesReply:
+            type: object
+            properties:
+                instances:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/skill.v1.SkillInstance'
                 total:
                     type: integer
                     format: int32
@@ -8104,6 +8641,34 @@ components:
                 total:
                     type: integer
                     format: int32
+        skill.v1.RegisterSkillInstanceRequest:
+            required:
+                - name
+                - endpoint
+            type: object
+            properties:
+                name:
+                    type: string
+                id:
+                    type: string
+                    description: Worker 自报的唯一标识，缺省用 endpoint
+                endpoint:
+                    type: string
+                version:
+                    type: string
+                region:
+                    type: string
+                labels:
+                    type: array
+                    items:
+                        type: string
+                weight:
+                    type: integer
+                    format: int32
+                max_concurrency:
+                    type: integer
+                    format: int32
+            description: RegisterSkillInstanceRequest Worker 自注册（同 id 重复注册 = 更新）。
         skill.v1.SearchHubSkillsReply:
             type: object
             properties:
@@ -8114,6 +8679,15 @@ components:
                 total:
                     type: integer
                     format: int32
+        skill.v1.SetSkillExecutionRequest:
+            required:
+                - name
+            type: object
+            properties:
+                name:
+                    type: string
+                execution:
+                    $ref: '#/components/schemas/skill.v1.SkillExecutionSpec'
         skill.v1.Skill:
             type: object
             properties:
@@ -8133,7 +8707,7 @@ components:
                         type: string
                 source:
                     type: string
-                    description: hub | upload | builtin
+                    description: hub | upload | builtin | url
                 source_url:
                     type: string
                 enabled:
@@ -8158,7 +8732,103 @@ components:
                     type: string
                 updated_at:
                     type: string
+                execution:
+                    allOf:
+                        - $ref: '#/components/schemas/skill.v1.SkillExecutionSpec'
+                    description: 执行配置（V2 运行时）
             description: Skill 技能。
+        skill.v1.SkillExecution:
+            type: object
+            properties:
+                id:
+                    type: string
+                task_id:
+                    type: string
+                skill_name:
+                    type: string
+                skill_version:
+                    type: string
+                mode:
+                    type: string
+                    description: local | remote | async
+                status:
+                    type: string
+                    description: queued | running | succeeded | failed | timeout | canceled
+                tenant_id:
+                    type: string
+                user_id:
+                    type: string
+                agent_key:
+                    type: string
+                session_id:
+                    type: string
+                idempotency_key:
+                    type: string
+                input:
+                    type: string
+                    description: 输入 / 输出 JSON 原文
+                output:
+                    type: string
+                error:
+                    type: string
+                worker_id:
+                    type: string
+                attempts:
+                    type: integer
+                    format: int32
+                latency_ms:
+                    type: string
+                trace_id:
+                    type: string
+                queued_at:
+                    type: string
+                started_at:
+                    type: string
+                finished_at:
+                    type: string
+                created_at:
+                    type: string
+            description: SkillExecution 一次技能执行记录。
+        skill.v1.SkillExecutionSpec:
+            type: object
+            properties:
+                mode:
+                    type: string
+                    description: local | remote | async，缺省 local
+                protocol:
+                    type: string
+                    description: 远程协议，目前支持 http
+                endpoint:
+                    type: string
+                    description: 直连地址（单实例部署）；有 Worker 注册实例时优先用实例
+                input_schema:
+                    type: string
+                    description: 参数 JSON Schema 原文（进 Agent 能力描述，供 LLM 生成参数）
+                output_schema:
+                    type: string
+                timeout_sec:
+                    type: integer
+                    description: 单次调用超时（秒），0 取默认值（remote 60 / async 300）
+                    format: int32
+                retry:
+                    type: integer
+                    description: 失败重试次数（换实例重试）
+                    format: int32
+                concurrency:
+                    type: integer
+                    description: 单实例并发上限
+                    format: int32
+                idempotent:
+                    type: boolean
+                    description: 是否按幂等键去重（同键成功结果回放）
+                required_scopes:
+                    type: array
+                    items:
+                        type: string
+                handler:
+                    type: string
+                    description: Worker 侧实现名，缺省等于技能名（改技能名不必改 Worker 代码）
+            description: "SkillExecutionSpec 技能执行配置（V2 运行时）。\r\n\r\n 决定这个技能是「指令包」还是「远程能力」：local 把 SKILL.md 注入上下文，\r\n remote 同步调度到 Worker，async 入队后由派发协程执行。"
         skill.v1.SkillFiles:
             type: object
             properties:
@@ -8175,6 +8845,48 @@ components:
                     items:
                         $ref: '#/components/schemas/skill.v1.File'
             description: SkillFiles 技能文件清单（只含路径与大小）。
+        skill.v1.SkillInstance:
+            type: object
+            properties:
+                id:
+                    type: string
+                skill_name:
+                    type: string
+                endpoint:
+                    type: string
+                version:
+                    type: string
+                region:
+                    type: string
+                labels:
+                    type: array
+                    items:
+                        type: string
+                weight:
+                    type: integer
+                    format: int32
+                max_concurrency:
+                    type: integer
+                    format: int32
+                inflight:
+                    type: integer
+                    format: int32
+                status:
+                    type: string
+                    description: online | draining | offline
+                last_heartbeat:
+                    type: string
+                latency_ms:
+                    type: string
+                failures:
+                    type: integer
+                    description: 连续失败次数（达到阈值熔断）
+                    format: int32
+                successes:
+                    type: string
+                last_error:
+                    type: string
+            description: SkillInstance Skill Worker 实例。
         skill.v1.SkillStats:
             type: object
             properties:

@@ -118,7 +118,7 @@ func (r *SpaceRepo) ListByTenant(ctx context.Context, tenantID string) ([]space.
 	} else {
 		q = q.Where("tenant_id = ?", tenantID)
 	}
-	if err := q.Order("depth ASC, space_id ASC").Find(&rows).Error; err != nil {
+	if err := q.Order("depth ASC, sort_order ASC, created_at ASC, space_id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]space.Space, 0, len(rows))
@@ -133,7 +133,7 @@ func (r *SpaceRepo) ListChildren(ctx context.Context, parentSpaceID string) ([]s
 	var rows []models.KnowledgeSpacePO
 	if err := r.db.WithContext(ctx).
 		Where("parent_space_id = ?", parentSpaceID).
-		Order("space_id ASC").Find(&rows).Error; err != nil {
+		Order("sort_order ASC, created_at ASC, space_id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]space.Space, 0, len(rows))
@@ -156,7 +156,7 @@ func (r *SpaceRepo) ListDescendants(ctx context.Context, spaceID string) ([]spac
 	var rows []models.KnowledgeSpacePO
 	if err := r.db.WithContext(ctx).
 		Where("path = ? OR path LIKE ?", prefix, prefix+"/%").
-		Order("depth ASC, space_id ASC").Find(&rows).Error; err != nil {
+		Order("depth ASC, sort_order ASC, created_at ASC, space_id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]space.Space, 0, len(rows))
@@ -179,6 +179,28 @@ func (r *SpaceRepo) UpdatePathPrefix(ctx context.Context, oldPrefix, newPrefix s
 			"WHERE path = ? OR path LIKE ?",
 		newPrefix, len(oldPrefix)+1, delta, oldPrefix, oldPrefix+"/%",
 	).Error
+}
+
+// UpdateSortOrders 兄弟空间排序：orderedIDs 顺序即展示顺序（sort_order = 下标）。
+// 事务内逐行写，保证一次排序要么全生效要么全不生效；updated_at 不动（排序不算内容变更）。
+func (r *SpaceRepo) UpdateSortOrders(ctx context.Context, orderedIDs []string) error {
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i, id := range orderedIDs {
+			res := tx.Model(&models.KnowledgeSpacePO{}).
+				Where("space_id = ?", id).
+				Update("sort_order", i)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return fmt.Errorf("%w: %s", space.ErrNotFound, id)
+			}
+		}
+		return nil
+	})
 }
 
 // AddShare 新增共享。

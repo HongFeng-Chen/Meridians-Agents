@@ -1,41 +1,82 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { skill } from '../api.js';
 import { Alert, Badge, EmptyState, FormDrawer, Pagination, Panel, Spinner, StatCard, usePagedList } from '../components/UI.jsx';
 import HistoryPanel from '../components/HistoryPanel.jsx';
+import SkillDetailDrawer from '../components/SkillDetailDrawer.jsx';
+import SkillExecutionDrawer from '../components/SkillExecutionDrawer.jsx';
+import SkillRunDrawer from '../components/SkillRunDrawer.jsx';
+import {
+  EXEC_LABELS,
+  EXEC_STATUS_OPTIONS,
+  MODE_LABELS,
+  MODE_TONES,
+  execTone,
+  fmtLatency,
+  isExecutableMode,
+  shortTime,
+} from '../components/skillRuntime.js';
 import { IconBox, IconRefresh, IconSearch, IconTrash } from '../components/Icons.jsx';
 
 const TABS = [
   { key: 'installed', label: '已安装' },
+  { key: 'executions', label: '执行记录' },
   { key: 'market', label: '技能市场' },
   { key: 'hubs', label: '市场配置' },
 ];
 
+const MODE_FILTERS = [
+  { key: '', label: '全部' },
+  { key: 'local', label: '本地' },
+  { key: 'remote', label: '远程' },
+  { key: 'async', label: '异步' },
+];
+
+const EMPTY_EXEC_FILTER = { skill: '', status: '', task_id: '' };
+
+// 技能页面 = 技能清单 + 运行时操作台。
+//
+// 技能不再只是「一段 SKILL.md」：远程/异步技能有执行配置、Worker 实例和执行账本，
+// 所以这里除了增删启停，还要能改执行配置、盯实例状态、手动试跑和查执行历史。
 export default function Skills() {
   const [tab, setTab] = useState('installed');
   const [stats, setStats] = useState(null);
   const [skills, setSkills] = useState([]);
   const [hubs, setHubs] = useState([]);
-  const [detail, setDetail] = useState(null);
-  const [files, setFiles] = useState(null);
-  const [fileBody, setFileBody] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
+
+  // 详情抽屉
+  const [detail, setDetail] = useState(null);
+  const [files, setFiles] = useState(null);
+
+  // 试跑 / 执行详情
+  const [runTarget, setRunTarget] = useState(null);
+  const [runInput, setRunInput] = useState('');
+  const [execId, setExecId] = useState('');
+  const [execInitial, setExecInitial] = useState(null);
+
+  // 已安装筛选
+  const [modeFilter, setModeFilter] = useState('');
+  const [keyword, setKeyword] = useState('');
+
+  // 执行记录
+  const [execFilters, setExecFilters] = useState(EMPTY_EXEC_FILTER);
+  const [execRows, setExecRows] = useState([]);
+  const [execLoading, setExecLoading] = useState(false);
+  const [execError, setExecError] = useState('');
+
+  // 安装表单
   const [form, setForm] = useState({ name: '', version: '1.0.0', content: '', files: '' });
   const [showForm, setShowForm] = useState(false);
-  // 从 URL 安装：没有市场 API、只给下载链接的分发方式（千问技能包 / 内部归档）
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [urlForm, setUrlForm] = useState({ url: '', name: '', version: '', token: '', enable: true });
 
   // 市场
-  const [keyword, setKeyword] = useState('');
   const [hubName, setHubName] = useState('');
+  const [marketKeyword, setMarketKeyword] = useState('');
   const [market, setMarket] = useState([]);
-
-  // 分页：已安装技能 / 市场搜索结果（searchSeq 变化时回到第 1 页）
   const [searchSeq, setSearchSeq] = useState(0);
-  const instPg = usePagedList(skills, { size: 10, resetKey: tab });
-  const mktPg = usePagedList(market, { size: 10, resetKey: searchSeq });
 
   const load = useCallback(async () => {
     setError('');
@@ -57,6 +98,28 @@ export default function Skills() {
     load();
   }, [load]);
 
+  const loadExecutions = useCallback(async () => {
+    setExecLoading(true);
+    setExecError('');
+    try {
+      const res = await skill.listSkillExecutions({
+        skill: execFilters.skill,
+        status: execFilters.status,
+        task_id: execFilters.task_id.trim(),
+        limit: 200,
+      });
+      setExecRows(res.executions || []);
+    } catch (err) {
+      setExecError(err.message);
+    } finally {
+      setExecLoading(false);
+    }
+  }, [execFilters]);
+
+  useEffect(() => {
+    if (tab === 'executions') loadExecutions();
+  }, [tab, loadExecutions]);
+
   const act = async (tag, fn, okText) => {
     setBusy(tag);
     setError('');
@@ -72,10 +135,41 @@ export default function Skills() {
     }
   };
 
+  const filteredSkills = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return skills.filter((s) => {
+      const mode = s.execution?.mode || 'local';
+      if (modeFilter && mode !== modeFilter) return false;
+      if (!kw) return true;
+      return [s.name, s.title, s.description, s.category, ...(s.tags || [])]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(kw));
+    });
+  }, [skills, modeFilter, keyword]);
+
+  const instPg = usePagedList(filteredSkills, { size: 10, resetKey: `${modeFilter}|${keyword}` });
+  const execPg = usePagedList(execRows, { size: 20, resetKey: JSON.stringify(execFilters) });
+  const mktPg = usePagedList(market, { size: 10, resetKey: searchSeq });
+
+  const modeCount = useMemo(() => {
+    let local = 0;
+    let executable = 0;
+    for (const s of skills) {
+      if (isExecutableMode(s.execution?.mode)) executable += 1;
+      else local += 1;
+    }
+    return { local, executable };
+  }, [skills]);
+
+  const execSummary = useMemo(() => {
+    const pending = execRows.filter((e) => e.status === 'queued' || e.status === 'running').length;
+    const failed = execRows.filter((e) => e.status === 'failed' || e.status === 'timeout').length;
+    return { pending, failed };
+  }, [execRows]);
+
   const openDetail = async (name) => {
-    setDetail(null);
     setFiles(null);
-    setFileBody(null);
+    setError('');
     try {
       const [sk, fl] = await Promise.all([skill.getSkill({ name }), skill.listSkillFiles({ name })]);
       setDetail(sk);
@@ -85,20 +179,40 @@ export default function Skills() {
     }
   };
 
-  const readFile = async (name, path) => {
-    setFileBody(null);
+  const openRun = (target, input = '') => {
+    setRunInput(input);
+    setRunTarget(target);
+  };
+
+  // 从执行记录重跑：把原来的 input 原样带回试跑抽屉
+  const rerun = (exec) => {
+    const target = skills.find((s) => s.name === exec.skill_name) || {
+      name: exec.skill_name,
+      title: exec.skill_name,
+      execution: { mode: exec.mode },
+    };
+    let text = exec.input || '{}';
     try {
-      setFileBody(await skill.readSkillFile({ name, path }));
-    } catch (err) {
-      setError(err.message);
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      // 保留原始文本
     }
+    setExecId('');
+    setExecInitial(null);
+    openRun(target, text);
+  };
+
+  const openExecutionsFor = (skillName) => {
+    setDetail(null);
+    setExecFilters({ ...EMPTY_EXEC_FILTER, skill: skillName || '' });
+    setTab('executions');
   };
 
   const search = async () => {
     setBusy('search');
     setError('');
     try {
-      const res = await skill.searchHubSkills({ q: keyword, hub: hubName, limit: 50 });
+      const res = await skill.searchHubSkills({ q: marketKeyword, hub: hubName, limit: 50 });
       setMarket(res.skills || []);
       setSearchSeq((v) => v + 1);
       if (!res.skills?.length) setNotice('没有搜索到技能，确认市场地址与网络');
@@ -130,7 +244,6 @@ export default function Skills() {
     );
   };
 
-  // 从 URL 安装：后端按响应形态分流——zip 走包内结构、单文件当 SKILL.md、JSON 按字段解析
   const installFromURL = async () => {
     await act(
       'url-install',
@@ -152,10 +265,10 @@ export default function Skills() {
   return (
     <div className="stack">
       <div className="stat-grid">
-        <StatCard label="技能总数" value={stats?.skills ?? 0} hint="MySQL skills" tone="blue" />
-        <StatCard label="已启用" value={stats?.enabled ?? 0} hint="可落盘给运行时读取" tone="teal" />
-        <StatCard label="技能市场" value={stats?.hubs ?? 0} hint="skill_hubs" tone="indigo" />
-        <StatCard label="已安装" value={instPg.total} hint={`每页 ${instPg.size} 条 · 共 ${instPg.pages} 页`} tone="violet" />
+        <StatCard label="技能总数" value={skills.length || stats?.skills || 0} hint="MySQL skills" tone="blue" />
+        <StatCard label="已启用" value={stats?.enabled ?? 0} hint="可被 Agent 调用" tone="teal" />
+        <StatCard label="远程 / 异步" value={modeCount.executable} hint="经过 Worker 分布式执行" tone="indigo" />
+        <StatCard label="本地指令包" value={modeCount.local} hint="只注入 SKILL.md" tone="violet" />
       </div>
 
       {error && <Alert type="error">{error}</Alert>}
@@ -165,6 +278,7 @@ export default function Skills() {
         {TABS.map((t) => (
           <button key={t.key} type="button" className={`tab${tab === t.key ? ' active' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}
+            {t.key === 'executions' && execRows.length > 0 && <span className="tab-count">{execRows.length}</span>}
           </button>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
@@ -182,7 +296,7 @@ export default function Skills() {
           >
             落盘同步
           </button>
-          <button className="btn ghost sm" type="button" onClick={load}>
+          <button className="btn ghost sm" type="button" onClick={() => (tab === 'executions' ? loadExecutions() : load())}>
             <IconRefresh size={15} /> 刷新
           </button>
         </div>
@@ -192,7 +306,7 @@ export default function Skills() {
         <>
           <Panel
             title="技能列表"
-            desc="同名视为升级；启停即时生效"
+            desc="同名视为升级；启停即时生效；远程/异步技能可试跑并查看落点 Worker"
             actions={
               <>
                 <button className="btn ghost sm" type="button" onClick={() => setShowUrlForm((v) => !v)}>
@@ -204,8 +318,34 @@ export default function Skills() {
               </>
             }
           >
-            {skills.length === 0 ? (
-              <EmptyState icon={IconBox} title="暂无技能" desc="可从技能市场安装，或手动粘贴 SKILL.md" />
+            <div className="query-row" style={{ marginBottom: 12 }}>
+              <div className="chips">
+                {MODE_FILTERS.map((f) => (
+                  <button
+                    key={f.key || 'all'}
+                    type="button"
+                    className={`chip${modeFilter === f.key ? ' active' : ''}`}
+                    onClick={() => setModeFilter(f.key)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <label className="field inline" style={{ maxWidth: 280 }}>
+                <input
+                  className="input sm"
+                  placeholder="按名称 / 标题 / 标签过滤"
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                />
+              </label>
+              <span className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>
+                共 {filteredSkills.length} 个
+              </span>
+            </div>
+
+            {filteredSkills.length === 0 ? (
+              <EmptyState icon={IconBox} title="没有匹配的技能" desc="换个筛选条件，或从技能市场安装 / 手动粘贴 SKILL.md" />
             ) : (
               <div className="table-wrap">
                 <table className="table">
@@ -214,65 +354,87 @@ export default function Skills() {
                       <th>名称</th>
                       <th>版本</th>
                       <th>来源</th>
+                      <th>模式</th>
                       <th className="num">文件</th>
                       <th>状态</th>
                       <th className="num">操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {instPg.paged.map((s) => (
-                      <tr key={s.name} className={s.name === detail?.name ? 'row-active' : ''}>
-                        <td className="mono">
-                          {s.name}
-                          {s.category && <Badge>{s.category}</Badge>}
-                        </td>
-                        <td className="mono">{s.version || '—'}</td>
-                        <td>{s.source}</td>
-                        <td className="num">{s.file_count}</td>
-                        <td>{s.enabled ? <Badge tone="ok">启用</Badge> : <Badge tone="warn">停用</Badge>}</td>
-                        <td className="num">
-                          <button className="btn ghost sm" type="button" onClick={() => openDetail(s.name)}>
-                            查看
-                          </button>
-                          <button
-                            className="btn ghost sm"
-                            type="button"
-                            disabled={!s.enabled}
-                            title="返回技能内容并落一条使用历史（可在「调用历史」页查看）"
-                            onClick={() =>
-                              act(
-                                `u-${s.name}`,
-                                () => skill.useSkill({ name: s.name, purpose: 'console 手动使用' }),
-                                `${s.name} 已记录一次使用`,
-                              )
-                            }
-                          >
-                            使用
-                          </button>
-                          <button
-                            className="btn ghost sm"
-                            type="button"
-                            onClick={() =>
-                              act(
-                                `t-${s.name}`,
-                                () => (s.enabled ? skill.disableSkill({ name: s.name }) : skill.enableSkill({ name: s.name })),
-                                `${s.name} 已${s.enabled ? '停用' : '启用'}`,
-                              )
-                            }
-                          >
-                            {s.enabled ? '停用' : '启用'}
-                          </button>
-                          <button
-                            className="btn danger sm"
-                            type="button"
-                            disabled={busy === `d-${s.name}`}
-                            onClick={() => act(`d-${s.name}`, () => skill.uninstallSkill({ name: s.name }), `${s.name} 已卸载`)}
-                          >
-                            {busy === `d-${s.name}` ? <Spinner text="卸载" /> : <IconTrash size={14} />}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {instPg.paged.map((s) => {
+                      const mode = s.execution?.mode || 'local';
+                      return (
+                        <tr key={s.name} className={s.name === detail?.name ? 'row-active' : ''}>
+                          <td>
+                            <div className="cell-main mono">{s.name}</div>
+                            <div className="cell-sub">
+                              {s.title || '—'}
+                              {s.category ? ` · ${s.category}` : ''}
+                            </div>
+                          </td>
+                          <td className="mono">{s.version || '—'}</td>
+                          <td>{s.source}</td>
+                          <td>
+                            <span className={`badge ${MODE_TONES[mode]}`}>{MODE_LABELS[mode]}</span>
+                            {isExecutableMode(mode) && s.execution?.handler && (
+                              <div className="cell-sub mono">handler={s.execution.handler}</div>
+                            )}
+                          </td>
+                          <td className="num">{s.file_count}</td>
+                          <td>{s.enabled ? <Badge tone="ok">启用</Badge> : <Badge tone="warn">停用</Badge>}</td>
+                          <td className="num">
+                            <button className="btn ghost sm" type="button" onClick={() => openDetail(s.name)}>
+                              查看
+                            </button>
+                            <button
+                              className="btn ghost sm"
+                              type="button"
+                              disabled={!s.enabled}
+                              title={isExecutableMode(mode) ? '按当前执行配置真实调用一次' : '本地模式：返回 SKILL.md 内容'}
+                              onClick={() => openRun(s)}
+                            >
+                              试跑
+                            </button>
+                            <button
+                              className="btn ghost sm"
+                              type="button"
+                              disabled={!s.enabled}
+                              title="返回技能内容并落一条使用历史（可在「技能使用历史」查看）"
+                              onClick={() =>
+                                act(
+                                  `u-${s.name}`,
+                                  () => skill.useSkill({ name: s.name, purpose: 'console 手动使用' }),
+                                  `${s.name} 已记录一次使用`,
+                                )
+                              }
+                            >
+                              使用
+                            </button>
+                            <button
+                              className="btn ghost sm"
+                              type="button"
+                              onClick={() =>
+                                act(
+                                  `t-${s.name}`,
+                                  () => (s.enabled ? skill.disableSkill({ name: s.name }) : skill.enableSkill({ name: s.name })),
+                                  `${s.name} 已${s.enabled ? '停用' : '启用'}`,
+                                )
+                              }
+                            >
+                              {s.enabled ? '停用' : '启用'}
+                            </button>
+                            <button
+                              className="btn danger sm"
+                              type="button"
+                              disabled={busy === `d-${s.name}`}
+                              onClick={() => act(`d-${s.name}`, () => skill.uninstallSkill({ name: s.name }), `${s.name} 已卸载`)}
+                            >
+                              {busy === `d-${s.name}` ? <Spinner text="卸载" /> : <IconTrash size={14} />}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -282,55 +444,58 @@ export default function Skills() {
 
             {showForm && (
               <FormDrawer title="手动安装技能" desc="粘贴 SKILL.md 内容；同名视为升级" onClose={() => setShowForm(false)}>
-              <div className="form">
-                <div className="query-row">
-                  <label className="field inline">
-                    <span className="field-label">名称（小写字母/数字开头）</span>
-                    <input
-                      className="input mono"
-                      value={form.name}
-                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                <div className="form">
+                  <div className="query-row">
+                    <label className="field inline">
+                      <span className="field-label">名称（小写字母/数字开头）</span>
+                      <input
+                        className="input mono"
+                        value={form.name}
+                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      />
+                    </label>
+                    <label className="field inline">
+                      <span className="field-label">版本</span>
+                      <input
+                        className="input mono"
+                        value={form.version}
+                        onChange={(e) => setForm({ ...form, version: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <label className="field">
+                    <span className="field-label">SKILL.md 内容</span>
+                    <textarea
+                      className="textarea mono"
+                      rows={6}
+                      value={form.content}
+                      onChange={(e) => setForm({ ...form, content: e.target.value })}
                     />
                   </label>
-                  <label className="field inline">
-                    <span className="field-label">版本</span>
-                    <input
-                      className="input mono"
-                      value={form.version}
-                      onChange={(e) => setForm({ ...form, version: e.target.value })}
+                  <label className="field">
+                    <span className="field-label">附加文件（JSON 数组，可选）</span>
+                    <textarea
+                      className="textarea mono"
+                      rows={3}
+                      placeholder='[{"path":"scripts/run.py","content":"print(1)"}]'
+                      value={form.files}
+                      onChange={(e) => setForm({ ...form, files: e.target.value })}
                     />
                   </label>
+                  <div className="form-actions">
+                    <button
+                      className="btn primary sm"
+                      type="button"
+                      onClick={install}
+                      disabled={!form.name || (!form.content && !form.files) || busy === 'install'}
+                    >
+                      {busy === 'install' ? <Spinner text="安装中" /> : '安装'}
+                    </button>
+                    <span className="muted" style={{ fontSize: 12.5 }}>
+                      安装后到技能详情里可以把执行模式改成远程或异步
+                    </span>
+                  </div>
                 </div>
-                <label className="field">
-                  <span className="field-label">SKILL.md 内容</span>
-                  <textarea
-                    className="textarea mono"
-                    rows={6}
-                    value={form.content}
-                    onChange={(e) => setForm({ ...form, content: e.target.value })}
-                  />
-                </label>
-                <label className="field">
-                  <span className="field-label">附加文件（JSON 数组，可选）</span>
-                  <textarea
-                    className="textarea mono"
-                    rows={3}
-                    placeholder='[{"path":"scripts/run.py","content":"print(1)"}]'
-                    value={form.files}
-                    onChange={(e) => setForm({ ...form, files: e.target.value })}
-                  />
-                </label>
-                <div className="form-actions">
-                  <button
-                    className="btn primary sm"
-                    type="button"
-                    onClick={install}
-                    disabled={!form.name || (!form.content && !form.files) || busy === 'install'}
-                  >
-                    {busy === 'install' ? <Spinner text="安装中" /> : '安装'}
-                  </button>
-                </div>
-              </div>
               </FormDrawer>
             )}
 
@@ -406,44 +571,6 @@ export default function Skills() {
             )}
           </Panel>
 
-          {detail && (
-            <Panel
-              title={`${detail.title || detail.name}`}
-              desc={detail.description || '无描述'}
-              actions={<Badge tone="indigo">{detail.source}</Badge>}
-            >
-              <div className="grid-2 align-start">
-                <div>
-                  <div className="field-label">文件清单</div>
-                  <ul className="list-reset">
-                    <li>
-                      <button className="btn ghost sm" type="button" onClick={() => readFile(detail.name, 'SKILL.md')}>
-                        SKILL.md
-                      </button>
-                      <span className="muted mono" style={{ marginLeft: 'auto' }}>
-                        {files?.size ?? '—'} B
-                      </span>
-                    </li>
-                    {(files?.files || []).map((f) => (
-                      <li key={f.path}>
-                        <button className="btn ghost sm" type="button" onClick={() => readFile(detail.name, f.path)}>
-                          {f.path}
-                        </button>
-                        <span className="muted mono" style={{ marginLeft: 'auto' }}>
-                          {f.size} B
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <div className="field-label">{fileBody ? fileBody.path : '文件内容'}</div>
-                  <pre className="block mono">{fileBody ? fileBody.content : '点击左侧文件查看内容'}</pre>
-                </div>
-              </div>
-            </Panel>
-          )}
-
           <HistoryPanel
             kind="skill_use"
             title="技能使用历史"
@@ -452,6 +579,129 @@ export default function Skills() {
             emptyDesc="点技能行上的「使用」按钮后，这里会留下记录；Agent 任务内的使用会带上任务号"
           />
         </>
+      )}
+
+      {tab === 'executions' && (
+        <Panel
+          title="执行记录"
+          desc="远程/异步技能的执行账本：排队、落点、尝试次数与耗时都在这；本地模式不记录"
+          actions={
+            <>
+              <select
+                className="input sm"
+                value={execFilters.skill}
+                onChange={(e) => setExecFilters({ ...execFilters, skill: e.target.value })}
+              >
+                <option value="">全部技能</option>
+                {skills
+                  .filter((s) => isExecutableMode(s.execution?.mode))
+                  .map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+              <input
+                className="input sm"
+                style={{ maxWidth: 140 }}
+                placeholder="任务号"
+                value={execFilters.task_id}
+                onChange={(e) => setExecFilters({ ...execFilters, task_id: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && loadExecutions()}
+              />
+              <button className="btn ghost sm" type="button" onClick={loadExecutions} disabled={execLoading}>
+                {execLoading ? <Spinner text="查询" /> : '查询'}
+              </button>
+            </>
+          }
+        >
+          <div className="query-row" style={{ marginBottom: 12 }}>
+            <div className="chips">
+              <button
+                type="button"
+                className={`chip${execFilters.status === '' ? ' active' : ''}`}
+                onClick={() => setExecFilters({ ...execFilters, status: '' })}
+              >
+                全部状态
+              </button>
+              {EXEC_STATUS_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`chip${execFilters.status === s ? ' active' : ''}`}
+                  onClick={() => setExecFilters({ ...execFilters, status: s })}
+                >
+                  {EXEC_LABELS[s]}
+                </button>
+              ))}
+            </div>
+            <span className="muted" style={{ fontSize: 12.5, marginBottom: 6 }}>
+              最近 {execRows.length} 条 · 排队/执行中 {execSummary.pending} · 失败/超时 {execSummary.failed}
+            </span>
+          </div>
+
+          {execError && <Alert type="error">{execError}</Alert>}
+
+          {!execLoading && execRows.length === 0 ? (
+            <EmptyState
+              icon={IconBox}
+              title="没有执行记录"
+              desc="远程/异步技能被 Agent 调用或手动试跑后，会在这里留下账本；本地技能只注入 SKILL.md，不记录"
+            />
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>执行 ID</th>
+                    <th>技能</th>
+                    <th>模式</th>
+                    <th>状态</th>
+                    <th>任务</th>
+                    <th>落点</th>
+                    <th className="num">尝试</th>
+                    <th className="num">耗时</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {execPg.paged.map((e) => (
+                    <tr
+                      key={e.id}
+                      className="row-click"
+                      onClick={() => {
+                        setExecInitial(e);
+                        setExecId(e.id);
+                      }}
+                    >
+                      <td className="mono" style={{ fontSize: 12 }}>{e.id}</td>
+                      <td className="mono">{e.skill_name}</td>
+                      <td>
+                        <span className={`badge ${MODE_TONES[e.mode] || 'default'}`}>{MODE_LABELS[e.mode] || e.mode}</span>
+                      </td>
+                      <td>
+                        <span className={`badge ${execTone(e.status)}`}>{EXEC_LABELS[e.status] || e.status}</span>
+                        {e.error && <div className="cell-sub ellipsis" title={e.error}>{e.error}</div>}
+                      </td>
+                      <td className="mono">{e.task_id || '—'}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>{e.worker_id || '—'}</td>
+                      <td className="num">{e.attempts || 1}</td>
+                      <td className="num">{fmtLatency(e.latency_ms)}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>{shortTime(e.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <Pagination page={execPg.page} pages={execPg.pages} total={execPg.total} size={execPg.size} onPage={execPg.setPage} onSize={execPg.setSize} />
+          {execRows.length >= 200 && (
+            <div className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>
+              只展示最近 200 条；用技能或任务号筛选可以缩小范围。
+            </div>
+          )}
+        </Panel>
       )}
 
       {tab === 'market' && (
@@ -471,8 +721,8 @@ export default function Skills() {
               <input
                 className="input sm"
                 placeholder="关键字"
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
+                value={marketKeyword}
+                onChange={(e) => setMarketKeyword(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && search()}
               />
               <button className="btn ghost sm" type="button" onClick={search} disabled={busy === 'search'}>
@@ -541,7 +791,7 @@ export default function Skills() {
         <Panel
           title="技能市场配置"
           desc="地址存 MySQL，conf 只做兜底；默认市场用于未指定 hub 的调用"
-          actions={<button className="btn ghost sm" type="button" onClick={() => setTab('hubs')}>刷新</button>}
+          actions={<button className="btn ghost sm" type="button" onClick={load}>刷新</button>}
         >
           <div className="table-wrap">
             <table className="table">
@@ -591,6 +841,52 @@ export default function Skills() {
           </div>
           <HubForm onCreate={(payload) => act('hub', () => skill.createHub(payload), '市场已新增')} busy={busy === 'hub'} />
         </Panel>
+      )}
+
+      {detail && (
+        <SkillDetailDrawer
+          detail={detail}
+          files={files}
+          onClose={() => setDetail(null)}
+          onChanged={load}
+          onRun={openRun}
+          onOpenExecution={(id) => {
+            setExecInitial(null);
+            setExecId(id);
+          }}
+          onOpenAllExecutions={openExecutionsFor}
+        />
+      )}
+
+      {runTarget && (
+        <SkillRunDrawer
+          target={runTarget}
+          initialInput={runInput}
+          onClose={() => {
+            setRunTarget(null);
+            setRunInput('');
+            if (tab === 'executions') loadExecutions();
+          }}
+          onOpenExecution={(id) => {
+            setExecInitial(null);
+            setExecId(id);
+          }}
+        />
+      )}
+
+      {execId && (
+        <SkillExecutionDrawer
+          executionId={execId}
+          initial={execInitial && execInitial.id === execId ? execInitial : null}
+          onClose={() => {
+            setExecId('');
+            setExecInitial(null);
+          }}
+          onRerun={rerun}
+          onChanged={() => {
+            if (tab === 'executions') loadExecutions();
+          }}
+        />
       )}
     </div>
   );

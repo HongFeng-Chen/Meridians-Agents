@@ -43,6 +43,8 @@ const (
 	RagService_ListFormats_FullMethodName     = "/rag.v1.RagService/ListFormats"
 	RagService_ExtractText_FullMethodName     = "/rag.v1.RagService/ExtractText"
 	RagService_UploadAndIngest_FullMethodName = "/rag.v1.RagService/UploadAndIngest"
+	RagService_DocContent_FullMethodName      = "/rag.v1.RagService/DocContent"
+	RagService_IngestUrl_FullMethodName       = "/rag.v1.RagService/IngestUrl"
 )
 
 // RagServiceClient is the client API for RagService service.
@@ -73,6 +75,10 @@ type RagServiceClient interface {
 	ExtractText(ctx context.Context, in *ExtractTextRequest, opts ...grpc.CallOption) (*ExtractTextReply, error)
 	// UploadAndIngest 上传文件并直接入库。
 	UploadAndIngest(ctx context.Context, in *UploadAndIngestRequest, opts ...grpc.CallOption) (*UploadAndIngestReply, error)
+	// DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+	DocContent(ctx context.Context, in *DocContentRequest, opts ...grpc.CallOption) (*DocContentReply, error)
+	// IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+	IngestUrl(ctx context.Context, in *IngestUrlRequest, opts ...grpc.CallOption) (*IngestResult, error)
 }
 
 type ragServiceClient struct {
@@ -193,6 +199,26 @@ func (c *ragServiceClient) UploadAndIngest(ctx context.Context, in *UploadAndIng
 	return out, nil
 }
 
+func (c *ragServiceClient) DocContent(ctx context.Context, in *DocContentRequest, opts ...grpc.CallOption) (*DocContentReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DocContentReply)
+	err := c.cc.Invoke(ctx, RagService_DocContent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ragServiceClient) IngestUrl(ctx context.Context, in *IngestUrlRequest, opts ...grpc.CallOption) (*IngestResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IngestResult)
+	err := c.cc.Invoke(ctx, RagService_IngestUrl_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RagServiceServer is the server API for RagService service.
 // All implementations must embed UnimplementedRagServiceServer
 // for forward compatibility.
@@ -221,6 +247,10 @@ type RagServiceServer interface {
 	ExtractText(context.Context, *ExtractTextRequest) (*ExtractTextReply, error)
 	// UploadAndIngest 上传文件并直接入库。
 	UploadAndIngest(context.Context, *UploadAndIngestRequest) (*UploadAndIngestReply, error)
+	// DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+	DocContent(context.Context, *DocContentRequest) (*DocContentReply, error)
+	// IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+	IngestUrl(context.Context, *IngestUrlRequest) (*IngestResult, error)
 	mustEmbedUnimplementedRagServiceServer()
 }
 
@@ -263,6 +293,12 @@ func (UnimplementedRagServiceServer) ExtractText(context.Context, *ExtractTextRe
 }
 func (UnimplementedRagServiceServer) UploadAndIngest(context.Context, *UploadAndIngestRequest) (*UploadAndIngestReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method UploadAndIngest not implemented")
+}
+func (UnimplementedRagServiceServer) DocContent(context.Context, *DocContentRequest) (*DocContentReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method DocContent not implemented")
+}
+func (UnimplementedRagServiceServer) IngestUrl(context.Context, *IngestUrlRequest) (*IngestResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method IngestUrl not implemented")
 }
 func (UnimplementedRagServiceServer) mustEmbedUnimplementedRagServiceServer() {}
 func (UnimplementedRagServiceServer) testEmbeddedByValue()                    {}
@@ -483,6 +519,42 @@ func _RagService_UploadAndIngest_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RagService_DocContent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DocContentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RagServiceServer).DocContent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RagService_DocContent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RagServiceServer).DocContent(ctx, req.(*DocContentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RagService_IngestUrl_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IngestUrlRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RagServiceServer).IngestUrl(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RagService_IngestUrl_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RagServiceServer).IngestUrl(ctx, req.(*IngestUrlRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RagService_ServiceDesc is the grpc.ServiceDesc for RagService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -533,6 +605,14 @@ var RagService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UploadAndIngest",
 			Handler:    _RagService_UploadAndIngest_Handler,
+		},
+		{
+			MethodName: "DocContent",
+			Handler:    _RagService_DocContent_Handler,
+		},
+		{
+			MethodName: "IngestUrl",
+			Handler:    _RagService_IngestUrl_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

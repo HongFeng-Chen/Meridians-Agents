@@ -18,12 +18,14 @@ var _ = new(context.Context)
 const _ = http.SupportPackageIsVersion3
 
 const OperationRagServiceDeleteDoc = "/rag.v1.RagService/DeleteDoc"
+const OperationRagServiceDocContent = "/rag.v1.RagService/DocContent"
 const OperationRagServiceExtractText = "/rag.v1.RagService/ExtractText"
 const OperationRagServiceGetStats = "/rag.v1.RagService/GetStats"
 const OperationRagServiceGraphIngest = "/rag.v1.RagService/GraphIngest"
 const OperationRagServiceGraphQuery = "/rag.v1.RagService/GraphQuery"
 const OperationRagServiceHealth = "/rag.v1.RagService/Health"
 const OperationRagServiceIngest = "/rag.v1.RagService/Ingest"
+const OperationRagServiceIngestUrl = "/rag.v1.RagService/IngestUrl"
 const OperationRagServiceListDocs = "/rag.v1.RagService/ListDocs"
 const OperationRagServiceListFormats = "/rag.v1.RagService/ListFormats"
 const OperationRagServiceQuery = "/rag.v1.RagService/Query"
@@ -32,6 +34,8 @@ const OperationRagServiceUploadAndIngest = "/rag.v1.RagService/UploadAndIngest"
 type RagServiceHTTPServer interface {
 	// DeleteDoc DeleteDoc 删除文档（向量分块 + 图谱孤儿节点 + 元数据 + 缓存）。
 	DeleteDoc(context.Context, *DeleteDocRequest) (*DeleteDocReply, error)
+	// DocContent DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+	DocContent(context.Context, *DocContentRequest) (*DocContentReply, error)
 	// ExtractText ExtractText 解析文件为纯文本，不入库（前端预览/编辑用）。
 	ExtractText(context.Context, *ExtractTextRequest) (*ExtractTextReply, error)
 	// GetStats GetStats 系统概览。
@@ -44,6 +48,8 @@ type RagServiceHTTPServer interface {
 	Health(context.Context, *HealthRequest) (*HealthReply, error)
 	// Ingest Ingest 文本入库：分块 -> 向量化 -> Milvus -> MySQL 元数据 -> 清缓存。
 	Ingest(context.Context, *IngestRequest) (*IngestResult, error)
+	// IngestUrl IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+	IngestUrl(context.Context, *IngestUrlRequest) (*IngestResult, error)
 	// ListDocs ListDocs 文档列表。
 	ListDocs(context.Context, *ListDocsRequest) (*ListDocsReply, error)
 	// ListFormats ListFormats 支持的文件格式清单。
@@ -67,6 +73,8 @@ func RegisterRagServiceHTTPServer(s *http.Server, srv RagServiceHTTPServer) {
 	r.Handle("GET", "/api/formats", _RagService_ListFormats0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/extract", _RagService_ExtractText0_HTTP_Handler(srv))
 	r.Handle("POST", "/api/upload", _RagService_UploadAndIngest0_HTTP_Handler(srv))
+	r.Handle("GET", "/api/docs/{doc_id}/content", _RagService_DocContent0_HTTP_Handler(srv))
+	r.Handle("POST", "/api/ingest-url", _RagService_IngestUrl0_HTTP_Handler(srv))
 }
 
 func _RagService_Health0_HTTP_Handler(srv RagServiceHTTPServer) func(ctx http.Context) error {
@@ -284,9 +292,52 @@ func _RagService_UploadAndIngest0_HTTP_Handler(srv RagServiceHTTPServer) func(ct
 	}
 }
 
+func _RagService_DocContent0_HTTP_Handler(srv RagServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in DocContentRequest
+		if err := ctx.BindQuery(&in); err != nil {
+			return err
+		}
+		if err := ctx.BindVars(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationRagServiceDocContent)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.DocContent(ctx, req.(*DocContentRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*DocContentReply)
+		return ctx.Result(200, reply)
+	}
+}
+
+func _RagService_IngestUrl0_HTTP_Handler(srv RagServiceHTTPServer) func(ctx http.Context) error {
+	return func(ctx http.Context) error {
+		var in IngestUrlRequest
+		if err := ctx.Bind(&in); err != nil {
+			return err
+		}
+		http.SetOperation(ctx, OperationRagServiceIngestUrl)
+		h := ctx.Middleware(func(ctx context.Context, req interface{}) (interface{}, error) {
+			return srv.IngestUrl(ctx, req.(*IngestUrlRequest))
+		})
+		out, err := h(ctx, &in)
+		if err != nil {
+			return err
+		}
+		reply := out.(*IngestResult)
+		return ctx.Result(200, reply)
+	}
+}
+
 type RagServiceHTTPClient interface {
 	// DeleteDoc DeleteDoc 删除文档（向量分块 + 图谱孤儿节点 + 元数据 + 缓存）。
 	DeleteDoc(ctx context.Context, req *DeleteDocRequest, opts ...http.CallOption) (rsp *DeleteDocReply, err error)
+	// DocContent DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+	DocContent(ctx context.Context, req *DocContentRequest, opts ...http.CallOption) (rsp *DocContentReply, err error)
 	// ExtractText ExtractText 解析文件为纯文本，不入库（前端预览/编辑用）。
 	ExtractText(ctx context.Context, req *ExtractTextRequest, opts ...http.CallOption) (rsp *ExtractTextReply, err error)
 	// GetStats GetStats 系统概览。
@@ -299,6 +350,8 @@ type RagServiceHTTPClient interface {
 	Health(ctx context.Context, req *HealthRequest, opts ...http.CallOption) (rsp *HealthReply, err error)
 	// Ingest Ingest 文本入库：分块 -> 向量化 -> Milvus -> MySQL 元数据 -> 清缓存。
 	Ingest(ctx context.Context, req *IngestRequest, opts ...http.CallOption) (rsp *IngestResult, err error)
+	// IngestUrl IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+	IngestUrl(ctx context.Context, req *IngestUrlRequest, opts ...http.CallOption) (rsp *IngestResult, err error)
 	// ListDocs ListDocs 文档列表。
 	ListDocs(ctx context.Context, req *ListDocsRequest, opts ...http.CallOption) (rsp *ListDocsReply, err error)
 	// ListFormats ListFormats 支持的文件格式清单。
@@ -328,6 +381,23 @@ func (c *RagServiceHTTPClientImpl) DeleteDoc(ctx context.Context, in *DeleteDocR
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "DELETE", path, nil, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DocContent DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+func (c *RagServiceHTTPClientImpl) DocContent(ctx context.Context, in *DocContentRequest, opts ...http.CallOption) (*DocContentReply, error) {
+	var out DocContentReply
+	pattern := "/api/docs/{doc_id}/content"
+	path := http.BuildPath(pattern, in, http.WithQueryParams())
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.Operation(OperationRagServiceDocContent),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "GET", path, nil, &out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +501,24 @@ func (c *RagServiceHTTPClientImpl) Ingest(ctx context.Context, in *IngestRequest
 		http.Accept("application/protojson"),
 		http.ContentType("application/protojson"),
 		http.Operation(OperationRagServiceIngest),
+		http.PathTemplate(pattern),
+	}, opts...)
+	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// IngestUrl IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+func (c *RagServiceHTTPClientImpl) IngestUrl(ctx context.Context, in *IngestUrlRequest, opts ...http.CallOption) (*IngestResult, error) {
+	var out IngestResult
+	pattern := "/api/ingest-url"
+	path := http.BuildPath(pattern, in)
+	opts = append([]http.CallOption{
+		http.Accept("application/protojson"),
+		http.ContentType("application/protojson"),
+		http.Operation(OperationRagServiceIngestUrl),
 		http.PathTemplate(pattern),
 	}, opts...)
 	err := c.cc.Invoke(ctx, "POST", path, in, &out, opts...)

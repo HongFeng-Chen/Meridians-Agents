@@ -87,8 +87,9 @@ Milvus 分块主键是 autoID，重新入库只会新增行。旧实现直接 `I
 - **13 种执行图**：ReAct / Plan-Execute / Reflexion / Orchestrator / 多 Agent 协作 / Debate 等，另有 `auto` 由 LLM 执行前判定架构与成员并自动建子 Agent；DAG Flow 工作流编排
 - LLM 元编程造 Agent + 配额护栏（上限 200，防自举失控）
 - **默认模型数据源**：Agent 可指定 `llm_source`（llm 数据源名），所有轮次优先走该源；不可用或调用失败自动回退 default 链路（`llm.Manager.ChatSource`），任务不中断
-- **技能即能力**：能力目录含四类——`factory`（元编程）/ `agent:`（委派）/ `mcp:`（工具）/ `skill:`（技能）；
-  调用技能 = 把该技能的 SKILL.md 工作流说明加载进上下文；编辑 Agent 的白名单支持按类型 Tab + 检索 + 翻页选择
+- **技能即能力**：能力目录含五类——`factory`（元编程）/ `agent:`（委派）/ `mcp:`（工具）/ `skill:`（技能）/ `llm:`（媒体生成）；
+  技能分三种执行模式：`local`（SKILL.md 进上下文）/ `remote`（调度 Worker 同步执行）/ `async`（入队 + `skill:status` 轮询）；
+  编辑 Agent 的白名单支持按类型 Tab + 检索 + 翻页选择
 - **Token 治理与生成质量**：JSON 模式（`response_format json_object`，老网关自动降级）消灭「输出不合规
   自纠轮」；工具循环滚动摘要（早期轮次压缩成一行）+ 同任务内相同调用去重 + 上下文预算熔断；系统提示词
   「稳定前缀在前」利于前缀缓存；温度按用途分级（规划 0.2 / 执行 0.3 / 抽取评审 0 / 生成 0.7）；RAG 召回
@@ -193,6 +194,13 @@ Milvus 分块主键是 autoID，重新入库只会新增行。旧实现直接 `I
 
 - 技能安装 / 启停 / 卸载，技能市场搜索与下载，启用后可落盘供运行时读取
 - 从 URL 安装技能包：zip 按包内结构入库、单文件当 SKILL.md 正文、JSON 包按字段解析；私有链接可带 `Authorization: Bearer`
+- **Skill Runtime（V2）**：技能定义与执行解耦——`execution` 配置决定走本地 / 远程 / 异步
+  - Worker 注册中心（`skill_instances`）：自注册 + 心跳 + 在途数，心跳过期自动离线
+  - 调度器：健康过滤 + 加权最小负载 + 连续失败熔断 + 换实例重试
+  - 执行账本（`skill_executions`）：谁在什么任务、用什么参数、落到哪个 Worker、多久、成败
+  - 异步派发：执行记录即队列，`FOR UPDATE SKIP LOCKED` + 租约，多副本安全、崩溃自动回收
+  - 幂等：同幂等键回放上次成功结果（MQ 至少一次投递 / Agent 重试都不会重复执行）
+  - Worker 协议语言无关（`POST /execute`），参考实现 `examples/skill-worker-python/worker.py`
 
 ### 统一操作历史
 
@@ -226,7 +234,7 @@ api/*/v1 (proto) ──► internal/service ──► internal/biz ──► int
 | `prompt` | 提示词模板版本化 + 在线生效 + 渲染 | `/api/prompts/**` | MySQL · Redis |
 | `mcp` | MCP 服务 / 工具生命周期、语义召回、调用 | `/api/mcp/**` | MySQL · Milvus `_tools` · Redis |
 | `llm` | 多数据源管理 + 场景路由 + 故障切换 + 调用历史 | `/api/llm/**` `/api/llm/calls` | MySQL |
-| `skill` | 技能安装 / 启停 / 卸载 + 技能市场 + 落盘 + URL 安装 | `/api/skills/**` `/api/skillhub/**` | MySQL · 磁盘 |
+| `skill` | 技能安装 / 启停 / 卸载 + 技能市场 + 落盘 + URL 安装 + 运行时（执行 / Worker 实例 / 执行记录） | `/api/skills/**` `/api/skillhub/**` | MySQL · 磁盘 · HTTP(Worker) |
 | `aiplatform` | 外部 AI 平台登记 + 目录搜索 + MCP 一键接入 + 技能市场联动 | `/api/aiplatform/**` | MySQL |
 | `history` | 统一操作历史（5 类"用到了什么"） | `/api/histories` | MySQL |
 | `space` | 知识空间：树形组织 + 继承（home / container / isolated）+ 显式共享，为 RAG 与资源授权算白名单 | `/api/v2/spaces*` | MySQL |
@@ -352,6 +360,10 @@ docker compose up -d --build
 | `EMBED_BASE_URL` / `EMBED_API_KEY` / `EMBED_MODEL` | `http://localhost:11434/v1` / `ollama` / `bge-m3` | Embedding（OpenAI 兼容） |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | `https://api.deepseek.com` / 空 / `deepseek-flash` | LLM 默认数据源 |
 | `SKILL_SYNC_DIR` | `./data/skills` | 技能落盘目录 |
+| `SKILL_RUNTIME_WORKERS` | `0` | 技能异步派发协程数（0 = 关闭；多副本部署各开 2~4 个） |
+| `SKILL_INSTANCE_TTL` | `45s` | Worker 心跳有效期，超过视为离线 |
+| `SKILL_EXECUTION_RETENTION` | `168h` | 执行记录保留时长 |
+| `SKILL_WORKER_TOKEN` | 空 | 调用 Worker 时的 Bearer 令牌（可选） |
 | `SKILLHUB_BASE_URL` / `SKILLHUB_TOKEN` | 空 | 技能市场地址 |
 
 检索 / 图谱 / 记忆 / Agent 工厂参数（分块大小、topK、图跳数、worker 并发、Agent 配额等）均可在 `configs/config.yaml` 的 `rag` / `memory` / `agentfactory` 段调整。

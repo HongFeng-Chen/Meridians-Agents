@@ -29,6 +29,7 @@ import (
 	aiplatformclient "go_agent/internal/data/third_service/aiplatform"
 	"go_agent/internal/data/third_service/mcpclient"
 	"go_agent/internal/data/third_service/skillhub"
+	"go_agent/internal/data/third_service/skillworker"
 	"go_agent/internal/data/video_generations"
 
 	"github.com/google/wire"
@@ -101,6 +102,11 @@ var ProviderSet = wire.NewSet(
 	dbrepo.NewSkillRepo,
 	skillhub.New,
 	wire.Bind(new(skill.HubClient), new(*skillhub.Client)),
+	// 技能运行时（V2）：Worker 实例注册表 + 执行记录（账本 / 异步队列），
+	// skillworker 为 Worker HTTP 客户端（语言无关的 /execute 协议）
+	dbrepo.NewSkillRuntimeRepo,
+	skillworker.New,
+	wire.Bind(new(skill.WorkerClient), new(*skillworker.Client)),
 	skill.New,
 
 	// 审计事件：audit_events 表（授权判定 / 管理面变更 / 高危工具调用），异步批量写入
@@ -114,6 +120,9 @@ var ProviderSet = wire.NewSet(
 	// 会话域：conversations / conversation_messages 两表，目录 + 消息链路
 	dbrepo.NewConversationRepo,
 	wire.Bind(new(conversation.Repo), new(*dbrepo.ConversationRepo)),
+	// 记忆模块的会话回源：短期记忆为空时从会话消息表取历史（会话总结 / 规则提取用）
+	dbrepo.NewMemoryConvSource,
+	wire.Bind(new(memory.ConversationSource), new(*dbrepo.MemoryConvSource)),
 
 	// MCP 服务与工具：MySQL 存配置与元数据，Milvus 存工具向量，
 	// Redis 缓存工具对象与运行状态；客户端按 transport 动态选择，

@@ -252,6 +252,11 @@ func (s *Service) DeleteDocGraph(ctx context.Context, docID string) (entities in
 	return s.store.DetachDocRefs(ctx, docID+"#")
 }
 
+// DocGraph 取某文档贡献的实体与关系（文档详情弹层「图谱」Tag 的数据源）
+func (s *Service) DocGraph(ctx context.Context, docID string, limit int) ([]Entity, []Relation, error) {
+	return s.store.DocGraph(ctx, docID, limit)
+}
+
 // dropPrefixRefs 去掉属于该文档的引用，保留其他来源的
 func dropPrefixRefs(refs []string, prefix string) []string {
 	out := make([]string, 0, len(refs))
@@ -411,6 +416,20 @@ func (s *Service) recall(ctx context.Context, question string) (*graph, []Relati
 	seeds, err := s.store.SearchEntities(ctx, question, qvec, s.opts.TopK)
 	if err != nil {
 		return nil, nil, false, err
+	}
+	// RRF 绝对分数线：低分种子整体不相关，不作为扩展起点（与 rag 问答管线同一刻度与阈值）。
+	// 全滤空 = 本次召回整体不相关，返回 empty 由调用方兜底。
+	if s.opts.MinScore > 0 {
+		kept := make([]Entity, 0, len(seeds))
+		for _, e := range seeds {
+			if e.Score >= float32(s.opts.MinScore) {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, nil, true, nil
+		}
+		seeds = kept
 	}
 	if len(seeds) == 0 {
 		return nil, nil, true, nil

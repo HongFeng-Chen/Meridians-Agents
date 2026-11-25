@@ -687,6 +687,7 @@
  * @property {string} [rule_name] - 提取来源规则名（手动/规则提取时记录，空 = 手动直接写入）
  * @property {number} [recall_count] - 被召回次数（检索历史统计）
  * @property {string} [last_recalled_at] - 最近一次被召回时间；null = 从未被召回
+ * @property {string} [session_id] - 来源会话 ID（会话归档写入时有值，手动写入为空）
  */
 
 /**
@@ -789,6 +790,7 @@
  * @property {string} [updated_at]
  * @property {boolean} [deduped]
  * @property {boolean} [expired]
+ * @property {string} [session_id] - 来源会话 ID（会话总结类记忆有值）
  * @property {string} [rule_name] - 提取来源规则名
  * @property {number} [recall_count] - 被召回次数
  * @property {string} [last_recalled_at] - 最近一次被召回时间；null = 从未
@@ -808,6 +810,7 @@
  * @property {string} [expire_at] - 与 ttl_days 二选一，优先级更高；RFC3339
  * @property {number} [ttl_days] - 相对过期天数
  * @property {boolean} [graph] - 是否同时写入图谱，缺省用配置默认值
+ * @property {string} [session_id] - 来源会话 ID：会话归档写入时带上次结束的会话 ID，便于从记忆反查对话
  */
 
 /**
@@ -1120,6 +1123,8 @@
  * @property {string} [answer]
  * @property {Hit[]} [citations]
  * @property {boolean} [cached] - 命中 Redis 缓存时为 true
+ * @property {number} [filtered_out] - 被分数线滤掉的命中数（RRF 绝对线 + LLM 预审 + rerank 下限累计）
+ * @property {boolean} [no_context] - 候选全被过滤或范围外：answer 固定为「知识库暂无相关资料」，前端应展示空态
  */
 
 /**
@@ -1130,6 +1135,19 @@
  * @property {number} [deleted_entities]
  * @property {number} [deleted_relations]
  * @property {string} [graph_warning] - 图谱清理失败时的告警（向量与元数据已删除）
+ */
+
+/**
+ * DocContentReply
+ * @typedef {Object} DocContentReply
+ * @property {string} [doc_id]
+ * @property {string} [source]
+ * @property {string} [mode]
+ * @property {string} [status]
+ * @property {number} [chunks] - 实际返回的分块数
+ * @property {Hit[]} [items]
+ * @property {GraphEntity[]} [graph_entities] - 图谱侧内容（仅图谱 / 双索引文档返回；仅向量文档为空集）
+ * @property {GraphRelation[]} [graph_relations]
  */
 
 /**
@@ -1149,6 +1167,7 @@
  * @property {string} [scope] - 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
  * @property {string} [user_id] - 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
  * @property {string} [tenant_id]
+ * @property {string} [space_id] - 所属知识空间（V2）：保留空间（system/tenant/user 映射）或自定义空间。 空间树的成员与授权决定可见性，见 /api/v2/spaces。
  */
 
 /**
@@ -1189,9 +1208,29 @@
  */
 
 /**
+ * DocContentReply 文档原文：chunks 按向量库中的分块原文返回（未建向量索引的文档为空）。
+ GraphEntity 文档贡献的图谱实体（详情弹层「图谱」Tag 展示）
+ * @typedef {Object} GraphEntity
+ * @property {string} [name]
+ * @property {string} [type]
+ * @property {string} [description]
+ * @property {number} [freq] - 被多少个分块引用
+ */
+
+/**
  * GraphQueryRequest
  * @typedef {Object} GraphQueryRequest
  * @property {string} question
+ */
+
+/**
+ * GraphRelation 文档贡献的图谱关系边
+ * @typedef {Object} GraphRelation
+ * @property {string} [source]
+ * @property {string} [target]
+ * @property {string} [relation]
+ * @property {string} [description]
+ * @property {number} [weight]
  */
 
 /**
@@ -1221,6 +1260,7 @@
  * @property {string} text
  * @property {string} [mode] - rag（默认，向量）| graph（图谱）| both（双索引）
  * @property {string} [scope] - 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。 tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
+ * @property {string} [space_id] - 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权。
  */
 
 /**
@@ -1236,6 +1276,17 @@
  * @property {boolean} [deduped] - 内容未变化，跳过了重复向量化
  * @property {string} [duration] - 耗时，单位纳秒（Go time.Duration 的原生 JSON 表示）
  * @property {number} [purged] - 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
+ * @property {string} [graph_error] - 非空 = 双索引部分成功：向量索引已就绪（mode 降级为 rag、状态 ready）， 仅图谱抽取失败；稍后可用同步索引（补图谱）补齐
+ */
+
+/**
+ * IngestUrlRequest 在线 URL 导入：服务端拉取网页正文并入库。
+ * @typedef {Object} IngestUrlRequest
+ * @property {string} url - 目标网页地址（http/https；出站策略校验，私网地址需在白名单）
+ * @property {string} [doc_id] - 留空自动生成 doc-{yyyymmddHHMMSS}
+ * @property {string} [source] - 留空取 URL host+path
+ * @property {string} [mode] - rag（默认，向量）| graph（图谱）| both（双索引）
+ * @property {string} [space_id] - 目标知识空间：留空按 scope 落到个人保留空间；指定时要求对空间有管理权
  */
 
 /**
@@ -1330,11 +1381,61 @@
  */
 
 /**
+ * DeleteSkillInstanceReply
+ * @typedef {Object} DeleteSkillInstanceReply
+ * @property {boolean} [deleted]
+ */
+
+/**
+ * ExecuteSkillReply 执行结果。
+ * @typedef {Object} ExecuteSkillReply
+ * @property {string} [execution_id]
+ * @property {string} [skill_name]
+ * @property {string} [mode]
+ * @property {string} [status]
+ * @property {string} [output] - 输出 JSON 原文
+ * @property {string} [text] - 供 LLM 消费的文本视图
+ * @property {string} [worker_id]
+ * @property {number} [attempts]
+ * @property {string} [latency_ms]
+ * @property {boolean} [replayed] - 命中幂等键，回放的是上次结果
+ * @property {boolean} [queued] - 异步模式：已入队
+ */
+
+/**
+ * ExecuteSkillRequest 执行技能（统一入口：local 返回 SKILL.md，remote 等结果，async 返回执行 ID）。
+ * @typedef {Object} ExecuteSkillRequest
+ * @property {string} name
+ * @property {string} [input] - 参数 JSON 对象字符串（按技能的 input_schema 生成）
+ * @property {string} [task_id] - 关联任务（任务内调用时用于链路聚合）
+ * @property {string} [purpose] - 用途说明（local 模式注入上下文）
+ * @property {string} [idempotency_key] - 幂等键：同一键的重复调用回放上次成功结果
+ * @property {boolean} [async] - 强制异步（仅对 remote 技能有意义）
+ * @property {number} [timeout_sec] - 覆盖技能配置的超时（秒）
+ */
+
+/**
  * File 技能附带文件。
  * @typedef {Object} File
  * @property {string} [path] - 相对技能目录的路径，如 SKILL.md、scripts/run.py
  * @property {string} [content]
  * @property {number} [size]
+ */
+
+/**
+ * HeartbeatSkillInstanceReply
+ * @typedef {Object} HeartbeatSkillInstanceReply
+ * @property {boolean} [ok]
+ */
+
+/**
+ * HeartbeatSkillInstanceRequest
+ * @typedef {Object} HeartbeatSkillInstanceRequest
+ * @property {string} name
+ * @property {string} id
+ * @property {number} [inflight]
+ * @property {string} [latency_ms]
+ * @property {string} [status] - online | draining
  */
 
 /**
@@ -1398,12 +1499,27 @@
  * @property {string} [content] - SKILL.md 内容
  * @property {File[]} [files] - 附加文件，与 content 至少提供一项
  * @property {boolean} [enabled] - 缺省 true
+ * @property {any} [execution] - 执行配置：缺省 local（只注入 SKILL.md）
  */
 
 /**
  * ListHubsReply
  * @typedef {Object} ListHubsReply
  * @property {Hub[]} [hubs]
+ * @property {number} [total]
+ */
+
+/**
+ * ListSkillExecutionsReply
+ * @typedef {Object} ListSkillExecutionsReply
+ * @property {SkillExecution[]} [executions]
+ * @property {number} [total]
+ */
+
+/**
+ * ListSkillInstancesReply
+ * @typedef {Object} ListSkillInstancesReply
+ * @property {SkillInstance[]} [instances]
  * @property {number} [total]
  */
 
@@ -1415,10 +1531,30 @@
  */
 
 /**
+ * RegisterSkillInstanceRequest Worker 自注册（同 id 重复注册 = 更新）。
+ * @typedef {Object} RegisterSkillInstanceRequest
+ * @property {string} name
+ * @property {string} [id] - Worker 自报的唯一标识，缺省用 endpoint
+ * @property {string} endpoint
+ * @property {string} [version]
+ * @property {string} [region]
+ * @property {string[]} [labels]
+ * @property {number} [weight]
+ * @property {number} [max_concurrency]
+ */
+
+/**
  * SearchHubSkillsReply
  * @typedef {Object} SearchHubSkillsReply
  * @property {HubSkill[]} [skills]
  * @property {number} [total]
+ */
+
+/**
+ * SetSkillExecutionRequest
+ * @typedef {Object} SetSkillExecutionRequest
+ * @property {string} name
+ * @property {SkillExecutionSpec} [execution]
  */
 
 /**
@@ -1430,7 +1566,7 @@
  * @property {string} [description]
  * @property {string} [category]
  * @property {string[]} [tags]
- * @property {string} [source] - hub | upload | builtin
+ * @property {string} [source] - hub | upload | builtin | url
  * @property {string} [source_url]
  * @property {boolean} [enabled]
  * @property {string} [checksum]
@@ -1440,6 +1576,53 @@
  * @property {number} [size]
  * @property {string} [installed_at]
  * @property {string} [updated_at]
+ * @property {any} [execution] - 执行配置（V2 运行时）
+ */
+
+/**
+ * SkillExecution 一次技能执行记录。
+ * @typedef {Object} SkillExecution
+ * @property {string} [id]
+ * @property {string} [task_id]
+ * @property {string} [skill_name]
+ * @property {string} [skill_version]
+ * @property {string} [mode] - local | remote | async
+ * @property {string} [status] - queued | running | succeeded | failed | timeout | canceled
+ * @property {string} [tenant_id]
+ * @property {string} [user_id]
+ * @property {string} [agent_key]
+ * @property {string} [session_id]
+ * @property {string} [idempotency_key]
+ * @property {string} [input] - 输入 / 输出 JSON 原文
+ * @property {string} [output]
+ * @property {string} [error]
+ * @property {string} [worker_id]
+ * @property {number} [attempts]
+ * @property {string} [latency_ms]
+ * @property {string} [trace_id]
+ * @property {string} [queued_at]
+ * @property {string} [started_at]
+ * @property {string} [finished_at]
+ * @property {string} [created_at]
+ */
+
+/**
+ * SkillExecutionSpec 技能执行配置（V2 运行时）。
+
+ 决定这个技能是「指令包」还是「远程能力」：local 把 SKILL.md 注入上下文，
+ remote 同步调度到 Worker，async 入队后由派发协程执行。
+ * @typedef {Object} SkillExecutionSpec
+ * @property {string} [mode] - local | remote | async，缺省 local
+ * @property {string} [protocol] - 远程协议，目前支持 http
+ * @property {string} [endpoint] - 直连地址（单实例部署）；有 Worker 注册实例时优先用实例
+ * @property {string} [input_schema] - 参数 JSON Schema 原文（进 Agent 能力描述，供 LLM 生成参数）
+ * @property {string} [output_schema]
+ * @property {number} [timeout_sec] - 单次调用超时（秒），0 取默认值（remote 60 / async 300）
+ * @property {number} [retry] - 失败重试次数（换实例重试）
+ * @property {number} [concurrency] - 单实例并发上限
+ * @property {boolean} [idempotent] - 是否按幂等键去重（同键成功结果回放）
+ * @property {string[]} [required_scopes]
+ * @property {string} [handler] - Worker 侧实现名，缺省等于技能名（改技能名不必改 Worker 代码）
  */
 
 /**
@@ -1449,6 +1632,26 @@
  * @property {number} [file_count]
  * @property {number} [size]
  * @property {File[]} [files]
+ */
+
+/**
+ * SkillInstance Skill Worker 实例。
+ * @typedef {Object} SkillInstance
+ * @property {string} [id]
+ * @property {string} [skill_name]
+ * @property {string} [endpoint]
+ * @property {string} [version]
+ * @property {string} [region]
+ * @property {string[]} [labels]
+ * @property {number} [weight]
+ * @property {number} [max_concurrency]
+ * @property {number} [inflight]
+ * @property {string} [status] - online | draining | offline
+ * @property {string} [last_heartbeat]
+ * @property {string} [latency_ms]
+ * @property {number} [failures] - 连续失败次数（达到阈值熔断）
+ * @property {string} [successes]
+ * @property {string} [last_error]
  */
 
 /**

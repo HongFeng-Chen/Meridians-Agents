@@ -18,6 +18,9 @@ import (
 const (
 	KeyRAGSystem     = "rag.qa.system"
 	KeyRAGUser       = "rag.qa.user"
+	KeyRAGScope      = "rag.qa.scope"
+	KeyRAGRewrite    = "rag.qa.rewrite"
+	KeyRAGPrescreen  = "rag.qa.prescreen"
 	KeyGraphSystem   = "graph.answer.system"
 	KeyGraphUser     = "graph.answer.user"
 	KeyExtractSystem = "graph.extract.system"

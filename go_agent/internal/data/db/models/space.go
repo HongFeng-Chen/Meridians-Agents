@@ -29,6 +29,9 @@ type KnowledgeSpacePO struct {
 	Path  string `gorm:"column:path;size:700;not null;default:'';index:idx_spaces_path" json:"path"`
 	Depth int    `gorm:"column:depth;not null;default:0" json:"depth"`
 
+	// SortOrder 兄弟空间内的展示顺序（越小越靠前）；Reorder 时按传入顺序写 0..n-1
+	SortOrder int `gorm:"column:sort_order;not null;default:0" json:"sort_order"`
+
 	Status string `gorm:"column:status;size:32;not null;default:'active';index:idx_spaces_status" json:"status"`
 
 	CreatedAt time.Time `gorm:"column:created_at;not null" json:"created_at"`

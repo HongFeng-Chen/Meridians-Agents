@@ -70,8 +70,38 @@ message CreateConversationRequest {
   string agent_key = 3 [json_name = "agent_key"];
 }
 
+// SessionBootstrapMemory 新会话启动时召回的一条长期记忆。
+message SessionBootstrapMemory {
+  string id = 1 [json_name = "id"];
+  string kind = 2 [json_name = "kind"];
+  string content = 3 [json_name = "content"];
+  // 相似度 0~1
+  double score = 4 [json_name = "score"];
+  int32 importance = 5 [json_name = "importance"];
+  string source = 6 [json_name = "source"];
+  // 来源会话 ID（会话总结类记忆有值）
+  string session_id = 7 [json_name = "session_id"];
+}
+
+// SessionBootstrap 新会话启动上下文。
+// 只含长期记忆：创建新会话时主动召回用户已沉淀的记忆，
+// 明确不召回任何历史会话的消息（会话之间不串上下文）。
+message SessionBootstrap {
+  repeated SessionBootstrapMemory memories = 1 [json_name = "memories"];
+  // 渲染后的提示词块（供客户端展示 / 排查）
+  string context_block = 2 [json_name = "context_block"];
+  // 固定为 long_term_memory，标注本次启动只用了长期记忆
+  string source = 3 [json_name = "source"];
+  // 记忆系统未装配或召回失败时为 true（不阻塞建会话）
+  bool skipped = 4 [json_name = "skipped"];
+  // 失败原因（best-effort，仅排查用）
+  string error = 5 [json_name = "error"];
+}
+
 message CreateConversationReply {
   Conversation conversation = 1 [json_name = "conversation"];
+  // 新会话启动召回：只有长期记忆，没有历史会话消息
+  SessionBootstrap bootstrap = 2 [json_name = "bootstrap"];
 }
 
 message ListConversationsRequest {

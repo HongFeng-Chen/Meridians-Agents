@@ -33,3 +33,15 @@ type DocumentPO struct {
 
 // TableName 表名
 func (DocumentPO) TableName() string { return "rag_documents" }
+
+// DocumentTextPO 文档原文表（rag_doc_texts）：
+// 入库时保存清洗后的正文，供「同步索引」把仅图谱的文档补建向量索引
+// （Milvus 里只有分块，仅图谱文档没有分块可取，必须有一份原文才能重放分块）。
+type DocumentTextPO struct {
+	DocID     string    `gorm:"column:doc_id;size:191;primaryKey"`
+	Text      string    `gorm:"column:text;type:longtext;not null"`
+	UpdatedAt time.Time `gorm:"column:updated_at;not null"`
+}
+
+// TableName 表名
+func (DocumentTextPO) TableName() string { return "rag_doc_texts" }

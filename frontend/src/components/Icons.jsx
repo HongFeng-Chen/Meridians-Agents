@@ -231,3 +231,13 @@ export const IconUser = (p) => (
     <path d="M4.8 20.2a7.4 7.4 0 0 1 14.4 0" />
   </Svg>
 );
+
+/** 成本：柱状分布 + 基线，代表按维度聚合的支出 */
+export const IconChart = (p) => (
+  <Svg {...p}>
+    <path d="M3.5 20.5h17" />
+    <rect x="5" y="12" width="3.6" height="8.5" rx="1" />
+    <rect x="10.2" y="7" width="3.6" height="13.5" rx="1" />
+    <rect x="15.4" y="14.5" width="3.6" height="6" rx="1" />
+  </Svg>
+);

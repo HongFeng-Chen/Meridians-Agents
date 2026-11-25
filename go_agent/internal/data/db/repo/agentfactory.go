@@ -649,6 +649,12 @@ func applyTaskFilter(q *gorm.DB, f agentfactory.TaskFilter) *gorm.DB {
 	if cid := strings.TrimSpace(f.ConvID); cid != "" {
 		q = q.Where("conv_id = ?", cid)
 	}
+	// 状态过滤：status 只在 ListTasks 入口用于选池表/历史表，表内同样要按状态
+	// 精确过滤——否则「查 paused」会把 running/pending/retry_wait 全部捞出来，
+	// 会话审批卡等调用方就会把正在执行的任务误当成待审批（历史 bug）。
+	if st := strings.TrimSpace(f.Status); st != "" {
+		q = q.Where("status = ?", st)
+	}
 	// 租户隔离：非空时只返回本租户的任务。租户是硬条件（跨租户同 user_id 也不可见）。
 	if tid := strings.TrimSpace(f.TenantID); tid != "" {
 		q = q.Where("tenant_id = ?", tid)

@@ -12,6 +12,9 @@ import puppeteer from 'puppeteer-core';
 
 const BASE = process.argv[2] || 'http://localhost:5188';
 const OUT = path.resolve(process.argv[3] || path.join(process.cwd(), '..', '..', 'docs-site', 'src', 'assets', 'img'));
+// 只重拍部分截图：第 4 个参数传逗号分隔的截图名（不带 .png），如 console-skills,console-skill-runtime
+const ONLY = process.argv[4] ? process.argv[4].split(',').map((s) => s.trim()).filter(Boolean) : null;
+const want = (name) => !ONLY || ONLY.includes(name);
 
 const EDGE_CANDIDATES = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -38,6 +41,7 @@ const PAGES = [
   ['console-prompts', 'prompts', '提示词工程'],
   ['console-eval', 'eval', '评测中心'],
   ['console-mcp', 'mcp', 'MCP 服务与工具'],
+  ['console-skills', 'skills', '技能运行台（模式列与筛选）'],
   ['console-llm', 'llm', '大模型数据源'],
   ['console-admin', 'admin', '文档与系统（作用域筛选）'],
 ];
@@ -166,6 +170,7 @@ async function clickTab(page, label) {
 
 try {
   for (const [name, route, desc] of PAGES) {
+    if (!want(name)) continue;
     const page = await open(route);
 
     if (name === 'console-memory') await clickTab(page, '长期记忆');
@@ -177,8 +182,43 @@ try {
     await page.close();
   }
 
+  // 技能运行台：详情抽屉的「运行配置」（集群注册：接入方式卡片 + 注册/心跳示例 + 实例表）
+  if (want('console-skill-runtime')) {
+    const page = await open('skills', 1440, 900);
+    const opened = await page.evaluate(() => {
+      const row = [...document.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('text-stats'));
+      const btn = row && [...row.querySelectorAll('button')].find((b) => b.innerText.trim() === '查看');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    });
+    if (!opened) throw new Error('技能列表里没有 text-stats（或没有「查看」按钮）');
+    await sleep(1800);
+    const file = path.join(OUT, 'console-skill-runtime.png');
+    await page.screenshot({ path: file });
+    report.push(['console-skill-runtime', '技能运行配置（集群注册发现）', fs.statSync(file).size]);
+    console.log('shot console-skill-runtime');
+
+    // 执行记录页：关抽屉 → 切页签
+    await page.evaluate(() => {
+      const close = [...document.querySelectorAll('.drawer button')].find((b) => b.innerText.trim() === '关闭');
+      if (close) close.click();
+    });
+    await sleep(500);
+    await page.evaluate(() => {
+      const tab = [...document.querySelectorAll('button')].find((b) => b.innerText.trim() === '执行记录');
+      if (tab) tab.click();
+    });
+    await sleep(1500);
+    const file2 = path.join(OUT, 'console-skill-executions.png');
+    await page.screenshot({ path: file2 });
+    report.push(['console-skill-executions', '技能执行记录页', fs.statSync(file2).size]);
+    console.log('shot console-skill-executions');
+    await page.close();
+  }
+
   // 会话页：打开有召回记录的会话
-  {
+  if (want('console-chats')) {
     const page = await open('chats', 1440, 900);
     await openConversation(page, '你是那个模型，能做什么');
     const file = path.join(OUT, 'console-chats.png');
@@ -189,7 +229,7 @@ try {
   }
 
   // 混合检索问答：真实跑一次检索 + 作答
-  {
+  if (want('console-rag-query')) {
     const page = await open('rag-query', 1440, 1000);
     await fillTextarea(page, 'Milvus 3.0 在检索性能上有哪些增强？');
     await runAction(page, '提问');
@@ -201,7 +241,7 @@ try {
   }
 
   // 图谱问答：真实跑一次实体召回 + 多跳扩展（先切「图谱检索」模式再提问）
-  {
+  if (want('console-graph-query')) {
     const page = await open('graph-query', 1440, 1000);
     await pickSeg(page, '图谱检索');
     await fillTextarea(page, 'Milvus、Zilliz 与 Zilliz Cloud 之间是什么关系？');
@@ -214,7 +254,7 @@ try {
   }
 
   // 任务链路抽屉：优先取 LLM 任务（span 说明），不在列表里就取第一行带链路的任务
-  {
+  if (want('console-task-trace') || want('console-task-trace-events')) {
     const page = await open('tasks', 1440, 1000);
     await clickTrace(page, ['什么是链路追踪的 span', '链路追踪', 'trace']);
     const file = path.join(OUT, 'console-task-trace.png');
@@ -232,7 +272,7 @@ try {
   }
 
   // 会话链路抽屉：会话页打开目标会话，点消息区的「查看任务链路」
-  {
+  if (want('console-conv-trace')) {
     const page = await open('chats', 1440, 1000);
     await openConversation(page, '你是那个模型，能做什么');
     const clicked = await page.evaluate(() => {

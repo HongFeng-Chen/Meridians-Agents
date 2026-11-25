@@ -13,9 +13,11 @@ type MemoryPO struct {
 	Tags       string `gorm:"column:tags;size:2048;not null;default:'[]'"`
 	Source     string `gorm:"column:source;size:512;not null;default:''"`
 	RuleName   string `gorm:"column:rule_name;size:128;not null;default:''"` // 提取来源规则名
-	Checksum   string `gorm:"column:checksum;size:64;not null;default:'';uniqueIndex:uk_memories_user_checksum,priority:2"`
-	Entities   int    `gorm:"column:entities;not null;default:0"`
-	Relations  int    `gorm:"column:relations;not null;default:0"`
+	// SessionID 来源会话 ID（会话归档写入时有值），便于从记忆反查对话、按会话清理
+	SessionID string `gorm:"column:session_id;size:64;not null;default:'';index:idx_memories_session"`
+	Checksum  string `gorm:"column:checksum;size:64;not null;default:'';uniqueIndex:uk_memories_user_checksum,priority:2"`
+	Entities  int    `gorm:"column:entities;not null;default:0"`
+	Relations int    `gorm:"column:relations;not null;default:0"`
 	// 召回统计（检索历史联动）
 	RecallCount    int        `gorm:"column:recall_count;not null;default:0"`
 	LastRecalledAt *time.Time `gorm:"column:last_recalled_at"`

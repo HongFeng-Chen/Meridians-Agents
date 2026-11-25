@@ -17,6 +17,9 @@ type ConversationPO struct {
 	LastMessage string    `gorm:"column:last_message;size:255;not null;default:''"`
 	CreatedAt   time.Time `gorm:"column:created_at;not null"`
 	UpdatedAt   time.Time `gorm:"column:updated_at;not null;index:idx_conversations_updated"`
+	// MemorySyncedAt 已归档进记忆系统的时间（NULL = 未归档）。
+	// 开新会话时把最近一条未归档会话总结成长期记忆，写完回填该字段。
+	MemorySyncedAt *time.Time `gorm:"column:memory_synced_at"`
 }
 
 // TableName 表名

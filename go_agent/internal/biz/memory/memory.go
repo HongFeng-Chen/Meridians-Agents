@@ -123,6 +123,7 @@ func normalize(in *RememberInput) error {
 		t := time.Now().Add(in.TTL)
 		in.ExpiresAt = &t
 	}
+	in.SessionID = strings.TrimSpace(in.SessionID)
 	return nil
 }
 
@@ -161,6 +162,7 @@ func (u *UseCase) Remember(ctx context.Context, in RememberInput) (*RememberResu
 		Tags:       in.Tags,
 		Source:     in.Source,
 		RuleName:   in.RuleName,
+		SessionID:  in.SessionID,
 		Checksum:   sum,
 		ExpiresAt:  in.ExpiresAt,
 	}
@@ -197,6 +199,22 @@ func (u *UseCase) Remember(ctx context.Context, in RememberInput) (*RememberResu
 		}
 	}
 	return res, nil
+}
+
+// Recent 最近的长期记忆（不做语义检索，按写入时间新→旧）。
+// 用途：新会话标题为空时，启动召回没有可用的 query，用最近沉淀兜底。
+func (u *UseCase) Recent(ctx context.Context, userID string, limit int) ([]*LongTermMemory, error) {
+	if userID == "" {
+		userID = "default"
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	mems, err := u.repo.List(ctx, userID, false, limit)
+	if err != nil {
+		return nil, fmt.Errorf("memory: 读取最近记忆失败: %w", err)
+	}
+	return mems, nil
 }
 
 // logRecall 落检索历史并回填命中记忆的召回统计（best-effort）

@@ -15,6 +15,8 @@ import (
 	"go_agent/internal/biz/harness"
 	"go_agent/internal/biz/llm"
 	"go_agent/internal/biz/mcp"
+	"go_agent/internal/biz/memory"
+	"go_agent/internal/biz/skill"
 	"go_agent/internal/conf"
 	"go_agent/internal/pkg/egress"
 	"go_agent/internal/pkg/identity"
@@ -53,7 +55,17 @@ func init() {
 //
 // 另外在 AfterStart 里自注册平台内置 MCP 服务（/mcp/platform）并同步工具：
 // 必须等 HTTP 端口起来后再连接（自调用），所以放后台协程 + 有限重试。
-func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, harnessUC *harness.UseCase, platformMCP *service.PlatformMCPService, mediaUC *llm.MediaManager) *kratos.App {
+func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfactory.UseCase, harnessUC *harness.UseCase, platformMCP *service.PlatformMCPService, mediaUC *llm.MediaManager, memUC *memory.UseCase, convSrc memory.ConversationSource, skillUC *skill.UseCase, skillRT skill.RuntimeStore, skillWorker skill.WorkerClient) *kratos.App {
+	// 记忆模块的会话回源：短期记忆（Redis）过期后，会话总结与规则提取仍能从
+	// conversation_messages 取到历史。不注入时这些能力只能看到最近 24h 的短期窗口。
+	if memUC != nil && convSrc != nil {
+		memUC.SetConversationSource(convSrc)
+	}
+	// 技能运行时：注入 Worker 注册表与客户端。不注入时技能仍可用，但只有 local 模式
+	// （SKILL.md 进上下文）——远程/异步技能会明确报「运行时未接线」而不是静默降级。
+	if skillUC != nil && skillRT != nil && skillWorker != nil {
+		skillUC.SetRuntime(skillRT, skillWorker)
+	}
 	// 评测运行的存活参数：心跳间隔与失联阈值。阈值必须显著大于心跳间隔，
 	// 否则数据库抖动一次就把正常运行的评测判成失联。
 	if harnessUC != nil {
@@ -75,6 +87,12 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 		kratos.BeforeStart(func(ctx context.Context) error {
 			if err := afUC.StartWorkers(); err != nil {
 				return err
+			}
+			// 技能异步派发：领取 skill_executions 的 queued 记录投递给 Worker
+			if skillUC != nil {
+				if err := skillUC.StartRuntime(); err != nil {
+					return err
+				}
 			}
 			// 僵尸巡检：启动即扫一次，回收上一个进程留下的 running 行
 			if harnessUC != nil {
@@ -115,6 +133,10 @@ func newApp(logger *slog.Logger, gs *grpc.Server, hs *http.Server, afUC *agentfa
 		kratos.AfterStop(func(ctx context.Context) error {
 			// 兜底硬停：Drain 已完成时立即返回；超时场景负责取消并回收 worker
 			afUC.Stop()
+			// 技能派发协程：等在途的异步任务收尾（任务本身有租约，崩溃也能被别的副本接手）
+			if skillUC != nil {
+				skillUC.StopRuntime()
+			}
 			// 巡检协程先停，避免退出过程中还在写库
 			if harnessUC != nil {
 				harnessUC.StopRecovery()
@@ -153,6 +175,11 @@ func main() {
 	defer cleanupConf()
 
 	logStartupInfo(bc)
+
+	// MCP 策略装配：config.yaml 的 mcp.stdio / mcp.remote 段（${ENV:default} 已在
+	// Load 时展开，环境变量优先、缺省值兜底）应用到进程内出站/stdio 策略。
+	// 放在 wire 之前——之后建立的任何 MCP 连接（含 Manager 常驻连接）都走新策略。
+	mcp.ApplyConfig(bc.GetData())
 
 	// 追踪：OTLP 端点由环境变量决定（不配则只有进程内环形存储 + /api/v2/traces）。
 	// 放在配置加载之后、wire 之前——之后所有 biz 调用都能落进同一条 Trace。

@@ -76,6 +76,10 @@ message Answer {
   repeated Hit citations = 3 [json_name = "citations"];
   // 命中 Redis 缓存时为 true
   bool cached = 4 [json_name = "cached"];
+  // 被分数线滤掉的命中数（RRF 绝对线 + LLM 预审 + rerank 下限累计）
+  int32 filtered_out = 5 [json_name = "filtered_out"];
+  // 候选全被过滤或范围外：answer 固定为「知识库暂无相关资料」，前端应展示空态
+  bool no_context = 6 [json_name = "no_context"];
 }
 
 // GraphAnswer 图谱问答结果。
@@ -110,6 +114,9 @@ message Document {
   // 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
   string user_id = 13 [json_name = "user_id"];
   string tenant_id = 14 [json_name = "tenant_id"];
+  // 所属知识空间（V2）：保留空间（system/tenant/user 映射）或自定义空间。
+  // 空间树的成员与授权决定可见性，见 /api/v2/spaces。
+  string space_id = 15 [json_name = "space_id"];
 }
 
 // IngestResult 入库结果（RAG 与 GraphRAG 共用）。
@@ -131,6 +138,9 @@ message IngestResult {
   // 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
   // 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
   int32 purged = 10 [json_name = "purged"];
+  // 非空 = 双索引部分成功：向量索引已就绪（mode 降级为 rag、状态 ready），
+  // 仅图谱抽取失败；稍后可用同步索引（补图谱）补齐
+  string graph_error = 11 [json_name = "graph_error"];
 }
 
 // Format 支持的文件格式。
@@ -162,6 +172,8 @@ message IngestRequest {
   // 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
   // tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
   string scope = 5 [json_name = "scope"];
+  // 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权。
+  string space_id = 6 [json_name = "space_id"];
 }
 
 message QueryRequest {
@@ -195,6 +207,9 @@ message ListDocsRequest {
   int32 limit = 1 [json_name = "limit"];
   // 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
   string scope = 2 [json_name = "scope"];
+  // 只看某个知识空间（不含子空间；子空间文档在知识空间树里按节点逐级查看）。
+  // 需要对目标空间有管理权或可见权，否则 403。
+  string space_id = 3 [json_name = "space_id"];
 }
 
 message ListDocsReply {
@@ -243,6 +258,59 @@ message ExtractTextReply {
   string text = 4 [json_name = "text"];
 }
 
+// DocContentRequest 取回一篇文档的原文分块（知识空间文档详情弹层用）。
+message DocContentRequest {
+  string doc_id = 1 [(google.api.field_behavior) = REQUIRED, json_name = "doc_id"];
+  // 最多返回的分块数，缺省 100（长文档按 chunk_idx 截断展示）
+  int32 limit = 2 [json_name = "limit"];
+}
+
+// DocContentReply 文档原文：chunks 按向量库中的分块原文返回（未建向量索引的文档为空）。
+// GraphEntity 文档贡献的图谱实体（详情弹层「图谱」Tag 展示）
+message GraphEntity {
+  string name = 1 [json_name = "name"];
+  string type = 2 [json_name = "type"];
+  string description = 3 [json_name = "description"];
+  // 被多少个分块引用
+  int32 freq = 4 [json_name = "freq"];
+}
+
+// GraphRelation 文档贡献的图谱关系边
+message GraphRelation {
+  string source = 1 [json_name = "source"];
+  string target = 2 [json_name = "target"];
+  string relation = 3 [json_name = "relation"];
+  string description = 4 [json_name = "description"];
+  double weight = 5 [json_name = "weight"];
+}
+
+message DocContentReply {
+  string doc_id = 1 [json_name = "doc_id"];
+  string source = 2 [json_name = "source"];
+  string mode = 3 [json_name = "mode"];
+  string status = 4 [json_name = "status"];
+  // 实际返回的分块数
+  int32 chunks = 5 [json_name = "chunks"];
+  repeated Hit items = 6 [json_name = "items"];
+  // 图谱侧内容（仅图谱 / 双索引文档返回；仅向量文档为空集）
+  repeated GraphEntity graph_entities = 7 [json_name = "graph_entities"];
+  repeated GraphRelation graph_relations = 8 [json_name = "graph_relations"];
+}
+
+// IngestUrlRequest 在线 URL 导入：服务端拉取网页正文并入库。
+message IngestUrlRequest {
+  // 目标网页地址（http/https；出站策略校验，私网地址需在白名单）
+  string url = 1 [(google.api.field_behavior) = REQUIRED, json_name = "url"];
+  // 留空自动生成 doc-{yyyymmddHHMMSS}
+  string doc_id = 2 [json_name = "doc_id"];
+  // 留空取 URL host+path
+  string source = 3 [json_name = "source"];
+  // rag（默认，向量）| graph（图谱）| both（双索引）
+  string mode = 4 [json_name = "mode"];
+  // 目标知识空间：留空按 scope 落到个人保留空间；指定时要求对空间有管理权
+  string space_id = 5 [json_name = "space_id"];
+}
+
 // UploadAndIngestRequest 上传并入库。
 //
 // HTTP：multipart/form-data，文件放在 part 名 file 里，mode / doc_id / source
@@ -260,6 +328,8 @@ message UploadAndIngestRequest {
   string source = 5 [json_name = "source"];
   // 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
   string scope = 6 [json_name = "scope"];
+  // 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权
+  string space_id = 7 [json_name = "space_id"];
 }
 
 message UploadAndIngestReply {
@@ -360,6 +430,21 @@ service RagService {
     option (google.api.http) = {
       post: "/api/upload"
       body: "file"
+    };
+  }
+
+  // DocContent 取回一篇文档的原文分块（按当前身份可见性校验）。
+  rpc DocContent(DocContentRequest) returns (DocContentReply) {
+    option (google.api.http) = {
+      get: "/api/docs/{doc_id}/content"
+    };
+  }
+
+  // IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+  rpc IngestUrl(IngestUrlRequest) returns (IngestResult) {
+    option (google.api.http) = {
+      post: "/api/ingest-url"
+      body: "*"
     };
   }
 }

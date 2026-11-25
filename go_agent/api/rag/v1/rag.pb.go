@@ -392,7 +392,11 @@ type Answer struct {
 	Answer    string                 `protobuf:"bytes,2,opt,name=answer,proto3" json:"answer,omitempty"`
 	Citations []*Hit                 `protobuf:"bytes,3,rep,name=citations,proto3" json:"citations,omitempty"`
 	// 命中 Redis 缓存时为 true
-	Cached        bool `protobuf:"varint,4,opt,name=cached,proto3" json:"cached,omitempty"`
+	Cached bool `protobuf:"varint,4,opt,name=cached,proto3" json:"cached,omitempty"`
+	// 被分数线滤掉的命中数（RRF 绝对线 + LLM 预审 + rerank 下限累计）
+	FilteredOut int32 `protobuf:"varint,5,opt,name=filtered_out,proto3" json:"filtered_out,omitempty"`
+	// 候选全被过滤或范围外：answer 固定为「知识库暂无相关资料」，前端应展示空态
+	NoContext     bool `protobuf:"varint,6,opt,name=no_context,proto3" json:"no_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -451,6 +455,20 @@ func (x *Answer) GetCitations() []*Hit {
 func (x *Answer) GetCached() bool {
 	if x != nil {
 		return x.Cached
+	}
+	return false
+}
+
+func (x *Answer) GetFilteredOut() int32 {
+	if x != nil {
+		return x.FilteredOut
+	}
+	return 0
+}
+
+func (x *Answer) GetNoContext() bool {
+	if x != nil {
+		return x.NoContext
 	}
 	return false
 }
@@ -561,8 +579,11 @@ type Document struct {
 	// 知识作用域：system（平台通用）/ tenant（租户共享）/ user（个人私有）
 	Scope string `protobuf:"bytes,12,opt,name=scope,proto3" json:"scope,omitempty"`
 	// 归属用户与租户：作用域为 tenant/system 时仍记录贡献者，便于追溯来源
-	UserId        string `protobuf:"bytes,13,opt,name=user_id,proto3" json:"user_id,omitempty"`
-	TenantId      string `protobuf:"bytes,14,opt,name=tenant_id,proto3" json:"tenant_id,omitempty"`
+	UserId   string `protobuf:"bytes,13,opt,name=user_id,proto3" json:"user_id,omitempty"`
+	TenantId string `protobuf:"bytes,14,opt,name=tenant_id,proto3" json:"tenant_id,omitempty"`
+	// 所属知识空间（V2）：保留空间（system/tenant/user 映射）或自定义空间。
+	// 空间树的成员与授权决定可见性，见 /api/v2/spaces。
+	SpaceId       string `protobuf:"bytes,15,opt,name=space_id,proto3" json:"space_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -695,6 +716,13 @@ func (x *Document) GetTenantId() string {
 	return ""
 }
 
+func (x *Document) GetSpaceId() string {
+	if x != nil {
+		return x.SpaceId
+	}
+	return ""
+}
+
 // IngestResult 入库结果（RAG 与 GraphRAG 共用）。
 type IngestResult struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
@@ -714,7 +742,10 @@ type IngestResult struct {
 	Duration int64 `protobuf:"varint,9,opt,name=duration,proto3" json:"duration,omitempty"`
 	// 本次替换掉的旧版本行数（分块或图谱节点）。更新同一 doc_id 时
 	// 先写新版本再删旧版本，>0 表示确实顶掉了一份旧内容
-	Purged        int32 `protobuf:"varint,10,opt,name=purged,proto3" json:"purged,omitempty"`
+	Purged int32 `protobuf:"varint,10,opt,name=purged,proto3" json:"purged,omitempty"`
+	// 非空 = 双索引部分成功：向量索引已就绪（mode 降级为 rag、状态 ready），
+	// 仅图谱抽取失败；稍后可用同步索引（补图谱）补齐
+	GraphError    string `protobuf:"bytes,11,opt,name=graph_error,proto3" json:"graph_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -817,6 +848,13 @@ func (x *IngestResult) GetPurged() int32 {
 		return x.Purged
 	}
 	return 0
+}
+
+func (x *IngestResult) GetGraphError() string {
+	if x != nil {
+		return x.GraphError
+	}
+	return ""
 }
 
 // Format 支持的文件格式。
@@ -983,7 +1021,9 @@ type IngestRequest struct {
 	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
 	// 知识作用域：user（默认，个人私有）| tenant（租户共享）| system（平台通用）。
 	// tenant 需要 tenant:manage，system 需要 platform:config，否则 403。
-	Scope         string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`
+	// 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权。
+	SpaceId       string `protobuf:"bytes,6,opt,name=space_id,proto3" json:"space_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1049,6 +1089,13 @@ func (x *IngestRequest) GetMode() string {
 func (x *IngestRequest) GetScope() string {
 	if x != nil {
 		return x.Scope
+	}
+	return ""
+}
+
+func (x *IngestRequest) GetSpaceId() string {
+	if x != nil {
+		return x.SpaceId
 	}
 	return ""
 }
@@ -1294,7 +1341,10 @@ type ListDocsRequest struct {
 	// 缺省 200
 	Limit int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
 	// 只看某一层：system | tenant | user；留空 = 当前身份可见的全部
-	Scope         string `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope string `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	// 只看某个知识空间（不含子空间；子空间文档在知识空间树里按节点逐级查看）。
+	// 需要对目标空间有管理权或可见权，否则 403。
+	SpaceId       string `protobuf:"bytes,3,opt,name=space_id,proto3" json:"space_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1339,6 +1389,13 @@ func (x *ListDocsRequest) GetLimit() int32 {
 func (x *ListDocsRequest) GetScope() string {
 	if x != nil {
 		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListDocsRequest) GetSpaceId() string {
+	if x != nil {
+		return x.SpaceId
 	}
 	return ""
 }
@@ -1733,6 +1790,392 @@ func (x *ExtractTextReply) GetText() string {
 	return ""
 }
 
+// DocContentRequest 取回一篇文档的原文分块（知识空间文档详情弹层用）。
+type DocContentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	DocId string                 `protobuf:"bytes,1,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
+	// 最多返回的分块数，缺省 100（长文档按 chunk_idx 截断展示）
+	Limit         int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DocContentRequest) Reset() {
+	*x = DocContentRequest{}
+	mi := &file_rag_v1_rag_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DocContentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DocContentRequest) ProtoMessage() {}
+
+func (x *DocContentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rag_v1_rag_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DocContentRequest.ProtoReflect.Descriptor instead.
+func (*DocContentRequest) Descriptor() ([]byte, []int) {
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *DocContentRequest) GetDocId() string {
+	if x != nil {
+		return x.DocId
+	}
+	return ""
+}
+
+func (x *DocContentRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// DocContentReply 文档原文：chunks 按向量库中的分块原文返回（未建向量索引的文档为空）。
+// GraphEntity 文档贡献的图谱实体（详情弹层「图谱」Tag 展示）
+type GraphEntity struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Type        string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// 被多少个分块引用
+	Freq          int32 `protobuf:"varint,4,opt,name=freq,proto3" json:"freq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GraphEntity) Reset() {
+	*x = GraphEntity{}
+	mi := &file_rag_v1_rag_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GraphEntity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GraphEntity) ProtoMessage() {}
+
+func (x *GraphEntity) ProtoReflect() protoreflect.Message {
+	mi := &file_rag_v1_rag_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GraphEntity.ProtoReflect.Descriptor instead.
+func (*GraphEntity) Descriptor() ([]byte, []int) {
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GraphEntity) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GraphEntity) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *GraphEntity) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *GraphEntity) GetFreq() int32 {
+	if x != nil {
+		return x.Freq
+	}
+	return 0
+}
+
+// GraphRelation 文档贡献的图谱关系边
+type GraphRelation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Source        string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Target        string                 `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Relation      string                 `protobuf:"bytes,3,opt,name=relation,proto3" json:"relation,omitempty"`
+	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	Weight        float64                `protobuf:"fixed64,5,opt,name=weight,proto3" json:"weight,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GraphRelation) Reset() {
+	*x = GraphRelation{}
+	mi := &file_rag_v1_rag_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GraphRelation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GraphRelation) ProtoMessage() {}
+
+func (x *GraphRelation) ProtoReflect() protoreflect.Message {
+	mi := &file_rag_v1_rag_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GraphRelation.ProtoReflect.Descriptor instead.
+func (*GraphRelation) Descriptor() ([]byte, []int) {
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *GraphRelation) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *GraphRelation) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *GraphRelation) GetRelation() string {
+	if x != nil {
+		return x.Relation
+	}
+	return ""
+}
+
+func (x *GraphRelation) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *GraphRelation) GetWeight() float64 {
+	if x != nil {
+		return x.Weight
+	}
+	return 0
+}
+
+type DocContentReply struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	DocId  string                 `protobuf:"bytes,1,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
+	Source string                 `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	Mode   string                 `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	Status string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	// 实际返回的分块数
+	Chunks int32  `protobuf:"varint,5,opt,name=chunks,proto3" json:"chunks,omitempty"`
+	Items  []*Hit `protobuf:"bytes,6,rep,name=items,proto3" json:"items,omitempty"`
+	// 图谱侧内容（仅图谱 / 双索引文档返回；仅向量文档为空集）
+	GraphEntities  []*GraphEntity   `protobuf:"bytes,7,rep,name=graph_entities,proto3" json:"graph_entities,omitempty"`
+	GraphRelations []*GraphRelation `protobuf:"bytes,8,rep,name=graph_relations,proto3" json:"graph_relations,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DocContentReply) Reset() {
+	*x = DocContentReply{}
+	mi := &file_rag_v1_rag_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DocContentReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DocContentReply) ProtoMessage() {}
+
+func (x *DocContentReply) ProtoReflect() protoreflect.Message {
+	mi := &file_rag_v1_rag_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DocContentReply.ProtoReflect.Descriptor instead.
+func (*DocContentReply) Descriptor() ([]byte, []int) {
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DocContentReply) GetDocId() string {
+	if x != nil {
+		return x.DocId
+	}
+	return ""
+}
+
+func (x *DocContentReply) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *DocContentReply) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *DocContentReply) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *DocContentReply) GetChunks() int32 {
+	if x != nil {
+		return x.Chunks
+	}
+	return 0
+}
+
+func (x *DocContentReply) GetItems() []*Hit {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *DocContentReply) GetGraphEntities() []*GraphEntity {
+	if x != nil {
+		return x.GraphEntities
+	}
+	return nil
+}
+
+func (x *DocContentReply) GetGraphRelations() []*GraphRelation {
+	if x != nil {
+		return x.GraphRelations
+	}
+	return nil
+}
+
+// IngestUrlRequest 在线 URL 导入：服务端拉取网页正文并入库。
+type IngestUrlRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 目标网页地址（http/https；出站策略校验，私网地址需在白名单）
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// 留空自动生成 doc-{yyyymmddHHMMSS}
+	DocId string `protobuf:"bytes,2,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
+	// 留空取 URL host+path
+	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	// rag（默认，向量）| graph（图谱）| both（双索引）
+	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
+	// 目标知识空间：留空按 scope 落到个人保留空间；指定时要求对空间有管理权
+	SpaceId       string `protobuf:"bytes,5,opt,name=space_id,proto3" json:"space_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IngestUrlRequest) Reset() {
+	*x = IngestUrlRequest{}
+	mi := &file_rag_v1_rag_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IngestUrlRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IngestUrlRequest) ProtoMessage() {}
+
+func (x *IngestUrlRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_rag_v1_rag_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IngestUrlRequest.ProtoReflect.Descriptor instead.
+func (*IngestUrlRequest) Descriptor() ([]byte, []int) {
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *IngestUrlRequest) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *IngestUrlRequest) GetDocId() string {
+	if x != nil {
+		return x.DocId
+	}
+	return ""
+}
+
+func (x *IngestUrlRequest) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *IngestUrlRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *IngestUrlRequest) GetSpaceId() string {
+	if x != nil {
+		return x.SpaceId
+	}
+	return ""
+}
+
 // UploadAndIngestRequest 上传并入库。
 //
 // HTTP：multipart/form-data，文件放在 part 名 file 里，mode / doc_id / source
@@ -1750,14 +2193,16 @@ type UploadAndIngestRequest struct {
 	// 留空取文件名
 	Source string `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
 	// 知识作用域：user（默认）| tenant | system，语义同 IngestRequest.scope
-	Scope         string `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope string `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`
+	// 目标知识空间：留空按 scope 落到对应保留空间；指定时要求对空间有管理权
+	SpaceId       string `protobuf:"bytes,7,opt,name=space_id,proto3" json:"space_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UploadAndIngestRequest) Reset() {
 	*x = UploadAndIngestRequest{}
-	mi := &file_rag_v1_rag_proto_msgTypes[24]
+	mi := &file_rag_v1_rag_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1769,7 +2214,7 @@ func (x *UploadAndIngestRequest) String() string {
 func (*UploadAndIngestRequest) ProtoMessage() {}
 
 func (x *UploadAndIngestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_rag_v1_rag_proto_msgTypes[24]
+	mi := &file_rag_v1_rag_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1782,7 +2227,7 @@ func (x *UploadAndIngestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAndIngestRequest.ProtoReflect.Descriptor instead.
 func (*UploadAndIngestRequest) Descriptor() ([]byte, []int) {
-	return file_rag_v1_rag_proto_rawDescGZIP(), []int{24}
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *UploadAndIngestRequest) GetFile() []byte {
@@ -1827,6 +2272,13 @@ func (x *UploadAndIngestRequest) GetScope() string {
 	return ""
 }
 
+func (x *UploadAndIngestRequest) GetSpaceId() string {
+	if x != nil {
+		return x.SpaceId
+	}
+	return ""
+}
+
 type UploadAndIngestReply struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	DocId   string                 `protobuf:"bytes,1,opt,name=doc_id,proto3" json:"doc_id,omitempty"`
@@ -1848,7 +2300,7 @@ type UploadAndIngestReply struct {
 
 func (x *UploadAndIngestReply) Reset() {
 	*x = UploadAndIngestReply{}
-	mi := &file_rag_v1_rag_proto_msgTypes[25]
+	mi := &file_rag_v1_rag_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1860,7 +2312,7 @@ func (x *UploadAndIngestReply) String() string {
 func (*UploadAndIngestReply) ProtoMessage() {}
 
 func (x *UploadAndIngestReply) ProtoReflect() protoreflect.Message {
-	mi := &file_rag_v1_rag_proto_msgTypes[25]
+	mi := &file_rag_v1_rag_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1873,7 +2325,7 @@ func (x *UploadAndIngestReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAndIngestReply.ProtoReflect.Descriptor instead.
 func (*UploadAndIngestReply) Descriptor() ([]byte, []int) {
-	return file_rag_v1_rag_proto_rawDescGZIP(), []int{25}
+	return file_rag_v1_rag_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *UploadAndIngestReply) GetDocId() string {
@@ -1982,19 +2434,23 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x06weight\x18\x05 \x01(\x01R\x06weight\x12\x1e\n" +
 	"\n" +
 	"chunk_refs\x18\x06 \x03(\tR\n" +
-	"chunk_refs\"\x7f\n" +
+	"chunk_refs\"\xc3\x01\n" +
 	"\x06Answer\x12\x1a\n" +
 	"\bquestion\x18\x01 \x01(\tR\bquestion\x12\x16\n" +
 	"\x06answer\x18\x02 \x01(\tR\x06answer\x12)\n" +
 	"\tcitations\x18\x03 \x03(\v2\v.rag.v1.HitR\tcitations\x12\x16\n" +
-	"\x06cached\x18\x04 \x01(\bR\x06cached\"\xd1\x01\n" +
+	"\x06cached\x18\x04 \x01(\bR\x06cached\x12\"\n" +
+	"\ffiltered_out\x18\x05 \x01(\x05R\ffiltered_out\x12\x1e\n" +
+	"\n" +
+	"no_context\x18\x06 \x01(\bR\n" +
+	"no_context\"\xd1\x01\n" +
 	"\vGraphAnswer\x12\x1a\n" +
 	"\bquestion\x18\x01 \x01(\tR\bquestion\x12\x16\n" +
 	"\x06answer\x18\x02 \x01(\tR\x06answer\x12*\n" +
 	"\bentities\x18\x03 \x03(\v2\x0e.rag.v1.EntityR\bentities\x12.\n" +
 	"\trelations\x18\x04 \x03(\v2\x10.rag.v1.RelationR\trelations\x12\x1a\n" +
 	"\bevidence\x18\x05 \x03(\tR\bevidence\x12\x16\n" +
-	"\x06cached\x18\x06 \x01(\bR\x06cached\"\xf8\x02\n" +
+	"\x06cached\x18\x06 \x01(\bR\x06cached\"\x94\x03\n" +
 	"\bDocument\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -2014,7 +2470,8 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"updated_at\x12\x14\n" +
 	"\x05scope\x18\f \x01(\tR\x05scope\x12\x18\n" +
 	"\auser_id\x18\r \x01(\tR\auser_id\x12\x1c\n" +
-	"\ttenant_id\x18\x0e \x01(\tR\ttenant_id\"\x88\x02\n" +
+	"\ttenant_id\x18\x0e \x01(\tR\ttenant_id\x12\x1a\n" +
+	"\bspace_id\x18\x0f \x01(\tR\bspace_id\"\xaa\x02\n" +
 	"\fIngestResult\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -2026,7 +2483,8 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\adeduped\x18\b \x01(\bR\adeduped\x12\x1a\n" +
 	"\bduration\x18\t \x01(\x03R\bduration\x12\x16\n" +
 	"\x06purged\x18\n" +
-	" \x01(\x05R\x06purged\".\n" +
+	" \x01(\x05R\x06purged\x12 \n" +
+	"\vgraph_error\x18\v \x01(\tR\vgraph_error\".\n" +
 	"\x06Format\x12\x10\n" +
 	"\x03ext\x18\x01 \x01(\tR\x03ext\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\"\x0f\n" +
@@ -2034,13 +2492,14 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\vHealthReply\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x12\n" +
 	"\x04time\x18\x02 \x01(\tR\x04time\x12!\n" +
-	"\x03rag\x18\x03 \x01(\v2\x0f.rag.v1.RagInfoR\x03rag\"\x82\x01\n" +
+	"\x03rag\x18\x03 \x01(\v2\x0f.rag.v1.RagInfoR\x03rag\"\x9e\x01\n" +
 	"\rIngestRequest\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x17\n" +
 	"\x04text\x18\x03 \x01(\tB\x03\xe0A\x02R\x04text\x12\x12\n" +
 	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x14\n" +
-	"\x05scope\x18\x05 \x01(\tR\x05scope\"G\n" +
+	"\x05scope\x18\x05 \x01(\tR\x05scope\x12\x1a\n" +
+	"\bspace_id\x18\x06 \x01(\tR\bspace_id\"G\n" +
 	"\fQueryRequest\x12\x1f\n" +
 	"\bquestion\x18\x01 \x01(\tB\x03\xe0A\x02R\bquestion\x12\x16\n" +
 	"\x06filter\x18\x02 \x01(\tR\x06filter\"4\n" +
@@ -2063,10 +2522,11 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x06stores\x18\b \x03(\v2\x1e.rag.v1.StatsReply.StoresEntryR\x06stores\x1a9\n" +
 	"\vStoresEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"=\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Y\n" +
 	"\x0fListDocsRequest\x12\x14\n" +
 	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x14\n" +
-	"\x05scope\x18\x02 \x01(\tR\x05scope\"K\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x1a\n" +
+	"\bspace_id\x18\x03 \x01(\tR\bspace_id\"K\n" +
 	"\rListDocsReply\x12$\n" +
 	"\x04docs\x18\x01 \x03(\v2\x10.rag.v1.DocumentR\x04docs\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\"/\n" +
@@ -2089,14 +2549,44 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +
 	"\x05chars\x18\x03 \x01(\x05R\x05chars\x12\x12\n" +
-	"\x04text\x18\x04 \x01(\tR\x04text\"\x9a\x01\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text\"F\n" +
+	"\x11DocContentRequest\x12\x1b\n" +
+	"\x06doc_id\x18\x01 \x01(\tB\x03\xe0A\x02R\x06doc_id\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"k\n" +
+	"\vGraphEntity\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x12\n" +
+	"\x04freq\x18\x04 \x01(\x05R\x04freq\"\x95\x01\n" +
+	"\rGraphRelation\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12\x16\n" +
+	"\x06target\x18\x02 \x01(\tR\x06target\x12\x1a\n" +
+	"\brelation\x18\x03 \x01(\tR\brelation\x12 \n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06weight\x18\x05 \x01(\x01R\x06weight\"\xa6\x02\n" +
+	"\x0fDocContentReply\x12\x16\n" +
+	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
+	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12\x16\n" +
+	"\x06chunks\x18\x05 \x01(\x05R\x06chunks\x12!\n" +
+	"\x05items\x18\x06 \x03(\v2\v.rag.v1.HitR\x05items\x12;\n" +
+	"\x0egraph_entities\x18\a \x03(\v2\x13.rag.v1.GraphEntityR\x0egraph_entities\x12?\n" +
+	"\x0fgraph_relations\x18\b \x03(\v2\x15.rag.v1.GraphRelationR\x0fgraph_relations\"\x89\x01\n" +
+	"\x10IngestUrlRequest\x12\x15\n" +
+	"\x03url\x18\x01 \x01(\tB\x03\xe0A\x02R\x03url\x12\x16\n" +
+	"\x06doc_id\x18\x02 \x01(\tR\x06doc_id\x12\x16\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\x12\x12\n" +
+	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x1a\n" +
+	"\bspace_id\x18\x05 \x01(\tR\bspace_id\"\xb6\x01\n" +
 	"\x16UploadAndIngestRequest\x12\x12\n" +
 	"\x04file\x18\x01 \x01(\fR\x04file\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
 	"\x06doc_id\x18\x04 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x05 \x01(\tR\x06source\x12\x14\n" +
-	"\x05scope\x18\x06 \x01(\tR\x05scope\"\x88\x02\n" +
+	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x1a\n" +
+	"\bspace_id\x18\a \x01(\tR\bspace_id\"\x88\x02\n" +
 	"\x14UploadAndIngestReply\x12\x16\n" +
 	"\x06doc_id\x18\x01 \x01(\tR\x06doc_id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x12\n" +
@@ -2108,7 +2598,7 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\bentities\x18\b \x01(\x05R\bentities\x12\x1c\n" +
 	"\trelations\x18\t \x01(\x05R\trelations\x12\x16\n" +
 	"\x06purged\x18\n" +
-	" \x01(\x05R\x06purged2\xc9\a\n" +
+	" \x01(\x05R\x06purged2\x88\t\n" +
 	"\n" +
 	"RagService\x12I\n" +
 	"\x06Health\x12\x15.rag.v1.HealthRequest\x1a\x13.rag.v1.HealthReply\"\x13\x82\xd3\xe4\x93\x02\r\x12\v/api/health\x12M\n" +
@@ -2123,7 +2613,10 @@ const file_rag_v1_rag_proto_rawDesc = "" +
 	"\tDeleteDoc\x12\x18.rag.v1.DeleteDocRequest\x1a\x16.rag.v1.DeleteDocReply\"\x17\x82\xd3\xe4\x93\x02\x11*\x0f/api/admin/docs\x12Y\n" +
 	"\vListFormats\x12\x1a.rag.v1.ListFormatsRequest\x1a\x18.rag.v1.ListFormatsReply\"\x14\x82\xd3\xe4\x93\x02\x0e\x12\f/api/formats\x12_\n" +
 	"\vExtractText\x12\x1a.rag.v1.ExtractTextRequest\x1a\x18.rag.v1.ExtractTextReply\"\x1a\x82\xd3\xe4\x93\x02\x14:\x04file\"\f/api/extract\x12j\n" +
-	"\x0fUploadAndIngest\x12\x1e.rag.v1.UploadAndIngestRequest\x1a\x1c.rag.v1.UploadAndIngestReply\"\x19\x82\xd3\xe4\x93\x02\x13:\x04file\"\v/api/uploadB\x18Z\x16go_agent/api/rag/v1;v1b\x06proto3"
+	"\x0fUploadAndIngest\x12\x1e.rag.v1.UploadAndIngestRequest\x1a\x1c.rag.v1.UploadAndIngestReply\"\x19\x82\xd3\xe4\x93\x02\x13:\x04file\"\v/api/upload\x12d\n" +
+	"\n" +
+	"DocContent\x12\x19.rag.v1.DocContentRequest\x1a\x17.rag.v1.DocContentReply\"\"\x82\xd3\xe4\x93\x02\x1c\x12\x1a/api/docs/{doc_id}/content\x12W\n" +
+	"\tIngestUrl\x12\x18.rag.v1.IngestUrlRequest\x1a\x14.rag.v1.IngestResult\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/api/ingest-urlB\x18Z\x16go_agent/api/rag/v1;v1b\x06proto3"
 
 var (
 	file_rag_v1_rag_proto_rawDescOnce sync.Once
@@ -2137,7 +2630,7 @@ func file_rag_v1_rag_proto_rawDescGZIP() []byte {
 	return file_rag_v1_rag_proto_rawDescData
 }
 
-var file_rag_v1_rag_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_rag_v1_rag_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_rag_v1_rag_proto_goTypes = []any{
 	(*RagInfo)(nil),                // 0: rag.v1.RagInfo
 	(*Hit)(nil),                    // 1: rag.v1.Hit
@@ -2163,9 +2656,14 @@ var file_rag_v1_rag_proto_goTypes = []any{
 	(*ListFormatsReply)(nil),       // 21: rag.v1.ListFormatsReply
 	(*ExtractTextRequest)(nil),     // 22: rag.v1.ExtractTextRequest
 	(*ExtractTextReply)(nil),       // 23: rag.v1.ExtractTextReply
-	(*UploadAndIngestRequest)(nil), // 24: rag.v1.UploadAndIngestRequest
-	(*UploadAndIngestReply)(nil),   // 25: rag.v1.UploadAndIngestReply
-	nil,                            // 26: rag.v1.StatsReply.StoresEntry
+	(*DocContentRequest)(nil),      // 24: rag.v1.DocContentRequest
+	(*GraphEntity)(nil),            // 25: rag.v1.GraphEntity
+	(*GraphRelation)(nil),          // 26: rag.v1.GraphRelation
+	(*DocContentReply)(nil),        // 27: rag.v1.DocContentReply
+	(*IngestUrlRequest)(nil),       // 28: rag.v1.IngestUrlRequest
+	(*UploadAndIngestRequest)(nil), // 29: rag.v1.UploadAndIngestRequest
+	(*UploadAndIngestReply)(nil),   // 30: rag.v1.UploadAndIngestReply
+	nil,                            // 31: rag.v1.StatsReply.StoresEntry
 }
 var file_rag_v1_rag_proto_depIdxs = []int32{
 	1,  // 0: rag.v1.Answer.citations:type_name -> rag.v1.Hit
@@ -2173,36 +2671,43 @@ var file_rag_v1_rag_proto_depIdxs = []int32{
 	3,  // 2: rag.v1.GraphAnswer.relations:type_name -> rag.v1.Relation
 	0,  // 3: rag.v1.HealthReply.rag:type_name -> rag.v1.RagInfo
 	0,  // 4: rag.v1.StatsReply.rag:type_name -> rag.v1.RagInfo
-	26, // 5: rag.v1.StatsReply.stores:type_name -> rag.v1.StatsReply.StoresEntry
+	31, // 5: rag.v1.StatsReply.stores:type_name -> rag.v1.StatsReply.StoresEntry
 	6,  // 6: rag.v1.ListDocsReply.docs:type_name -> rag.v1.Document
 	8,  // 7: rag.v1.ListFormatsReply.formats:type_name -> rag.v1.Format
-	9,  // 8: rag.v1.RagService.Health:input_type -> rag.v1.HealthRequest
-	11, // 9: rag.v1.RagService.Ingest:input_type -> rag.v1.IngestRequest
-	12, // 10: rag.v1.RagService.Query:input_type -> rag.v1.QueryRequest
-	11, // 11: rag.v1.RagService.GraphIngest:input_type -> rag.v1.IngestRequest
-	13, // 12: rag.v1.RagService.GraphQuery:input_type -> rag.v1.GraphQueryRequest
-	14, // 13: rag.v1.RagService.GetStats:input_type -> rag.v1.GetStatsRequest
-	16, // 14: rag.v1.RagService.ListDocs:input_type -> rag.v1.ListDocsRequest
-	18, // 15: rag.v1.RagService.DeleteDoc:input_type -> rag.v1.DeleteDocRequest
-	20, // 16: rag.v1.RagService.ListFormats:input_type -> rag.v1.ListFormatsRequest
-	22, // 17: rag.v1.RagService.ExtractText:input_type -> rag.v1.ExtractTextRequest
-	24, // 18: rag.v1.RagService.UploadAndIngest:input_type -> rag.v1.UploadAndIngestRequest
-	10, // 19: rag.v1.RagService.Health:output_type -> rag.v1.HealthReply
-	7,  // 20: rag.v1.RagService.Ingest:output_type -> rag.v1.IngestResult
-	4,  // 21: rag.v1.RagService.Query:output_type -> rag.v1.Answer
-	7,  // 22: rag.v1.RagService.GraphIngest:output_type -> rag.v1.IngestResult
-	5,  // 23: rag.v1.RagService.GraphQuery:output_type -> rag.v1.GraphAnswer
-	15, // 24: rag.v1.RagService.GetStats:output_type -> rag.v1.StatsReply
-	17, // 25: rag.v1.RagService.ListDocs:output_type -> rag.v1.ListDocsReply
-	19, // 26: rag.v1.RagService.DeleteDoc:output_type -> rag.v1.DeleteDocReply
-	21, // 27: rag.v1.RagService.ListFormats:output_type -> rag.v1.ListFormatsReply
-	23, // 28: rag.v1.RagService.ExtractText:output_type -> rag.v1.ExtractTextReply
-	25, // 29: rag.v1.RagService.UploadAndIngest:output_type -> rag.v1.UploadAndIngestReply
-	19, // [19:30] is the sub-list for method output_type
-	8,  // [8:19] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	1,  // 8: rag.v1.DocContentReply.items:type_name -> rag.v1.Hit
+	25, // 9: rag.v1.DocContentReply.graph_entities:type_name -> rag.v1.GraphEntity
+	26, // 10: rag.v1.DocContentReply.graph_relations:type_name -> rag.v1.GraphRelation
+	9,  // 11: rag.v1.RagService.Health:input_type -> rag.v1.HealthRequest
+	11, // 12: rag.v1.RagService.Ingest:input_type -> rag.v1.IngestRequest
+	12, // 13: rag.v1.RagService.Query:input_type -> rag.v1.QueryRequest
+	11, // 14: rag.v1.RagService.GraphIngest:input_type -> rag.v1.IngestRequest
+	13, // 15: rag.v1.RagService.GraphQuery:input_type -> rag.v1.GraphQueryRequest
+	14, // 16: rag.v1.RagService.GetStats:input_type -> rag.v1.GetStatsRequest
+	16, // 17: rag.v1.RagService.ListDocs:input_type -> rag.v1.ListDocsRequest
+	18, // 18: rag.v1.RagService.DeleteDoc:input_type -> rag.v1.DeleteDocRequest
+	20, // 19: rag.v1.RagService.ListFormats:input_type -> rag.v1.ListFormatsRequest
+	22, // 20: rag.v1.RagService.ExtractText:input_type -> rag.v1.ExtractTextRequest
+	29, // 21: rag.v1.RagService.UploadAndIngest:input_type -> rag.v1.UploadAndIngestRequest
+	24, // 22: rag.v1.RagService.DocContent:input_type -> rag.v1.DocContentRequest
+	28, // 23: rag.v1.RagService.IngestUrl:input_type -> rag.v1.IngestUrlRequest
+	10, // 24: rag.v1.RagService.Health:output_type -> rag.v1.HealthReply
+	7,  // 25: rag.v1.RagService.Ingest:output_type -> rag.v1.IngestResult
+	4,  // 26: rag.v1.RagService.Query:output_type -> rag.v1.Answer
+	7,  // 27: rag.v1.RagService.GraphIngest:output_type -> rag.v1.IngestResult
+	5,  // 28: rag.v1.RagService.GraphQuery:output_type -> rag.v1.GraphAnswer
+	15, // 29: rag.v1.RagService.GetStats:output_type -> rag.v1.StatsReply
+	17, // 30: rag.v1.RagService.ListDocs:output_type -> rag.v1.ListDocsReply
+	19, // 31: rag.v1.RagService.DeleteDoc:output_type -> rag.v1.DeleteDocReply
+	21, // 32: rag.v1.RagService.ListFormats:output_type -> rag.v1.ListFormatsReply
+	23, // 33: rag.v1.RagService.ExtractText:output_type -> rag.v1.ExtractTextReply
+	30, // 34: rag.v1.RagService.UploadAndIngest:output_type -> rag.v1.UploadAndIngestReply
+	27, // 35: rag.v1.RagService.DocContent:output_type -> rag.v1.DocContentReply
+	7,  // 36: rag.v1.RagService.IngestUrl:output_type -> rag.v1.IngestResult
+	24, // [24:37] is the sub-list for method output_type
+	11, // [11:24] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_rag_v1_rag_proto_init() }
@@ -2216,7 +2721,7 @@ func file_rag_v1_rag_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_rag_v1_rag_proto_rawDesc), len(file_rag_v1_rag_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

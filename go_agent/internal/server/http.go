@@ -139,7 +139,7 @@ func NewHTTPServer(
 	// /api/admin/audits（审计事件查询）——运维面接口，管理员限定
 	registerOpsRoutes(srv, mcpSvc, auditUC)
 	// /api/v2/**（知识空间、统一资源、成本、当前身份；V2 资源授权面）
-	registerV2Routes(srv, spaceUC, resUC, usageUC, taskUC)
+	registerV2Routes(srv, spaceUC, resUC, usageUC, taskUC, ragSvc)
 	// /api/files/**（聊天附件静态访问：data/uploads 下的图片 / 视频）
 	// 这条路由是原始 net/http 注册的，不走上面的认证中间件——鉴权在 handler 里做
 	srv.HandlePrefix("/api/files/", filesHandler(g))

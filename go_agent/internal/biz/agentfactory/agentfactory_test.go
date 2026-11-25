@@ -1610,3 +1610,97 @@ func TestChatWithRoutesByLLMSource(t *testing.T) {
 		t.Fatalf("未指定数据源不应走 ChatSource, srcCalls = %v", chat.srcCalls)
 	}
 }
+
+// fakeSkillRT 可执行技能 fake：在 fakeSkills 之上实现 SkillRuntimePort
+type fakeSkillRT struct {
+	fakeSkills
+	executed []skill.RuntimeRequest
+	result   *skill.RuntimeResult
+}
+
+func (f *fakeSkillRT) Execute(_ context.Context, req skill.RuntimeRequest) (*skill.RuntimeResult, error) {
+	f.executed = append(f.executed, req)
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &skill.RuntimeResult{
+		ExecutionID: "exec_test", SkillName: req.SkillName, Mode: skill.ModeRemote,
+		Status: skill.ExecSucceeded, Text: "[技能 远程执行成功]",
+	}, nil
+}
+
+func (f *fakeSkillRT) GetExecution(_ context.Context, id string) (*skill.Execution, error) {
+	return &skill.Execution{ID: id, SkillName: "pdf-analysis", Status: skill.ExecSucceeded,
+		Output: `{"pages":12}`, Mode: skill.ModeAsync, TenantID: "t1"}, nil
+}
+
+// 可执行技能：目录表述必须区分「加载说明」与「调用远程能力」，
+// 调用时参数直接作为 input（purpose 只是给模型的说明字段）
+func TestExecutableSkillCapability(t *testing.T) {
+	chat := &fakeChatter{script: []string{`{"final":"ok"}`}}
+	u, _, _ := newTestUseCase(t, chat)
+	rt := &fakeSkillRT{fakeSkills: fakeSkills{skills: []skill.Skill{
+		{
+			Name: "pdf-analysis", Version: "1.0.0", Title: "PDF 分析", Enabled: true, Content: "# x",
+			Execution: skill.ExecutionSpec{Mode: skill.ModeRemote, Endpoint: "http://127.0.0.1:9101", Handler: "pdf_analysis"},
+		},
+		{
+			Name: "long-job", Version: "1.0.0", Title: "长任务", Enabled: true,
+			Execution: skill.ExecutionSpec{Mode: skill.ModeAsync},
+		},
+	}}}
+	u.catalog = NewCatalog(fakeTools{}, func(ctx context.Context) ([]AgentDef, error) { return nil, nil }, rt, nil)
+
+	schemas, err := u.catalog.Schemas(context.Background())
+	if err != nil {
+		t.Fatalf("Schemas: %v", err)
+	}
+	byName := map[string]CapabilitySchema{}
+	for _, s := range schemas {
+		byName[s.Name] = s
+	}
+	if s := byName["skill:pdf-analysis"]; !strings.Contains(s.Description, "调用远程技能") {
+		t.Fatalf("远程技能描述应说明是远程调用: %q", s.Description)
+	}
+	if _, ok := byName["skill:status"]; !ok {
+		t.Fatal("存在异步技能时应提供 skill:status")
+	}
+
+	rec := &Recorder{u: u, task: &Task{ID: 7, TenantID: "t1"}, def: &AgentDef{
+		AgentKey: "doc-agent", Capabilities: []string{"skill:pdf-analysis"},
+	}}
+	out, err := u.InvokeDispatch(context.Background(), "skill:pdf-analysis",
+		map[string]any{"file_id": "f1", "purpose": "解析架构"}, rec)
+	if err != nil {
+		t.Fatalf("InvokeDispatch: %v", err)
+	}
+	if !strings.Contains(out, "远程执行成功") {
+		t.Fatalf("应返回运行时结果: %q", out)
+	}
+	if len(rt.executed) != 1 {
+		t.Fatalf("运行时调用次数 = %d, want 1", len(rt.executed))
+	}
+	got := rt.executed[0]
+	if got.TaskID != "7" || got.TenantID != "t1" || got.AgentKey != "doc-agent" {
+		t.Fatalf("运行时请求上下文丢失: %+v", got)
+	}
+	if _, ok := got.Input["purpose"]; ok {
+		t.Fatalf("purpose 不该进 input: %+v", got.Input)
+	}
+	if got.Input["file_id"] != "f1" || got.Purpose != "解析架构" {
+		t.Fatalf("参数拆分错误: input=%+v purpose=%q", got.Input, got.Purpose)
+	}
+
+	// skill:status 查询：状态与输出回给模型
+	statusOut, err := u.InvokeDispatch(context.Background(), "skill:status",
+		map[string]any{"execution_id": "exec_test"},
+		&Recorder{u: u, task: &Task{ID: 7, TenantID: "t1"}, def: &AgentDef{
+			AgentKey: "doc-agent", Capabilities: []string{"skill:status"},
+		}})
+	if err != nil {
+		t.Fatalf("skill:status: %v", err)
+	}
+	if !strings.Contains(statusOut, "pages") {
+		t.Fatalf("状态查询应带输出: %q", statusOut)
+	}
+}

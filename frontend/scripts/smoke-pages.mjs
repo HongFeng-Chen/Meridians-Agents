@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
 
-const BASE = process.argv[2] || 'http://127.0.0.1:5173';
+// 默认走 localhost：vite 6 只监听 localhost（Windows 上是 ::1），127.0.0.1 会连接拒绝
+const BASE = process.argv[2] || 'http://localhost:5173';
 const OUT = path.resolve(process.cwd(), '.smoke');
 
 const EDGE_CANDIDATES = [
@@ -29,6 +30,7 @@ const PAGES = [
   ['skills', '技能管理'],
   ['agents', 'Agent 工厂'],
   ['tasks', '任务中心'],
+  ['cost', '成本看板'],
   ['mcp', 'MCP 服务与工具'],
   ['tenants', '租户管理'],
   ['users', '用户管理'],

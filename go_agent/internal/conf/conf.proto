@@ -208,6 +208,21 @@ message Data {
     int32 graphMaxRelations = 10;
     // 单次 embedding 请求的文本条数
     int32 embedBatch = 11;
+    // 相对分数线（0~1）：只保留 ≥ 同次最高分 × scoreKeep 的命中拼进回答 prompt。
+    // RRF 融合分跨次召回不可比，所以这里是「相对 top 的比例」而不是绝对分数；
+    // 低于线的命中不进 prompt（省 token、降幻觉），但仍会留在检索明细里。
+    // 不配置或 ≤0 时取默认 0.5；想几乎不过滤就配一个极小值（如 0.01）。
+    double scoreKeep = 12;
+    // RRF 绝对分数线：低于此值的命中直接剔除（无保底）。
+    // RRF(K=60) 满分 = 2/(60+1) ≈ 0.0328（双通道双第一），0.0145 ≈ 单通道前 9 名。
+    // 问答管线：召回 → 过滤 RRF<minRRF → 预审 → rerank(minScore) → 空=「暂无相关资料」。
+    double minRRF = 13;
+    // 问答前置：LLM 判定问题是否属于知识库范围，out_scope 直接兜底「暂无相关资料」
+    bool scopeCheck = 14;
+    // 问答前置：LLM 生成 1 条改写 query 用于召回（失败降级用原问题）
+    bool rewrite = 15;
+    // rerank 前的 LLM 轻量预审：一次调用批量标记可疑候选并剔除
+    bool prescreen = 16;
   }
 
   // 提示词工程：模板版本化与在线生效
@@ -274,8 +289,31 @@ message Data {
     // 重排后保留条数（0 = 沿用 rag.topN）
     int32 topN = 6;
     google.protobuf.Duration httpTimeout = 7;
+    // 交叉编码器相关性下限（0~1）：rerank 成功后低于此值的候选剔除。
+    // 注意这是语义相关性分数，与 RRF 排名分不是同一刻度；不配置默认 0.45。
+    double minScore = 8;
   }
-
+message Mcp{
+  message Studio{
+    bool enabled = 1;
+    string allowedCommands = 2;
+    string allowedDirs = 3;
+    bool allowShell = 4;
+    bool allowCodeExec = 5;
+    int32 maxArgs = 6;
+    int32 maxEnv = 7;
+  }
+  Studio studio = 1;
+  message Remote{
+    string allowedHosts = 2;
+    string deniedHosts = 3;
+    bool allowPrivate = 4;
+    string allowPrivateHosts = 5;
+    string allowedPorts = 6;
+    int32 maxRedirects = 7;
+  }
+  Remote remote = 2;
+}
   Database database = 1;
   Redis redis = 2;
   Embedding embedding = 3;
@@ -287,4 +325,8 @@ message Data {
   Skill skill = 9;
   Agentfactory agentfactory = 10;
   Rerank rerank = 11;
+  // MCP 传输与出站策略（mcp.stdio / mcp.remote 段）。
+  // 配置值支持 ${ENV:default} 占位符——环境变量优先、缺省值兜底，
+  // 进程启动时由 biz/mcp.ApplyConfig 应用到进程内策略。
+  Mcp mcp = 12;
 }

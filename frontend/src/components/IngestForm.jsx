@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { v2 } from '../api.js';
 import { Alert, Panel, Spinner } from './UI.jsx';
 import { IconDatabase, IconDoc, IconGraph, IconSearch, IconSpark, IconUpload } from './Icons.jsx';
 import { SCOPES, scopeHint, scopeLabel } from './Scope.jsx';
+import { INGEST_STEPS, IngestSteps, newProgressId, useIngestProgress } from './IngestSteps.jsx';
 
 const SAMPLE = `Milvus 是一款开源的向量数据库，由 Zilliz 公司主导研发，采用 Apache 2.0 协议开源。
 Milvus 3.0 引入湖原生向量搜索与 S3 存储，并增强了检索能力：BM25 索引通过块压缩 postings 与量化降低占用，
@@ -52,12 +53,16 @@ const MODE_HINT = {
   graph: '只建图谱；如果这篇文档之前建过分块，旧分块会被清理',
 };
 
-export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) {
+export default function IngestForm({ initialMode = 'both', onDone, onOpenTab, presetSpaceId = '' }) {
   const [mode, setMode] = useState(initialMode);
   const [docId, setDocId] = useState('');
   const [source, setSource] = useState('');
   // 作用域决定这条知识「谁看得见」，默认个人私有（最保守）
   const [scope, setScope] = useState('user');
+  // 目标知识空间：指定时文档挂到空间树里（要求对空间有管理权），留空按作用域落保留空间。
+  // presetSpaceId（知识空间页「新增文档」进入）时空间固定，不可再选。
+  const [spaceId, setSpaceId] = useState(presetSpaceId);
+  const [spaces, setSpaces] = useState([]);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -67,6 +72,9 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
   const [fileType, setFileType] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const fileRef = useRef(null);
+  // 入库执行进度：progressId 绑定本次请求，入库期间轮询步骤条
+  const [progressId, setProgressId] = useState('');
+  const prog = useIngestProgress(progressId, loading);
 
   const isGraph = mode === 'graph';
   const needGraph = mode !== 'rag';
@@ -83,6 +91,14 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
     const timer = setInterval(() => setElapsed((v) => v + 1), 1000);
     return () => clearInterval(timer);
   }, [loading]);
+
+  // 空间清单（目标空间下拉）：best-effort，空间体系未启用时下拉隐藏
+  useEffect(() => {
+    if (presetSpaceId) return; // 固定空间场景不拉清单
+    v2.spaces()
+      .then((r) => setSpaces(r?.spaces || []))
+      .catch(() => setSpaces([]));
+  }, [presetSpaceId]);
 
   const readFile = async (file) => {
     if (!file) return;
@@ -126,6 +142,8 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
       return;
     }
     setLoading(true);
+    const pid = newProgressId();
+    setProgressId(pid);
     try {
       const payload = {
         doc_id: docId.trim() || `doc-${Date.now()}`,
@@ -133,8 +151,9 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
         text,
         scope,
         mode,
+        ...(spaceId ? { space_id: spaceId } : {}),
       };
-      const data = await api.ragIngest(payload);
+      const data = await v2.ingest({ ...payload, progressId: pid });
       const done = { ...data, mode: data.mode || mode, scope };
       setResult(done);
       onDone?.(done);
@@ -145,13 +164,15 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
     }
   };
 
-  // 一次入库会经过的环节：双索引是「向量 + 图谱」串行，这里如实列出来
+  // 一次入库会经过的环节（与后端真实上报阶段一一对应）：
+  // 文本入库没有「抓取网页」环节，双索引是「向量 + 图谱」串行
   const phases = [
-    { label: '解析与切分', on: true },
-    { label: '向量化写入', on: needVector },
-    { label: '图谱抽取', on: needGraph },
-    { label: '写元数据', on: true },
-  ].filter((p) => p.on);
+    INGEST_STEPS.clean,
+    INGEST_STEPS.chunk,
+    ...(needVector ? [INGEST_STEPS.embed, INGEST_STEPS.milvus] : []),
+    ...(needGraph ? [INGEST_STEPS.graph] : []),
+    INGEST_STEPS.done,
+  ];
 
   return (
     <form className="form" onSubmit={onSubmit}>
@@ -224,11 +245,35 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
               ))}
             </select>
           </label>
-          <div className="field">
-            <span className="field-label">可见范围</span>
-            <span className="muted">{scopeHint(scope)}</span>
-          </div>
+          {presetSpaceId ? (
+            <div className="field">
+              <span className="field-label">目标知识空间</span>
+              <span className="muted">当前选中的空间（固定）</span>
+            </div>
+          ) : spaces.length > 0 ? (
+            <label className="field">
+              <span className="field-label">目标知识空间</span>
+              <select className="input" value={spaceId} onChange={(e) => setSpaceId(e.target.value)}>
+                <option value="">（按作用域落到默认空间）</option>
+                {spaces.map((s) => (
+                  <option key={s.space_id} value={s.space_id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="field">
+              <span className="field-label">可见范围</span>
+              <span className="muted">{scopeHint(scope)}</span>
+            </div>
+          )}
         </div>
+        {spaceId && (
+          <p className="muted" style={{ marginTop: 6 }}>
+            文档将挂到所选空间，空间成员按授权可见（要求对该空间有管理权）
+          </p>
+        )}
       </Panel>
 
       <Panel
@@ -308,14 +353,7 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
             <Spinner text={`正在执行${current.title}入库`} />
             <span className="mono muted">{elapsed}s</span>
           </div>
-          <div className="pipe">
-            {phases.map((p, i) => (
-              <span key={p.label} className="pipe-node">
-                <span className="pipe-index">{i + 1}</span>
-                {p.label}
-              </span>
-            ))}
-          </div>
+          <IngestSteps steps={phases} prog={prog} />
           <p className="muted ingest-live-hint">
             {needGraph
               ? '图谱抽取按分块并发调用 LLM，长文档需要数分钟；中途离开页面不会中断后端任务'
@@ -326,15 +364,26 @@ export default function IngestForm({ initialMode = 'both', onDone, onOpenTab }) 
 
       {result && (
         <div className="ingest-done">
-          <Alert type="success">
-            <b>{result.mode === 'both' ? '双索引构建完成' : result.mode === 'graph' ? '图谱构建完成' : '导入成功'}</b>
-            {' · '}文档 <b className="mono">{result.doc_id}</b>
-            {result.chunks > 0 && <> · 分块 <b>{result.chunks}</b></>}
-            {result.entities > 0 && <> · 实体 <b>{result.entities}</b></>}
-            {result.relations > 0 && <> · 关系 <b>{result.relations}</b></>}
-            {' · '}作用域 <b>{scopeLabel(result.scope || scope)}</b>
-            {result.chunks > 0 && <span className="muted">（已可被检索命中）</span>}
-          </Alert>
+          {result.graph_error ? (
+            <Alert type="warn">
+              <b>部分成功：向量索引已就绪，图谱抽取失败</b>
+              {' · '}文档 <b className="mono">{result.doc_id}</b>
+              {result.chunks > 0 && <> · 分块 <b>{result.chunks}</b>（已可被向量检索命中）</>}
+              <div className="muted" style={{ marginTop: 6 }}>
+                文档已保存为「仅向量」并置为就绪；可在知识空间的文档列表点「⚡ 补图谱」稍后补齐。原因：{result.graph_error}
+              </div>
+            </Alert>
+          ) : (
+            <Alert type="success">
+              <b>{result.mode === 'both' ? '双索引构建完成' : result.mode === 'graph' ? '图谱构建完成' : '导入成功'}</b>
+              {' · '}文档 <b className="mono">{result.doc_id}</b>
+              {result.chunks > 0 && <> · 分块 <b>{result.chunks}</b></>}
+              {result.entities > 0 && <> · 实体 <b>{result.entities}</b></>}
+              {result.relations > 0 && <> · 关系 <b>{result.relations}</b></>}
+              {' · '}作用域 <b>{scopeLabel(result.scope || scope)}</b>
+              {result.chunks > 0 && <span className="muted">（已可被检索命中）</span>}
+            </Alert>
+          )}
           <div className="ingest-done-actions">
             <button className="btn ghost sm" type="button" onClick={() => onOpenTab?.('assets')}>
               <IconDatabase size={15} /> 查看知识资产

@@ -236,6 +236,10 @@ func (f *fakeGraph) DetachDocRefs(ctx context.Context, prefix string) (int, int,
 	return 0, 0, nil
 }
 
+func (f *fakeGraph) DocGraph(ctx context.Context, docID string, limit int) ([]graphrag.Entity, []graphrag.Relation, error) {
+	return nil, nil, nil
+}
+
 type fakeEmbed struct{}
 
 func (fakeEmbed) Embed(ctx context.Context, texts []string) ([][]float32, error) {

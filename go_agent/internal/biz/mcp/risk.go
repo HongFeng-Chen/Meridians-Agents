@@ -18,6 +18,7 @@ package mcp
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 )
 
 // RiskLevel 工具风险等级
@@ -101,19 +102,19 @@ func ClassifyToolRisk(t Tool) RiskLevel {
 		switch method {
 		case "GET", "HEAD", "OPTIONS":
 			// GET 也可能被远端实现成「有副作用的查询」，再用名称兜一层
-			if hitAny(t.ToolName, destructiveKeywords) {
+			if hitKeywordBoundary(t.ToolName, destructiveKeywords) {
 				return RiskDestructive
 			}
 			return RiskRead
 		case "DELETE":
 			return RiskDestructive
 		case "PUT", "PATCH":
-			if hitAny(t.ToolName, destructiveKeywords) {
+			if hitKeywordBoundary(t.ToolName, destructiveKeywords) {
 				return RiskDestructive
 			}
 			return RiskWrite
 		default: // POST 及未知方法
-			if hitAny(t.ToolName, destructiveKeywords) {
+			if hitKeywordBoundary(t.ToolName, destructiveKeywords) {
 				return RiskDestructive
 			}
 			return RiskWrite
@@ -121,16 +122,23 @@ func ClassifyToolRisk(t Tool) RiskLevel {
 	}
 
 	// 3) 名称 + 描述关键词
-	name := strings.ToLower(t.ToolName + " " + t.UniqueName + " " + t.DisplayName)
-	if hitAny(name, destructiveKeywords) {
+// 名称用边界感知匹配：词段级命中而不是任意子串——否则 "deploy" 会命中
+// 资源名词 "deployments"，让 list_deployments 这类只读列表被判成高危
+// 进人工审批（四眼原则下请求人还无法自批，等于只读操作卡死人）。
+// 描述是自然语言散文，没有词段边界可言，保持子串匹配（宁可多拦）。
+// 描述是自然语言散文，没有词段边界可言，保持子串匹配（宁可多拦）。
+// 注意：原始大小写要留给分词器——camelCase 边界（deleteUsers）靠大写识别，
+// 先 ToLower 再切词就把边界抹掉了。
+	rawName := t.ToolName + " " + t.UniqueName + " " + t.DisplayName
+	if hitKeywordBoundary(rawName, destructiveKeywords) {
 		return RiskDestructive
 	}
 	// 复合名（get_or_create）：只读动词在前、且没有其余写动词时仍判 write，
 	// 因为它确实可能写入；这里只在「纯只读」时才降级
-	if hitAny(name, writeKeywords) {
+	if hitKeywordBoundary(rawName, writeKeywords) {
 		return RiskWrite
 	}
-	if hitAny(name, readonlyKeywords) {
+	if hitKeywordBoundary(rawName, readonlyKeywords) {
 		return RiskRead
 	}
 	if desc := strings.ToLower(t.Description); desc != "" {
@@ -165,6 +173,113 @@ func hitAny(s string, keywords []string) bool {
 	s = strings.ToLower(s)
 	for _, k := range keywords {
 		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// hitKeywordBoundary 边界感知的关键词命中：关键词必须命中某个独立词段
+// （snake_case / kebab-case / camelCase / 空白切分）的整体或开头带复数，
+// 而不是任意子串。
+//
+// 为什么不能只用子串（hitAny）："deploy" 会命中资源名词 "deployments"，
+// "set" 会命中 "settings"——list_deployments / get_settings 这类只读工具
+// 被误判成写/高危，在人工审批闸门（ApprovalRequired + 四眼原则）下，
+// 一次只读列表操作就把任务卡死且请求人无法自批。
+//
+// 两条兼容性边界：
+//   - 中文关键词（清空/删除…）没有词段边界，退回子串匹配——「清空缓存」
+//     是一个连续汉字段，必须按子串才能命中；
+//   - 词段去掉结尾 s/es 后与关键词比较（deletes → delete 照样拦）；
+//     「deployments ≠ deploy」正是要防的误伤。
+func hitKeywordBoundary(name string, keywords []string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	tokens := splitWords(name)
+	for _, k := range keywords {
+		if containsCJK(k) {
+			// 中文无词段边界，退回子串
+			if strings.Contains(lower, k) {
+				return true
+			}
+			continue
+		}
+		if matchTokenSeq(tokens, splitWords(k)) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchTokenSeq 关键词词段序列（如 run_command → [run, command]）按顺序相邻命中
+func matchTokenSeq(name, kw []string) bool {
+	if len(kw) == 0 || len(name) < len(kw) {
+		return false
+	}
+	for i := 0; i+len(kw) <= len(name); i++ {
+		ok := true
+		for j, kt := range kw {
+			nt := name[i+j]
+			if nt != kt && stripPlural(nt) != kt {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// stripPlural 去掉英文复数结尾（仅用于词段比较，不改关键词侧）
+func stripPlural(s string) string {
+	switch {
+	case strings.HasSuffix(s, "es") && len(s) > 3:
+		return strings.TrimSuffix(s, "es")
+	case strings.HasSuffix(s, "s") && len(s) > 2:
+		return strings.TrimSuffix(s, "s")
+	}
+	return s
+}
+
+// splitWords 按非字母数字 / camelCase 边界切词（小写输出）；
+// 非 ASCII 字符（中文等）视为字母连续段的一部分
+func splitWords(s string) []string {
+	var out []string
+	var cur strings.Builder
+	prevLowerOrDigit := false
+	for _, r := range s {
+		isUpper := r >= 'A' && r <= 'Z'
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || isUpper || r > 127
+		if !isAlnum {
+			if cur.Len() > 0 {
+				out = append(out, strings.ToLower(cur.String()))
+				cur.Reset()
+			}
+			prevLowerOrDigit = false
+			continue
+		}
+		if isUpper && prevLowerOrDigit && cur.Len() > 0 {
+			out = append(out, strings.ToLower(cur.String()))
+			cur.Reset()
+		}
+		cur.WriteRune(r)
+		prevLowerOrDigit = (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	}
+	if cur.Len() > 0 {
+		out = append(out, strings.ToLower(cur.String()))
+	}
+	return out
+}
+
+// containsCJK 是否含中日韩表意文字（这类关键词没有词段边界，须子串匹配）
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
 			return true
 		}
 	}

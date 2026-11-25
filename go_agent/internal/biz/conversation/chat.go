@@ -46,8 +46,8 @@ const (
 	recallTimeout   = 8 * time.Second // 单个召回源超时：慢源不拖垮整轮对话
 	chatMemMinScore = 0.15            // 记忆绝对分数线（相似度 0~1）：低于此值视为噪声，
 	//                                   注入只会稀释模型注意力、拉长 prompt（实测弱相关常在 0.03 量级）。
-	chatRagRelKeep = 0.5 // RAG 相对分数线：RRF 融合分跨次召回不可比（绝对阈值无意义），
-	//                        只保留 ≥ 同次最高分 × 0.5 的命中，砍掉长尾噪声。
+	chatRagMinRRF = rag.DefaultMinRRF // RAG 绝对分数线：RRF(K=60) 满分≈0.0328，
+	//                        0.0145≈单通道前 9 名；低于线直接剔除，过滤实现在 biz/rag.FilterAbsScore。
 )
 
 // ChatDeps 聊天编排依赖（均为可选，nil 时跳过对应能力）
@@ -277,7 +277,7 @@ func (u *UseCase) recallRag(ctx context.Context, content string) (string, map[st
 		meta["rag_error"] = err.Error()
 		return "", meta
 	}
-	kept := filterHits(hits, chatRagRelKeep)
+	kept := rag.FilterAbsScore(hits, chatRagMinRRF)
 	if filtered := len(hits) - len(kept); filtered > 0 {
 		meta["rag_filtered"] = filtered
 	}
@@ -326,27 +326,7 @@ func filterMemories(mems []memory.RecalledMemory, minScore float64) []memory.Rec
 	return out
 }
 
-// filterHits RRF 命中过滤：只保留 ≥ 同次最高分 × relKeep 的条目。
-// RRF 分数（≈Σ1/(k+rank)）只在同一次召回内可比，不能用固定绝对阈值。
-func filterHits(hits []rag.Hit, relKeep float64) []rag.Hit {
-	if len(hits) == 0 {
-		return nil
-	}
-	top := float32(0)
-	for _, h := range hits {
-		if h.Score > top {
-			top = h.Score
-		}
-	}
-	threshold := top * float32(relKeep)
-	out := make([]rag.Hit, 0, len(hits))
-	for _, h := range hits {
-		if h.Score >= threshold {
-			out = append(out, h)
-		}
-	}
-	return out
-}
+// filterHits 已迁移到 biz/rag.FilterAbsScore（会话与 RAG 问答共用同一绝对分数线）。
 
 // —— 召回明细展开（会话链路时间线用，写入消息 meta）——
 

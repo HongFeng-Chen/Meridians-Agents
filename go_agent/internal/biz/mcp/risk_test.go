@@ -31,6 +31,14 @@ func TestClassifyToolRisk(t *testing.T) {
 		{"执行类高危", Tool{ToolName: "execute_sql"}, RiskDestructive},
 		{"写操作", Tool{ToolName: "create_issue"}, RiskWrite},
 		{"只读", Tool{ToolName: "list_pods"}, RiskRead},
+		{"只读列表不被子串误伤（deploy≠deployments）", Tool{ToolName: "list_deployments"}, RiskRead},
+		{"只读：资源名词复数", Tool{ToolName: "get_deployment_status"}, RiskRead},
+		{"只读：settings 不被 set 命中", Tool{ToolName: "get_settings"}, RiskRead},
+		{"deploy 本体仍是高危", Tool{ToolName: "deploy_app"}, RiskDestructive},
+		{"camelCase 高危照拦", Tool{ToolName: "deleteUsers"}, RiskDestructive},
+		{"多词高危照拦", Tool{ToolName: "run_command"}, RiskDestructive},
+		{"中文高危照拦", Tool{ToolName: "list_清空缓存"}, RiskDestructive},
+		{"状态查询仍只读", Tool{ToolName: "get_pod_status"}, RiskRead},
 		{"未知默认写", Tool{ToolName: "foo"}, RiskWrite},
 	}
 	for _, c := range cases {

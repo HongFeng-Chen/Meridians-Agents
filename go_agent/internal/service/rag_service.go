@@ -71,11 +71,12 @@ func (s *RagService) ingest(ctx context.Context, req *v1.IngestRequest, mode str
 		return nil, badRequest("请求体无效，需要 text 字段")
 	}
 	res, err := s.uc.IngestDocument(ctx, rag.IngestInput{
-		DocID:  req.GetDocId(),
-		Source: req.GetSource(),
-		Mode:   mode,
-		Text:   req.GetText(),
-		Scope:  req.GetScope(),
+		DocID:   req.GetDocId(),
+		Source:  req.GetSource(),
+		Mode:    mode,
+		Text:    req.GetText(),
+		Scope:   req.GetScope(),
+		SpaceID: req.GetSpaceId(),
 	})
 	if err != nil {
 		return nil, ragErr(err)
@@ -101,7 +102,7 @@ func (s *RagService) Query(ctx context.Context, req *v1.QueryRequest) (*v1.Answe
 	if err != nil {
 		return nil, internalErr(err)
 	}
-	out := &v1.Answer{Question: ans.Question, Answer: ans.Answer, Cached: ans.Cached}
+	out := &v1.Answer{Question: ans.Question, Answer: ans.Answer, Cached: ans.Cached, FilteredOut: int32(ans.FilteredOut), NoContext: ans.NoContext}
 	out.Citations = make([]*v1.Hit, 0, len(ans.Citations))
 	for _, h := range ans.Citations {
 		out.Citations = append(out.Citations, toHit(h))
@@ -140,9 +141,17 @@ func (s *RagService) GetStats(ctx context.Context, _ *v1.GetStatsRequest) (*v1.S
 	}, nil
 }
 
-// ListDocs 文档列表。
+// ListDocs 文档列表。space_id 非空时按空间过滤（知识空间树按节点查看）。
 func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1.ListDocsReply, error) {
-	list, err := s.uc.ListDocs(ctx, req.GetScope(), int(req.GetLimit()))
+	var (
+		list []rag.Document
+		err  error
+	)
+	if sid := strings.TrimSpace(req.GetSpaceId()); sid != "" {
+		list, err = s.uc.ListDocsInSpace(ctx, sid, int(req.GetLimit()))
+	} else {
+		list, err = s.uc.ListDocs(ctx, req.GetScope(), int(req.GetLimit()))
+	}
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -161,6 +170,7 @@ func (s *RagService) ListDocs(ctx context.Context, req *v1.ListDocsRequest) (*v1
 			Scope:     d.Scope,
 			UserId:    d.UserID,
 			TenantId:  d.TenantID,
+			SpaceId:   d.SpaceID,
 			CreatedAt: d.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: d.UpdatedAt.Format(time.RFC3339),
 		})
@@ -197,6 +207,17 @@ func (s *RagService) DeleteDoc(ctx context.Context, req *v1.DeleteDocRequest) (*
 		DeletedRelations: int32(anyInt(res["deleted_relations"])),
 		GraphWarning:     anyString(res["graph_warning"]),
 	}, nil
+}
+
+// MoveDoc 把文档移动到目标知识空间（知识空间树整理用）。
+// 权限双闸在 biz 层：文档可写 + 目标空间可管理。
+func (s *RagService) MoveDoc(ctx context.Context, docID, spaceID string) (*rag.Document, error) {
+	return s.uc.MoveDoc(ctx, docID, spaceID)
+}
+
+// SyncDocIndex 补建文档缺失的索引（仅向量 → 补图谱 / 仅图谱 → 补向量），补齐后升级双索引。
+func (s *RagService) SyncDocIndex(ctx context.Context, docID string) (*rag.IngestResult, error) {
+	return s.uc.SyncDocIndex(ctx, docID)
 }
 
 // ListFormats 支持的文件格式清单。
@@ -239,7 +260,7 @@ func (s *RagService) UploadAndIngest(ctx context.Context, req *v1.UploadAndInges
 	if mode == "" {
 		mode = "rag"
 	}
-	res, _, err := s.uc.IngestReader(ctx, file.Filename, req.GetDocId(), req.GetSource(), mode, req.GetScope(), bytes.NewReader(file.Data))
+	res, _, err := s.uc.IngestReader(ctx, file.Filename, req.GetDocId(), req.GetSource(), mode, req.GetScope(), req.GetSpaceId(), bytes.NewReader(file.Data))
 	if err != nil {
 		return nil, ragErr(err)
 	}
@@ -261,6 +282,83 @@ func (s *RagService) UploadAndIngest(ctx context.Context, req *v1.UploadAndInges
 
 // ---------- 领域模型 → 协议 ----------
 
+// DocContent 文档原文分块（知识空间文档详情弹层）。
+func (s *RagService) DocContent(ctx context.Context, req *v1.DocContentRequest) (*v1.DocContentReply, error) {
+	docID := strings.TrimSpace(req.GetDocId())
+	if docID == "" {
+		return nil, badRequest("请求体无效，需要 doc_id 字段")
+	}
+	doc, items, err := s.uc.DocContent(ctx, docID, int(req.GetLimit()))
+	if err != nil {
+		return nil, ragErr(err)
+	}
+	out := &v1.DocContentReply{
+		DocId:  doc.DocID,
+		Source: doc.Source,
+		Mode:   doc.Mode,
+		Status: doc.Status,
+		Chunks: int32(len(items)),
+		Items:  make([]*v1.Hit, 0, len(items)),
+	}
+	for _, h := range items {
+		out.Items = append(out.Items, &v1.Hit{
+			Id:       h.ID,
+			DocId:    h.DocID,
+			ChunkIdx: int32(h.ChunkIdx),
+			Source:   h.Source,
+			Text:     h.Text,
+		})
+	}
+	// 图谱侧：仅图谱 / 双索引文档附带实体与关系（文档详情弹层「图谱」Tag）
+	if doc.Mode == "graph" || doc.Mode == "both" {
+		if ents, rels, gerr := s.uc.DocGraph(ctx, docID, 200); gerr == nil {
+			out.GraphEntities = make([]*v1.GraphEntity, 0, len(ents))
+			for _, e := range ents {
+				out.GraphEntities = append(out.GraphEntities, &v1.GraphEntity{
+					Name:        e.Name,
+					Type:        e.Type,
+					Description: e.Description,
+					Freq:        int32(e.Freq),
+				})
+			}
+			out.GraphRelations = make([]*v1.GraphRelation, 0, len(rels))
+			for _, r2 := range rels {
+				out.GraphRelations = append(out.GraphRelations, &v1.GraphRelation{
+					Source:      r2.Source,
+					Target:      r2.Target,
+					Relation:    r2.Relation,
+					Description: r2.Description,
+					Weight:      r2.Weight,
+				})
+			}
+		}
+		// 图谱读取失败不阻塞分块展示：留空，前端按「图谱读取失败」提示
+	}
+	return out, nil
+}
+
+// IngestUrl 在线 URL 导入：服务端拉取网页正文并入库。
+func (s *RagService) IngestUrl(ctx context.Context, req *v1.IngestUrlRequest) (*v1.IngestResult, error) {
+	if strings.TrimSpace(req.GetUrl()) == "" {
+		return nil, badRequest("请求体无效，需要 url 字段")
+	}
+	mode := req.GetMode()
+	if mode == "" {
+		mode = "rag"
+	}
+	res, err := s.uc.IngestUrl(ctx, rag.IngestUrlInput{
+		URL:     req.GetUrl(),
+		DocID:   req.GetDocId(),
+		Source:  req.GetSource(),
+		Mode:    mode,
+		SpaceID: req.GetSpaceId(),
+	})
+	if err != nil {
+		return nil, ragErr(err)
+	}
+	return toIngestResult(res), nil
+}
+
 // timeLayout 契约里所有时间字段的格式（与 Go time.Time 的 JSON 输出一致）
 const timeLayout = time.RFC3339
 
@@ -279,6 +377,7 @@ func toIngestResult(res *rag.IngestResult) *v1.IngestResult {
 		Deduped:   res.Deduped,
 		Purged:    int32(res.Purged),
 		Duration:  int64(res.Duration),
+		GraphError: res.GraphError,
 	}
 }
 

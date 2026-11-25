@@ -4,6 +4,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,7 +30,10 @@ var _ skill.Repo = (*SkillRepo)(nil)
 func NewSkillRepo(c *conf.Data, d *db.Data) (skill.Repo, error) {
 	r := &SkillRepo{db: d.DB()}
 	if c.GetDatabase().GetAutoMigrate() {
-		if err := r.db.AutoMigrate(&models.SkillPO{}, &models.SkillFilePO{}, &models.SkillHubPO{}); err != nil {
+		if err := r.db.AutoMigrate(
+			&models.SkillPO{}, &models.SkillFilePO{}, &models.SkillHubPO{},
+			&models.SkillInstancePO{}, &models.SkillExecutionPO{},
+		); err != nil {
 			return nil, fmt.Errorf("迁移 skill 表: %w", err)
 		}
 	}
@@ -41,7 +45,7 @@ func NewSkillRepo(c *conf.Data, d *db.Data) (skill.Repo, error) {
 // List 技能列表（不返回文件正文与 SKILL.md，控制响应体积）
 func (r *SkillRepo) List(ctx context.Context, f skill.Filter) ([]skill.Skill, error) {
 	q := r.db.WithContext(ctx).Model(&models.SkillPO{}).
-		Select("id, name, version, title, description, category, tags, source, source_url, enabled, checksum, file_count, size, installed_at, updated_at")
+		Select("id, name, version, title, description, category, tags, source, source_url, enabled, checksum, execution_spec, file_count, size, installed_at, updated_at")
 	if f.Keyword != "" {
 		like := "%" + escapeLike(f.Keyword) + "%"
 		q = q.Where("(name LIKE ? ESCAPE '\\\\' OR title LIKE ? ESCAPE '\\\\' OR description LIKE ? ESCAPE '\\\\')", like, like, like)
@@ -145,6 +149,22 @@ func (r *SkillRepo) Delete(ctx context.Context, name string) error {
 func (r *SkillRepo) SetEnabled(ctx context.Context, name string, enabled bool) error {
 	res := r.db.WithContext(ctx).Model(&models.SkillPO{}).Where("name = ?", name).
 		Updates(map[string]any{"enabled": enabled, "updated_at": time.Now()})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return skill.ErrSkillNotFound
+	}
+	return nil
+}
+
+// SetExecutionSpec 只更新执行配置列
+func (r *SkillRepo) SetExecutionSpec(ctx context.Context, name string, spec skill.ExecutionSpec) error {
+	res := r.db.WithContext(ctx).Model(&models.SkillPO{}).Where("name = ?", name).
+		Updates(map[string]any{
+			"execution_spec": encodeSpec(spec),
+			"updated_at":     time.Now(),
+		})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -279,26 +299,27 @@ var skillUpsert = clause.OnConflict{
 	Columns: []clause.Column{{Name: "name"}},
 	DoUpdates: clause.AssignmentColumns([]string{
 		"version", "title", "description", "category", "tags", "source", "source_url",
-		"enabled", "checksum", "content", "file_count", "size", "updated_at",
+		"enabled", "checksum", "content", "execution_spec", "file_count", "size", "updated_at",
 	}),
 }
 
 func skillToPO(s *skill.Skill) *models.SkillPO {
 	return &models.SkillPO{
-		Name:        s.Name,
-		Version:     s.Version,
-		Title:       s.Title,
-		Description: s.Description,
-		Category:    s.Category,
-		Tags:        encodeTags(s.Tags),
-		Source:      s.Source,
-		SourceURL:   s.SourceURL,
-		Enabled:     s.Enabled,
-		Checksum:    s.Checksum,
-		Content:     s.Content,
-		FileCount:   len(s.Files),
-		Size:        s.Size,
-		InstalledAt: time.Now(),
+		Name:          s.Name,
+		Version:       s.Version,
+		Title:         s.Title,
+		Description:   s.Description,
+		Category:      s.Category,
+		Tags:          encodeTags(s.Tags),
+		Source:        s.Source,
+		SourceURL:     s.SourceURL,
+		Enabled:       s.Enabled,
+		Checksum:      s.Checksum,
+		Content:       s.Content,
+		ExecutionSpec: encodeSpec(s.Execution),
+		FileCount:     len(s.Files),
+		Size:          s.Size,
+		InstalledAt:   time.Now(),
 	}
 }
 
@@ -316,9 +337,35 @@ func skillSummaryToBiz(po *models.SkillPO) *skill.Skill {
 		Checksum:    po.Checksum,
 		FileCount:   po.FileCount,
 		Size:        po.Size,
+		Execution:   decodeSpec(po.ExecutionSpec),
 		InstalledAt: po.InstalledAt,
 		UpdatedAt:   po.UpdatedAt,
 	}
+}
+
+// encodeSpec 执行配置 → JSON 列；local（空配置）不占存储
+func encodeSpec(spec skill.ExecutionSpec) string {
+	norm := spec.Normalized()
+	if norm.Mode == skill.ModeLocal && norm.Endpoint == "" && norm.InputSchema == "" {
+		return ""
+	}
+	raw, err := json.Marshal(norm)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// decodeSpec JSON 列 → 执行配置；脏数据按 local 兜底（不能因为一行 JSON 坏掉整张列表）
+func decodeSpec(raw string) skill.ExecutionSpec {
+	if strings.TrimSpace(raw) == "" {
+		return skill.ExecutionSpec{Mode: skill.ModeLocal}
+	}
+	var spec skill.ExecutionSpec
+	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+		return skill.ExecutionSpec{Mode: skill.ModeLocal}
+	}
+	return spec.Normalized()
 }
 
 func hubToBiz(po *models.SkillHubPO) *skill.Hub {

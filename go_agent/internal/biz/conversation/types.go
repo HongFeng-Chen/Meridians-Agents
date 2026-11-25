@@ -12,6 +12,8 @@ package conversation
 import (
 	"strings"
 	"time"
+
+	"go_agent/internal/biz/memory"
 )
 
 // 消息角色
@@ -35,6 +37,9 @@ type Conversation struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	HasDebate    bool      `json:"has_debate"` // 会话内发生过辩论（目录分组用）
+	// MemorySyncedAt 已归档进记忆系统的时间（nil = 还没归档）。
+	// 用户开新会话时，最近一条 MemorySyncedAt 为空的会话会被总结成长期记忆。
+	MemorySyncedAt *time.Time `json:"memory_synced_at,omitempty"`
 }
 
 // Message 会话内一条消息
@@ -109,4 +114,27 @@ type Filter struct {
 	UserID string // 归属用户过滤（空 = 不按用户过滤，仅内部任务/运维查询使用）
 	Limit  int
 	Offset int
+}
+
+// —— 新会话启动召回 ——
+
+// BootstrapSourceMemory 启动上下文的唯一来源：长期记忆。
+// 明确不包含历史会话消息（会话之间不串上下文），所以这里没有 session 来源。
+const BootstrapSourceMemory = "long_term_memory"
+
+// SessionBootstrap 新会话启动上下文：创建会话时主动召回用户已沉淀的长期记忆。
+//
+// 为什么只召回长期记忆：历史会话正文是过程性内容，直接注入会挤占窗口、
+// 还会把上一个话题的细节带进新话题；而长期记忆已经是归纳过的稳定结论。
+// 上次会话的内容由「会话归档」在写入侧沉淀成一条记忆，再由这里召回。
+type SessionBootstrap struct {
+	Memories []memory.RecalledMemory `json:"memories"`
+	// Block 渲染后的提示词块（客户端展示 / 排查用）
+	Block string `json:"context_block"`
+	// Source 固定 long_term_memory
+	Source string `json:"source"`
+	// Skipped 记忆系统未装配或召回失败（不阻塞建会话）
+	Skipped bool `json:"skipped"`
+	// Err 失败原因（best-effort，仅排查用）
+	Err string `json:"error,omitempty"`
 }

@@ -25,27 +25,36 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SkillService_ListSkills_FullMethodName         = "/skill.v1.SkillService/ListSkills"
-	SkillService_GetSkillStats_FullMethodName      = "/skill.v1.SkillService/GetSkillStats"
-	SkillService_SearchHubSkills_FullMethodName    = "/skill.v1.SkillService/SearchHubSkills"
-	SkillService_ListHubs_FullMethodName           = "/skill.v1.SkillService/ListHubs"
-	SkillService_SearchSkillhub_FullMethodName     = "/skill.v1.SkillService/SearchSkillhub"
-	SkillService_ListSkillhubHubs_FullMethodName   = "/skill.v1.SkillService/ListSkillhubHubs"
-	SkillService_ImportSkillFromURL_FullMethodName = "/skill.v1.SkillService/ImportSkillFromURL"
-	SkillService_GetSkill_FullMethodName           = "/skill.v1.SkillService/GetSkill"
-	SkillService_InstallSkill_FullMethodName       = "/skill.v1.SkillService/InstallSkill"
-	SkillService_UninstallSkill_FullMethodName     = "/skill.v1.SkillService/UninstallSkill"
-	SkillService_EnableSkill_FullMethodName        = "/skill.v1.SkillService/EnableSkill"
-	SkillService_DisableSkill_FullMethodName       = "/skill.v1.SkillService/DisableSkill"
-	SkillService_UseSkill_FullMethodName           = "/skill.v1.SkillService/UseSkill"
-	SkillService_ListSkillFiles_FullMethodName     = "/skill.v1.SkillService/ListSkillFiles"
-	SkillService_ReadSkillFile_FullMethodName      = "/skill.v1.SkillService/ReadSkillFile"
-	SkillService_SyncSkills_FullMethodName         = "/skill.v1.SkillService/SyncSkills"
-	SkillService_InstallFromHub_FullMethodName     = "/skill.v1.SkillService/InstallFromHub"
-	SkillService_CreateHub_FullMethodName          = "/skill.v1.SkillService/CreateHub"
-	SkillService_UpdateHub_FullMethodName          = "/skill.v1.SkillService/UpdateHub"
-	SkillService_DeleteHub_FullMethodName          = "/skill.v1.SkillService/DeleteHub"
-	SkillService_SetDefaultHub_FullMethodName      = "/skill.v1.SkillService/SetDefaultHub"
+	SkillService_ListSkills_FullMethodName             = "/skill.v1.SkillService/ListSkills"
+	SkillService_GetSkillStats_FullMethodName          = "/skill.v1.SkillService/GetSkillStats"
+	SkillService_SearchHubSkills_FullMethodName        = "/skill.v1.SkillService/SearchHubSkills"
+	SkillService_ListHubs_FullMethodName               = "/skill.v1.SkillService/ListHubs"
+	SkillService_SearchSkillhub_FullMethodName         = "/skill.v1.SkillService/SearchSkillhub"
+	SkillService_ListSkillhubHubs_FullMethodName       = "/skill.v1.SkillService/ListSkillhubHubs"
+	SkillService_ImportSkillFromURL_FullMethodName     = "/skill.v1.SkillService/ImportSkillFromURL"
+	SkillService_ListSkillExecutions_FullMethodName    = "/skill.v1.SkillService/ListSkillExecutions"
+	SkillService_GetSkillExecution_FullMethodName      = "/skill.v1.SkillService/GetSkillExecution"
+	SkillService_GetSkill_FullMethodName               = "/skill.v1.SkillService/GetSkill"
+	SkillService_ExecuteSkill_FullMethodName           = "/skill.v1.SkillService/ExecuteSkill"
+	SkillService_SetSkillExecution_FullMethodName      = "/skill.v1.SkillService/SetSkillExecution"
+	SkillService_CancelSkillExecution_FullMethodName   = "/skill.v1.SkillService/CancelSkillExecution"
+	SkillService_ListSkillInstances_FullMethodName     = "/skill.v1.SkillService/ListSkillInstances"
+	SkillService_RegisterSkillInstance_FullMethodName  = "/skill.v1.SkillService/RegisterSkillInstance"
+	SkillService_HeartbeatSkillInstance_FullMethodName = "/skill.v1.SkillService/HeartbeatSkillInstance"
+	SkillService_DeleteSkillInstance_FullMethodName    = "/skill.v1.SkillService/DeleteSkillInstance"
+	SkillService_InstallSkill_FullMethodName           = "/skill.v1.SkillService/InstallSkill"
+	SkillService_UninstallSkill_FullMethodName         = "/skill.v1.SkillService/UninstallSkill"
+	SkillService_EnableSkill_FullMethodName            = "/skill.v1.SkillService/EnableSkill"
+	SkillService_DisableSkill_FullMethodName           = "/skill.v1.SkillService/DisableSkill"
+	SkillService_UseSkill_FullMethodName               = "/skill.v1.SkillService/UseSkill"
+	SkillService_ListSkillFiles_FullMethodName         = "/skill.v1.SkillService/ListSkillFiles"
+	SkillService_ReadSkillFile_FullMethodName          = "/skill.v1.SkillService/ReadSkillFile"
+	SkillService_SyncSkills_FullMethodName             = "/skill.v1.SkillService/SyncSkills"
+	SkillService_InstallFromHub_FullMethodName         = "/skill.v1.SkillService/InstallFromHub"
+	SkillService_CreateHub_FullMethodName              = "/skill.v1.SkillService/CreateHub"
+	SkillService_UpdateHub_FullMethodName              = "/skill.v1.SkillService/UpdateHub"
+	SkillService_DeleteHub_FullMethodName              = "/skill.v1.SkillService/DeleteHub"
+	SkillService_SetDefaultHub_FullMethodName          = "/skill.v1.SkillService/SetDefaultHub"
 )
 
 // SkillServiceClient is the client API for SkillService service.
@@ -71,8 +80,26 @@ type SkillServiceClient interface {
 	ListSkillhubHubs(ctx context.Context, in *ListHubsRequest, opts ...grpc.CallOption) (*ListHubsReply, error)
 	// ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
 	ImportSkillFromURL(ctx context.Context, in *ImportSkillFromURLRequest, opts ...grpc.CallOption) (*Skill, error)
+	// ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+	ListSkillExecutions(ctx context.Context, in *ListSkillExecutionsRequest, opts ...grpc.CallOption) (*ListSkillExecutionsReply, error)
+	// GetSkillExecution 单条执行记录（异步结果轮询）。
+	GetSkillExecution(ctx context.Context, in *GetSkillExecutionRequest, opts ...grpc.CallOption) (*SkillExecution, error)
 	// GetSkill 技能详情（含 SKILL.md 与文件正文）。
 	GetSkill(ctx context.Context, in *GetSkillRequest, opts ...grpc.CallOption) (*Skill, error)
+	// ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+	ExecuteSkill(ctx context.Context, in *ExecuteSkillRequest, opts ...grpc.CallOption) (*ExecuteSkillReply, error)
+	// SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+	SetSkillExecution(ctx context.Context, in *SetSkillExecutionRequest, opts ...grpc.CallOption) (*Skill, error)
+	// CancelSkillExecution 取消排队中的执行。
+	CancelSkillExecution(ctx context.Context, in *CancelSkillExecutionRequest, opts ...grpc.CallOption) (*SkillExecution, error)
+	// ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+	ListSkillInstances(ctx context.Context, in *ListSkillInstancesRequest, opts ...grpc.CallOption) (*ListSkillInstancesReply, error)
+	// RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+	RegisterSkillInstance(ctx context.Context, in *RegisterSkillInstanceRequest, opts ...grpc.CallOption) (*SkillInstance, error)
+	// HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+	HeartbeatSkillInstance(ctx context.Context, in *HeartbeatSkillInstanceRequest, opts ...grpc.CallOption) (*HeartbeatSkillInstanceReply, error)
+	// DeleteSkillInstance 摘除实例（Worker 下线）。
+	DeleteSkillInstance(ctx context.Context, in *DeleteSkillInstanceRequest, opts ...grpc.CallOption) (*DeleteSkillInstanceReply, error)
 	// InstallSkill 手动安装/上传技能（同名视为升级）。
 	InstallSkill(ctx context.Context, in *InstallSkillRequest, opts ...grpc.CallOption) (*Skill, error)
 	// UninstallSkill 卸载技能。
@@ -179,10 +206,100 @@ func (c *skillServiceClient) ImportSkillFromURL(ctx context.Context, in *ImportS
 	return out, nil
 }
 
+func (c *skillServiceClient) ListSkillExecutions(ctx context.Context, in *ListSkillExecutionsRequest, opts ...grpc.CallOption) (*ListSkillExecutionsReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillExecutionsReply)
+	err := c.cc.Invoke(ctx, SkillService_ListSkillExecutions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) GetSkillExecution(ctx context.Context, in *GetSkillExecutionRequest, opts ...grpc.CallOption) (*SkillExecution, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SkillExecution)
+	err := c.cc.Invoke(ctx, SkillService_GetSkillExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *skillServiceClient) GetSkill(ctx context.Context, in *GetSkillRequest, opts ...grpc.CallOption) (*Skill, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Skill)
 	err := c.cc.Invoke(ctx, SkillService_GetSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) ExecuteSkill(ctx context.Context, in *ExecuteSkillRequest, opts ...grpc.CallOption) (*ExecuteSkillReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExecuteSkillReply)
+	err := c.cc.Invoke(ctx, SkillService_ExecuteSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) SetSkillExecution(ctx context.Context, in *SetSkillExecutionRequest, opts ...grpc.CallOption) (*Skill, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Skill)
+	err := c.cc.Invoke(ctx, SkillService_SetSkillExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) CancelSkillExecution(ctx context.Context, in *CancelSkillExecutionRequest, opts ...grpc.CallOption) (*SkillExecution, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SkillExecution)
+	err := c.cc.Invoke(ctx, SkillService_CancelSkillExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) ListSkillInstances(ctx context.Context, in *ListSkillInstancesRequest, opts ...grpc.CallOption) (*ListSkillInstancesReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillInstancesReply)
+	err := c.cc.Invoke(ctx, SkillService_ListSkillInstances_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) RegisterSkillInstance(ctx context.Context, in *RegisterSkillInstanceRequest, opts ...grpc.CallOption) (*SkillInstance, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SkillInstance)
+	err := c.cc.Invoke(ctx, SkillService_RegisterSkillInstance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) HeartbeatSkillInstance(ctx context.Context, in *HeartbeatSkillInstanceRequest, opts ...grpc.CallOption) (*HeartbeatSkillInstanceReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HeartbeatSkillInstanceReply)
+	err := c.cc.Invoke(ctx, SkillService_HeartbeatSkillInstance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *skillServiceClient) DeleteSkillInstance(ctx context.Context, in *DeleteSkillInstanceRequest, opts ...grpc.CallOption) (*DeleteSkillInstanceReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSkillInstanceReply)
+	err := c.cc.Invoke(ctx, SkillService_DeleteSkillInstance_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -342,8 +459,26 @@ type SkillServiceServer interface {
 	ListSkillhubHubs(context.Context, *ListHubsRequest) (*ListHubsReply, error)
 	// ImportSkillFromURL 从技能包 URL 安装（zip / SKILL.md / JSON 包）。
 	ImportSkillFromURL(context.Context, *ImportSkillFromURLRequest) (*Skill, error)
+	// ListSkillExecutions 执行记录列表（账本；异步任务也在这里查）。
+	ListSkillExecutions(context.Context, *ListSkillExecutionsRequest) (*ListSkillExecutionsReply, error)
+	// GetSkillExecution 单条执行记录（异步结果轮询）。
+	GetSkillExecution(context.Context, *GetSkillExecutionRequest) (*SkillExecution, error)
 	// GetSkill 技能详情（含 SKILL.md 与文件正文）。
 	GetSkill(context.Context, *GetSkillRequest) (*Skill, error)
+	// ExecuteSkill 执行技能：local 返回 SKILL.md，remote 同步等结果，async 返回执行 ID。
+	ExecuteSkill(context.Context, *ExecuteSkillRequest) (*ExecuteSkillReply, error)
+	// SetSkillExecution 修改执行配置（切换 local/remote/async、调超时与重试）。
+	SetSkillExecution(context.Context, *SetSkillExecutionRequest) (*Skill, error)
+	// CancelSkillExecution 取消排队中的执行。
+	CancelSkillExecution(context.Context, *CancelSkillExecutionRequest) (*SkillExecution, error)
+	// ListSkillInstances 技能 Worker 实例列表（含在线状态与熔断计数）。
+	ListSkillInstances(context.Context, *ListSkillInstancesRequest) (*ListSkillInstancesReply, error)
+	// RegisterSkillInstance Worker 自注册（同 id 重复注册 = 更新地址与容量）。
+	RegisterSkillInstance(context.Context, *RegisterSkillInstanceRequest) (*SkillInstance, error)
+	// HeartbeatSkillInstance 实例心跳（在途数 / 状态）。
+	HeartbeatSkillInstance(context.Context, *HeartbeatSkillInstanceRequest) (*HeartbeatSkillInstanceReply, error)
+	// DeleteSkillInstance 摘除实例（Worker 下线）。
+	DeleteSkillInstance(context.Context, *DeleteSkillInstanceRequest) (*DeleteSkillInstanceReply, error)
 	// InstallSkill 手动安装/上传技能（同名视为升级）。
 	InstallSkill(context.Context, *InstallSkillRequest) (*Skill, error)
 	// UninstallSkill 卸载技能。
@@ -401,8 +536,35 @@ func (UnimplementedSkillServiceServer) ListSkillhubHubs(context.Context, *ListHu
 func (UnimplementedSkillServiceServer) ImportSkillFromURL(context.Context, *ImportSkillFromURLRequest) (*Skill, error) {
 	return nil, status.Error(codes.Unimplemented, "method ImportSkillFromURL not implemented")
 }
+func (UnimplementedSkillServiceServer) ListSkillExecutions(context.Context, *ListSkillExecutionsRequest) (*ListSkillExecutionsReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkillExecutions not implemented")
+}
+func (UnimplementedSkillServiceServer) GetSkillExecution(context.Context, *GetSkillExecutionRequest) (*SkillExecution, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSkillExecution not implemented")
+}
 func (UnimplementedSkillServiceServer) GetSkill(context.Context, *GetSkillRequest) (*Skill, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSkill not implemented")
+}
+func (UnimplementedSkillServiceServer) ExecuteSkill(context.Context, *ExecuteSkillRequest) (*ExecuteSkillReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecuteSkill not implemented")
+}
+func (UnimplementedSkillServiceServer) SetSkillExecution(context.Context, *SetSkillExecutionRequest) (*Skill, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetSkillExecution not implemented")
+}
+func (UnimplementedSkillServiceServer) CancelSkillExecution(context.Context, *CancelSkillExecutionRequest) (*SkillExecution, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelSkillExecution not implemented")
+}
+func (UnimplementedSkillServiceServer) ListSkillInstances(context.Context, *ListSkillInstancesRequest) (*ListSkillInstancesReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSkillInstances not implemented")
+}
+func (UnimplementedSkillServiceServer) RegisterSkillInstance(context.Context, *RegisterSkillInstanceRequest) (*SkillInstance, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterSkillInstance not implemented")
+}
+func (UnimplementedSkillServiceServer) HeartbeatSkillInstance(context.Context, *HeartbeatSkillInstanceRequest) (*HeartbeatSkillInstanceReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method HeartbeatSkillInstance not implemented")
+}
+func (UnimplementedSkillServiceServer) DeleteSkillInstance(context.Context, *DeleteSkillInstanceRequest) (*DeleteSkillInstanceReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteSkillInstance not implemented")
 }
 func (UnimplementedSkillServiceServer) InstallSkill(context.Context, *InstallSkillRequest) (*Skill, error) {
 	return nil, status.Error(codes.Unimplemented, "method InstallSkill not implemented")
@@ -590,6 +752,42 @@ func _SkillService_ImportSkillFromURL_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SkillService_ListSkillExecutions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillExecutionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).ListSkillExecutions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_ListSkillExecutions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).ListSkillExecutions(ctx, req.(*ListSkillExecutionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_GetSkillExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSkillExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).GetSkillExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_GetSkillExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).GetSkillExecution(ctx, req.(*GetSkillExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SkillService_GetSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetSkillRequest)
 	if err := dec(in); err != nil {
@@ -604,6 +802,132 @@ func _SkillService_GetSkill_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SkillServiceServer).GetSkill(ctx, req.(*GetSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_ExecuteSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecuteSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).ExecuteSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_ExecuteSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).ExecuteSkill(ctx, req.(*ExecuteSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_SetSkillExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetSkillExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).SetSkillExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_SetSkillExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).SetSkillExecution(ctx, req.(*SetSkillExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_CancelSkillExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelSkillExecutionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).CancelSkillExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_CancelSkillExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).CancelSkillExecution(ctx, req.(*CancelSkillExecutionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_ListSkillInstances_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillInstancesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).ListSkillInstances(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_ListSkillInstances_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).ListSkillInstances(ctx, req.(*ListSkillInstancesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_RegisterSkillInstance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterSkillInstanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).RegisterSkillInstance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_RegisterSkillInstance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).RegisterSkillInstance(ctx, req.(*RegisterSkillInstanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_HeartbeatSkillInstance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeartbeatSkillInstanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).HeartbeatSkillInstance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_HeartbeatSkillInstance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).HeartbeatSkillInstance(ctx, req.(*HeartbeatSkillInstanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SkillService_DeleteSkillInstance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSkillInstanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SkillServiceServer).DeleteSkillInstance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SkillService_DeleteSkillInstance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SkillServiceServer).DeleteSkillInstance(ctx, req.(*DeleteSkillInstanceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -878,8 +1202,44 @@ var SkillService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SkillService_ImportSkillFromURL_Handler,
 		},
 		{
+			MethodName: "ListSkillExecutions",
+			Handler:    _SkillService_ListSkillExecutions_Handler,
+		},
+		{
+			MethodName: "GetSkillExecution",
+			Handler:    _SkillService_GetSkillExecution_Handler,
+		},
+		{
 			MethodName: "GetSkill",
 			Handler:    _SkillService_GetSkill_Handler,
+		},
+		{
+			MethodName: "ExecuteSkill",
+			Handler:    _SkillService_ExecuteSkill_Handler,
+		},
+		{
+			MethodName: "SetSkillExecution",
+			Handler:    _SkillService_SetSkillExecution_Handler,
+		},
+		{
+			MethodName: "CancelSkillExecution",
+			Handler:    _SkillService_CancelSkillExecution_Handler,
+		},
+		{
+			MethodName: "ListSkillInstances",
+			Handler:    _SkillService_ListSkillInstances_Handler,
+		},
+		{
+			MethodName: "RegisterSkillInstance",
+			Handler:    _SkillService_RegisterSkillInstance_Handler,
+		},
+		{
+			MethodName: "HeartbeatSkillInstance",
+			Handler:    _SkillService_HeartbeatSkillInstance_Handler,
+		},
+		{
+			MethodName: "DeleteSkillInstance",
+			Handler:    _SkillService_DeleteSkillInstance_Handler,
 		},
 		{
 			MethodName: "InstallSkill",

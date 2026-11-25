@@ -31,7 +31,7 @@ export function StatCard({ label, value, hint, tone = 'default' }) {
 export function Alert({ type = 'info', children }) {
   return (
     <div className={`alert ${type}`}>
-      {type === 'error' ? <IconAlert size={16} /> : <IconCheck size={16} />}
+      {type === 'error' || type === 'warn' ? <IconAlert size={16} /> : <IconCheck size={16} />}
       <span>{children}</span>
     </div>
   );

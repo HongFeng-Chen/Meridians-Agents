@@ -160,6 +160,16 @@ type SkillPort interface {
 	Get(ctx context.Context, name string) (*skill.Skill, error)
 }
 
+// SkillRuntimePort 技能运行时的执行入口（*skill.UseCase 实现）。
+//
+// 单独一个接口而不是塞进 SkillPort：local 技能只需要 List/Get（读文本），
+// 只有 remote/async 技能才需要执行链路（实例调度、租约、幂等）。
+// Catalog 在构造时按类型断言探测，未接线时自动退回 local 语义。
+type SkillRuntimePort interface {
+	Execute(ctx context.Context, req skill.RuntimeRequest) (*skill.RuntimeResult, error)
+	GetExecution(ctx context.Context, id string) (*skill.Execution, error)
+}
+
 type ToolPort interface {
 	ListTools(ctx context.Context, f mcp.ToolFilter) ([]mcp.Tool, error)
 	CallTool(ctx context.Context, toolID uint64, uniqueName string, args map[string]any) (*mcp.CallResult, error)

@@ -15,12 +15,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"go_agent/internal/biz/audit"
 	"go_agent/internal/biz/llm"
 	"go_agent/internal/biz/mcp"
 	"go_agent/internal/biz/skill"
+	"go_agent/internal/pkg/identity"
 	"go_agent/internal/pkg/trace"
 )
 
@@ -28,12 +30,19 @@ import (
 type Catalog struct {
 	tools  ToolPort
 	agents func(ctx context.Context) ([]AgentDef, error) // 已启用 Agent 定义（除自身外都可委派）
-	skills SkillPort                                     // 启用技能（调用 = 加载 SKILL.md 到上下文）
-	media  MediaPort                                     // 媒体生成（可为 nil：最小部署未装配）
+	skills SkillPort                                     // 启用技能（local 加载 SKILL.md；remote/async 走运行时）
+	// skillRT 技能运行时（可执行技能）。未接线时为 nil：可执行技能会明确报错而不是静默降级，
+	// 避免「配置了 remote 却按 local 把说明当结果」这种假装成功。
+	skillRT SkillRuntimePort
+	media   MediaPort // 媒体生成（可为 nil：最小部署未装配）
 }
 
 func NewCatalog(tools ToolPort, agents func(context.Context) ([]AgentDef, error), skills SkillPort, media MediaPort) *Catalog {
-	return &Catalog{tools: tools, agents: agents, skills: skills, media: media}
+	c := &Catalog{tools: tools, agents: agents, skills: skills, media: media}
+	if rt, ok := skills.(SkillRuntimePort); ok {
+		c.skillRT = rt
+	}
+	return c
 }
 
 // Schemas 列出当前全部可用能力（LLM 提示词与前端展示共用）
@@ -83,20 +92,50 @@ func (c *Catalog) Schemas(ctx context.Context) ([]CapabilitySchema, error) {
 	}
 
 	// 技能能力：只列启用技能；技能库异常不阻断整个目录（技能是增强不是必需）
+	//
+	// 两种技能在提示词里的表述必须不同，否则模型会把「远程能力」当成说明文档去读：
+	//   local  —— 加载操作说明到上下文（后续按说明自己做）
+	//   remote —— 调用远程能力，参数按 input_schema（模型不该关心 Worker 在哪）
+	//   async  —— 提交异步任务，拿 execution_id 后用 skill:status 查
 	if c.skills != nil {
+		hasAsync := false
 		if sks, err := c.skills.List(ctx, skill.Filter{Enabled: boolPtr(true), Limit: 200}); err == nil {
 			for _, sk := range sks {
 				desc := sk.Description
 				if desc == "" {
 					desc = sk.Title
 				}
-				schemas = append(schemas, CapabilitySchema{
-					Name:        CapSkillPrefix + sk.Name,
-					Type:        "skill",
-					Description: fmt.Sprintf("加载技能「%s」的操作说明/工作流到上下文（%s）", sk.Title, truncateRunes(desc, 160)),
-					ArgsExample: `{"purpose":"使用该技能要完成的事"}`,
-				})
+				spec := sk.Execution.Normalized()
+				schema := CapabilitySchema{
+					Name: CapSkillPrefix + sk.Name,
+					Type: "skill",
+				}
+				switch spec.Mode {
+				case skill.ModeRemote:
+					schema.Description = fmt.Sprintf("调用远程技能「%s」并等待结果（%s）。参数必须符合 input_schema。",
+						sk.Title, truncateRunes(desc, 120))
+					schema.ArgsExample = skillArgsExample(spec)
+				case skill.ModeAsync:
+					hasAsync = true
+					schema.Description = fmt.Sprintf("提交异步技能「%s」，立即返回执行 ID；"+
+						"之后用 %s 查结果（%s）。", sk.Title, CapSkillStatus, truncateRunes(desc, 100))
+					schema.ArgsExample = skillArgsExample(spec)
+				default:
+					schema.Description = fmt.Sprintf("加载技能「%s」的操作说明/工作流到上下文（%s）",
+						sk.Title, truncateRunes(desc, 160))
+					schema.ArgsExample = `{"purpose":"使用该技能要完成的事"}`
+				}
+				schemas = append(schemas, schema)
 			}
+		}
+		// 异步技能的状态查询能力：只在有异步技能时才出现，避免给模型一个用不上的工具
+		if hasAsync && c.skillRT != nil {
+			schemas = append(schemas, CapabilitySchema{
+				Name:        CapSkillStatus,
+				Type:        "skill",
+				Description: "查询技能异步执行的进度/结果：传提交时返回的 execution_id，返回 queued/running/succeeded/failed 与输出。",
+				ArgsExample: `{"execution_id":"exec_1a2b3c4d"}`,
+			})
 		}
 	}
 
@@ -202,12 +241,14 @@ func (u *UseCase) InvokeDispatch(ctx context.Context, name string, args map[stri
 	switch {
 	case name == CapFactory:
 		return u.factoryCapability(ctx, args)
+	case name == CapSkillStatus:
+		return u.skillStatusCapability(ctx, args, rec)
 	case strings.HasPrefix(name, CapAgentPrefix):
 		return u.delegateCapability(ctx, strings.TrimPrefix(name, CapAgentPrefix), args, rec)
 	case strings.HasPrefix(name, CapToolPrefix):
 		return u.toolCapability(ctx, strings.TrimPrefix(name, CapToolPrefix), args, rec)
 	case strings.HasPrefix(name, CapSkillPrefix):
-		return u.skillCapability(ctx, strings.TrimPrefix(name, CapSkillPrefix), args)
+		return u.skillCapability(ctx, strings.TrimPrefix(name, CapSkillPrefix), args, rec)
 	case name == CapImage:
 		return u.imageCapability(ctx, args)
 	case name == CapVideo:
@@ -274,9 +315,15 @@ func (u *UseCase) toolCapability(ctx context.Context, uniqueName string, args ma
 	return riskNote + callResultText(res), nil
 }
 
-// skillCapability 调用技能：读取 SKILL.md 说明文本喂回 LLM（技能是指令包，不是可执行程序）。
-// args.purpose 可选，说明本次用技能要做什么，帮助模型按需裁剪工作流。
-func (u *UseCase) skillCapability(ctx context.Context, name string, args map[string]any) (out string, err error) {
+// skillCapability 调用技能：按技能的执行模式分发。
+//
+//	local  —— 读取 SKILL.md 说明文本喂回 LLM（技能是指令包，不是可执行程序）
+//	remote —— 交给 Skill Runtime 调度 Worker，等结果
+//	async  —— 交给 Skill Runtime 入队，返回 execution_id（用 skill:status 查）
+//
+// 参数约定：`purpose` 是给模型的说明字段，其余字段整体作为技能 input，
+// 这样 input_schema 可以直接描述业务参数，模型不需要多包一层 {"input": ..}。
+func (u *UseCase) skillCapability(ctx context.Context, name string, args map[string]any, rec *Recorder) (out string, err error) {
 	// 技能是本地读库，耗时通常在毫秒级；仍然埋点：这样「这一轮到底调了什么」
 	// 在 trace 树里是完整的，不会出现「只有 MCP 有节点、技能凭空消失」。
 	ctx, span := trace.Start(ctx, "skill.run",
@@ -294,8 +341,36 @@ func (u *UseCase) skillCapability(ctx context.Context, name string, args map[str
 	if !sk.Enabled {
 		return "", fmt.Errorf("技能 %s 未启用，请先到技能管理启用", name)
 	}
+
+	// 可执行技能：交给运行时（local 以外都需要 Worker）
+	if sk.Executable() {
+		if u.catalog.skillRT == nil {
+			return "", fmt.Errorf("技能 %s 配置为 %s，但技能运行时未接线", name, sk.Mode())
+		}
+		req := skill.RuntimeRequest{
+			SkillName: name,
+			Input:     skillInput(args),
+			Purpose:   purposeOf(args),
+		}
+		if rec != nil && rec.task != nil {
+			req.TaskID = taskIDText(rec.task.ID)
+			req.TenantID = rec.task.TenantID
+			req.UserID = rec.task.UserID
+		}
+		if rec != nil && rec.def != nil {
+			req.AgentKey = rec.def.AgentKey
+		}
+		res, err := u.catalog.skillRT.Execute(ctx, req)
+		if err != nil {
+			return "", fmt.Errorf("执行技能 %s 失败: %w", name, err)
+		}
+		span.Set("skill.execution_id", res.ExecutionID)
+		span.Set("skill.status", res.Status)
+		return res.Text, nil
+	}
+
 	head := fmt.Sprintf("[技能 %s v%s 已加载]", sk.Name, sk.Version)
-	if purpose, _ := args["purpose"].(string); purpose != "" {
+	if purpose := purposeOf(args); purpose != "" {
 		head += "\n使用目的：" + purpose
 	}
 	body := sk.Content
@@ -303,6 +378,85 @@ func (u *UseCase) skillCapability(ctx context.Context, name string, args map[str
 		body = "（该技能没有 SKILL.md 说明文本）"
 	}
 	return head + "\n\n" + body, nil
+}
+
+// skillStatusCapability 查询异步技能执行状态（Agent 侧唯一的轮询入口）
+func (u *UseCase) skillStatusCapability(ctx context.Context, args map[string]any, rec *Recorder) (string, error) {
+	if u.catalog == nil || u.catalog.skillRT == nil {
+		return "", fmt.Errorf("技能运行时未接线")
+	}
+	id, _ := args["execution_id"].(string)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("需要 execution_id 参数")
+	}
+	exec, err := u.catalog.skillRT.GetExecution(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("查询执行 %s 失败: %w", id, err)
+	}
+	// 执行记录里的 tenant 必须与当前上下文一致：execution_id 可被猜到/泄露，
+	// 不能靠「不知道别人的 ID」当隔离。任务恢复时 ctx 里的身份可能已换成
+	// 平台身份，因此优先用任务自身的租户（它就是提交时的真实归属）。
+	tenant := identity.TenantID(ctx)
+	if rec != nil && rec.task != nil && rec.task.TenantID != "" {
+		tenant = rec.task.TenantID
+	}
+	if exec.TenantID != "" && exec.TenantID != tenant {
+		return "", fmt.Errorf("执行记录 %s 不存在", id)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[技能 %s 执行 %s] status=%s mode=%s", exec.SkillName, exec.ID, exec.Status, exec.Mode)
+	if exec.Attempts > 1 {
+		fmt.Fprintf(&b, " 尝试=%d", exec.Attempts)
+	}
+	b.WriteString("\n")
+	if exec.Output != "" {
+		b.WriteString(truncateRunes(exec.Output, 4000))
+		b.WriteString("\n")
+	}
+	if exec.Error != "" {
+		b.WriteString("原因：" + truncateRunes(exec.Error, 600))
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// skillInput 从能力参数里剥出技能入参：去掉 purpose（说明字段）与 execution_id
+func skillInput(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		switch k {
+		case "purpose", "execution_id":
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func purposeOf(args map[string]any) string {
+	s, _ := args["purpose"].(string)
+	return strings.TrimSpace(s)
+}
+
+func taskIDText(id uint64) string {
+	if id == 0 {
+		return ""
+	}
+	return strconv.FormatUint(id, 10)
+}
+
+// skillArgsExample 远程技能的参数示例：优先用技能声明的 input_schema
+func skillArgsExample(spec skill.ExecutionSpec) string {
+	if raw := strings.TrimSpace(spec.InputSchema); raw != "" {
+		return truncateRunes(raw, 400)
+	}
+	return `{"purpose":"说明本次调用要做什么；其余字段作为技能参数"}`
 }
 
 func callResultText(r *mcp.CallResult) string {
